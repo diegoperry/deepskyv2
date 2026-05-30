@@ -11,13 +11,19 @@ It includes:
 - Before/after previews
 - Galaxy background refinement and color-preserving processing
 
-The local Windows CLI tools are not committed to this repository. Place them beside the project or configure their paths in local settings.
+The Windows CLI tool folders are bundled under `tools/` and tracked with Git LFS:
+
+- `tools/siril`
+- `tools/deepsnr`
+- `tools/starnet`
+
+Clone with Git LFS enabled so the actual binaries download instead of pointer files.
 
 ## Local Web Preview
 
 ```powershell
-cd DeepSky
-python -m uvicorn app.web_app:app --host 127.0.0.1 --port 8000
+powershell -ExecutionPolicy Bypass -File .\deploy\windows\install.ps1
+powershell -ExecutionPolicy Bypass -File .\deploy\windows\run_web.ps1
 ```
 
 Then open:
@@ -40,3 +46,7 @@ From the repository root:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1
 ```
+
+## Production Deployment
+
+See `DEPLOYMENT.md` for the Windows VPS + Cloudflare Tunnel deployment path.

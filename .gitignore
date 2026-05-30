@@ -24,13 +24,10 @@ samples/
 _inspect_deepsky_repo/
 tools/cloudflared/
 
-# Bundled Windows CLI tools are distributed separately.
+# Original downloaded tool archives/folders kept outside the committed app layout.
 deepsnr_win_*/
 starnet*_win*/
 siril-*/
-tools/**/*.exe
-tools/**/*.dll
-tools/**/*.onnx
 
 # Logs
 *.log

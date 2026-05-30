@@ -1,0 +1,43 @@
+DEEPSNR SOFTWARE LICENSE AGREEMENT
+----------------------------------
+IMPORTANT - READ CAREFULLY: By using this software, you agree to be
+bound by these terms.
+
+1. Grant of License
+   The Licensor grants you a non-exclusive, non-transferable license to
+   use DeepSNR solely for astrophotography image processing.
+
+2. Restrictions
+   a. The software, its components, and outputs shall not be used to
+      create any commercial software, including for training neural
+      networks or other image processing systems.
+   b. You shall not share full-scale raw input images, such as original
+      raw, TIFF, or FITS files, that demonstrate the software's
+      performance or aid in developing competitive products. Non-
+      commercial academic or evaluative reviews are permitted provided
+      that any raw images are not shared in their full original
+      resolution or format.
+   c. Any modification or derivative work intended to bypass these
+      limitations is prohibited.
+
+3. Term and Termination
+   This license remains in effect until terminated. Any breach of these
+   terms will result in immediate termination of your license, and you
+   must cease all use and destroy all copies.
+
+4. Disclaimer of Warranty
+   THE SOFTWARE IS PROVIDED "AS IS" WITHOUT ANY EXPRESS OR IMPLIED
+   WARRANTIES, INCLUDING MERCHANTABILITY OR FITNESS FOR A PARTICULAR
+   PURPOSE.
+
+5. Limitation of Liability
+   IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY DAMAGES, DIRECT OR
+   INDIRECT, ARISING FROM THE USE OR INABILITY TO USE THE SOFTWARE.
+
+Copyright (c) 2026 Mikita (Nikita) Misiura
+
+The DeepSNR neural-network architecture is based on NAFNet:
+https://github.com/megvii-research/NAFNet
+
+Third-party runtime licenses and notices are included with release
+packages where applicable.

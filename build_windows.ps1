@@ -30,9 +30,6 @@ if (-not (Test-Path -LiteralPath $distRoot)) {
 
 $copyItems = @(
     "tools",
-    "siril-1.4.3-ucrt64_win",
-    "deepsnr_win_1.2.0-0111_ORT_x64_cli",
-    "starnet2_win_2.5.0-0204_ORT_x64_cli",
     "samples"
 )
 
