@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and builds
+.build-venv/
+.venv/
+venv/
+build/
+dist/
+*.spec~
+
+# Local app state
+DeepSky/settings.json
+settings.json
+outputs/
+samples/
+
+# Local inspection/download artifacts
+_inspect_deepsky_repo/
+tools/cloudflared/
+
+# Bundled Windows CLI tools are distributed separately.
+deepsnr_win_*/
+starnet*_win*/
+siril-*/
+tools/**/*.exe
+tools/**/*.dll
+tools/**/*.onnx
+
+# Logs
+*.log
