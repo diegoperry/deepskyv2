@@ -304,11 +304,21 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     _log_existing_image(working, write_log, "working.tif")
 
     if settings.prestretched_input:
-        write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril stretch and color-stretch stage.")
-        write_log("Using the uploaded image as calibrated image for denoise/star processing.")
-        shutil.copy2(working, stretched)
+        object_type = _normalized_object_type(settings)
+        write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril initial stretch.")
+        write_log(f"Applying pre-stretched object finish for: {object_type}")
+        source = load_image(working, write_log)
+        if object_type == "galaxy":
+            calibrated_image = _apply_broadband_background_cleanup(source, job_folder, settings, write_log, "prestretched_galaxy")
+            save_tiff(calibrated, calibrated_image, write_log)
+        elif object_type == "star cluster":
+            calibrated_image = _apply_broadband_background_cleanup(source, job_folder, settings, write_log, "prestretched_star_cluster")
+            save_tiff(calibrated, calibrated_image, write_log)
+        else:
+            write_log("Pre-stretched nebula selected; preserving uploaded stretch without emission re-stretch.")
+            shutil.copy2(working, calibrated)
+        shutil.copy2(calibrated, stretched)
         _log_existing_image(stretched, write_log, "stretched.tif")
-        shutil.copy2(working, calibrated)
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif mode == PipelineMode.STRETCH:
         write_log("Applying local astrophotography stretch.")
