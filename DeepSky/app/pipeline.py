@@ -24,6 +24,7 @@ from .image_io import (
     make_preview,
     save_tiff,
 )
+from .input_analysis import analyze_input_stretch
 from .image_math import add_images, subtract_images
 from .python_color_calibration import python_fallback_color_calibration
 from .settings import AppSettings
@@ -244,6 +245,16 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     shutil.copy2(input_path, original)
     write_log(f"Copied original: {original.name}")
     _log_existing_image(original, write_log, "original")
+    try:
+        analysis = analyze_input_stretch(original)
+        metrics = ", ".join(f"{key}={value:.4f}" for key, value in analysis.metrics.items())
+        if analysis.likely_stretched:
+            write_log(f"WARNING: Pre-stretched input suspected ({analysis.confidence} confidence). {analysis.message}")
+            write_log(f"Input stretch analysis: {metrics}")
+        else:
+            write_log(f"Input stretch analysis: {analysis.message} ({metrics})")
+    except Exception as exc:
+        write_log(f"Input stretch analysis skipped: {exc}")
 
     before_preview = job_folder / "before_preview.png"
     make_preview(original, before_preview, log=write_log)

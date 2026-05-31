@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
+from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS
 from .pipeline import PipelineMode, run_pipeline
 from .settings import PROJECT_ROOT, default_settings, load_settings
@@ -25,6 +26,7 @@ class WebJob:
     id: str
     status: str = "queued"
     log: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     result: dict[str, Path] | None = None
     error: str | None = None
 
@@ -53,6 +55,7 @@ def _html() -> str:
       --blue: #5b8cff;
       --violet: #a88cff;
       --coral: #ff806d;
+      --warning: #f6c453;
     }
     * { box-sizing: border-box; }
     body {
@@ -125,6 +128,17 @@ def _html() -> str:
     }
     .cta:disabled { opacity: .55; cursor: not-allowed; }
     .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
+    .warning {
+      display: none;
+      width: min(720px, 100%);
+      border: 1px solid rgba(246, 196, 83, .55);
+      background: rgba(246, 196, 83, .10);
+      color: #ffe3a0;
+      border-radius: 12px;
+      padding: 12px 14px;
+      line-height: 1.45;
+      text-align: left;
+    }
     .previews {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -193,6 +207,7 @@ def _html() -> str:
         </div>
       </label>
       <button id="run" class="cta" disabled>Run Full Pipeline</button>
+      <div id="warning" class="warning"></div>
       <div id="status" class="status">Choose a file to begin.</div>
     </section>
     <section class="previews">
@@ -214,6 +229,7 @@ def _html() -> str:
     const fileName = document.getElementById("fileName");
     const run = document.getElementById("run");
     const statusEl = document.getElementById("status");
+    const warningEl = document.getElementById("warning");
     const logEl = document.getElementById("log");
     const beforeFrame = document.getElementById("beforeFrame");
     const afterFrame = document.getElementById("afterFrame");
@@ -229,6 +245,8 @@ def _html() -> str:
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
       statusEl.textContent = file ? "Ready to run full pipeline." : "Choose a file to begin.";
+      warningEl.style.display = "none";
+      warningEl.textContent = "";
     }
 
     fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
@@ -244,6 +262,10 @@ def _html() -> str:
       const res = await fetch(`/api/jobs/${jobId}`);
       const job = await res.json();
       statusEl.textContent = job.status === "running" ? "Processing..." : job.status;
+      if (job.warnings && job.warnings.length) {
+        warningEl.style.display = "block";
+        warningEl.textContent = job.warnings.join(" ");
+      }
       logEl.textContent = job.log?.length ? job.log.join("\\n") : "Processing...";
       logEl.scrollTop = logEl.scrollHeight;
       if (job.before_preview) {
@@ -299,6 +321,7 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         "id": job.id,
         "status": job.status,
         "log": job.log[-300:],
+        "warnings": job.warnings[-10:],
         "error": job.error,
     }
     if job.result:
@@ -324,6 +347,20 @@ def _run_job(job_id: str, input_path: Path) -> None:
             jobs[job_id].log.append(message)
 
     try:
+        try:
+            analysis = analyze_input_stretch(input_path)
+            metrics = ", ".join(f"{key}={value:.4f}" for key, value in analysis.metrics.items())
+            if analysis.likely_stretched:
+                warning = f"Pre-stretched input warning ({analysis.confidence} confidence): {analysis.message}"
+                with jobs_lock:
+                    jobs[job_id].warnings.append(warning)
+                    jobs[job_id].log.append(warning)
+                    jobs[job_id].log.append(f"Input stretch analysis: {metrics}")
+            else:
+                write_log(f"Input stretch analysis: {analysis.message} ({metrics})")
+        except Exception as exc:
+            write_log(f"Input stretch analysis skipped: {exc}")
+
         settings = load_settings()
         defaults = default_settings()
         settings.output_folder = str(PROJECT_ROOT / "outputs")
