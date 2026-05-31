@@ -533,12 +533,20 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     if int(np.count_nonzero(background_pixels)) >= 512:
         sky = np.median(rgb[background_pixels], axis=0)
         neutral = float(np.mean(sky))
-        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.82, 1.14)
-        gains[1] = min(gains[1], 0.94)
+        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.90, 1.12)
+        gains[1] = min(gains[1], 0.88)
         balanced = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
         rgb = np.clip(rgb * (1.0 - sky_mask[..., None] * 0.72) + balanced * (sky_mask[..., None] * 0.72), 0.0, 1.0)
 
     rgb = _suppress_green_excess(rgb, strength=0.78)
+
+    lum_before_green = _luminance(rgb)
+    green_target = 0.52 * rgb[..., 0] + 0.48 * rgb[..., 2]
+    signal_green_excess = np.maximum(0.0, rgb[..., 1] - green_target)
+    signal_mix = np.clip((galaxy_mask * 0.76 + sky_mask * 0.34) * (1.0 - star_mask * 0.60), 0.0, 0.82)
+    rgb[..., 1] = np.clip(rgb[..., 1] - signal_green_excess * signal_mix, 0.0, 1.0)
+    lum_after_green = _luminance(rgb)
+    rgb = np.clip(rgb * (lum_before_green / np.maximum(lum_after_green, 1e-5))[..., None], 0.0, 1.0)
 
     # Smooth color speckle mostly in empty sky; preserve galaxy luminance and arms.
     lab = cv2.cvtColor(np.clip(rgb * 255.0, 0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB)
