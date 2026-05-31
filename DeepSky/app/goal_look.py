@@ -563,13 +563,57 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     black_mix = np.clip(sky_mask[..., None] * 0.55, 0.0, 0.62)
     rgb = np.clip(rgb * (1.0 - black_mix) + darkened * black_mix, 0.0, 1.0)
 
+    lum = _luminance(rgb)
+    extended = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 13.0)
+    galaxy_mask = np.clip(
+        (extended - np.percentile(extended, 48.0))
+        / max(1e-6, np.percentile(extended, 98.8) - np.percentile(extended, 48.0)),
+        0.0,
+        1.0,
+    ) ** 0.50
+    star_mask = np.clip(
+        (lum - np.percentile(lum, 97.1))
+        / max(1e-6, np.percentile(lum, 99.98) - np.percentile(lum, 97.1)),
+        0.0,
+        1.0,
+    ) ** 1.55
+    protect = cv2.GaussianBlur(np.maximum(galaxy_mask, star_mask).astype(np.float32), (0, 0), 2.8)
+    clean_sky = np.clip(1.0 - protect, 0.0, 1.0)
+    clean_sky *= np.clip(
+        (np.percentile(lum, 70.0) - lum)
+        / max(1e-6, np.percentile(lum, 70.0) - np.percentile(lum, 1.0)),
+        0.0,
+        1.0,
+    )
+    clean_sky = cv2.GaussianBlur(clean_sky.astype(np.float32), (0, 0), 5.0)
+
+    rgb8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+    smooth_rgb = cv2.bilateralFilter(rgb8, d=0, sigmaColor=24, sigmaSpace=22).astype(np.float32) / 255.0
+    smooth_rgb = cv2.GaussianBlur(smooth_rgb, (0, 0), 0.9)
+    smooth_lum = _luminance(smooth_rgb)
+    original_lum = _luminance(rgb)
+    smooth_rgb = np.clip(smooth_rgb * (original_lum / np.maximum(smooth_lum, 1e-5))[..., None], 0.0, 1.0)
+    smooth_mix = np.clip(clean_sky[..., None] * 0.62, 0.0, 0.68)
+    rgb = np.clip(rgb * (1.0 - smooth_mix) + smooth_rgb * smooth_mix, 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    background_pixels = (clean_sky > 0.48) & (lum < np.percentile(lum, 68.0))
+    if int(np.count_nonzero(background_pixels)) >= 512:
+        floor = float(np.percentile(lum[background_pixels], 32.0))
+    else:
+        floor = float(np.percentile(lum, 6.0))
+    darker = np.clip((rgb - floor * 0.34) / max(1e-6, 1.0 - floor * 0.34), 0.0, 1.0)
+    dark_mix = np.clip(clean_sky[..., None] * 0.46, 0.0, 0.52)
+    rgb = np.clip(rgb * (1.0 - dark_mix) + darker * dark_mix, 0.0, 1.0)
+
     if log:
         log(
             "Applied pre-stretched broadband look: "
             f"black={black:.5f}, white={white:.5f}, sky_floor={sky_floor:.5f}, "
             f"sky_pixels={int(np.count_nonzero(background_pixels))}, "
             f"sky_gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
-            f"protect_mean={float(np.mean(protect)):.5f}, sky_mask_mean={float(np.mean(sky_mask)):.5f}"
+            f"protect_mean={float(np.mean(protect)):.5f}, sky_mask_mean={float(np.mean(sky_mask)):.5f}, "
+            f"clean_sky_mean={float(np.mean(clean_sky)):.5f}, final_floor={floor:.5f}"
         )
     return _to_uint16(rgb)
 
