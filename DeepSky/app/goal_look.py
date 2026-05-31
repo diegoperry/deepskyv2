@@ -606,6 +606,48 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     dark_mix = np.clip(clean_sky[..., None] * 0.46, 0.0, 0.52)
     rgb = np.clip(rgb * (1.0 - dark_mix) + darker * dark_mix, 0.0, 1.0)
 
+    lum = _luminance(rgb)
+    arm_signal = np.clip(
+        (galaxy_mask - 0.10)
+        / max(1e-6, 0.86),
+        0.0,
+        1.0,
+    ) ** 0.72
+    sky_signal = np.clip(1.0 - arm_signal, 0.0, 1.0)
+
+    # Pull pre-stretched broadband galaxies toward a quieter natural palette:
+    # warm core, blue-gray arms, and low-chroma dark sky.
+    neutral = lum[..., None]
+    saturation_scale = 0.34 + 0.34 * arm_signal[..., None] + 0.18 * star_mask[..., None]
+    rgb = np.clip(neutral + (rgb - neutral) * saturation_scale, 0.0, 1.0)
+
+    warm_core = np.clip(
+        (lum - np.percentile(lum, 82.0))
+        / max(1e-6, np.percentile(lum, 99.5) - np.percentile(lum, 82.0)),
+        0.0,
+        1.0,
+    ) ** 1.15
+    core_tint = np.array([1.08, 1.00, 0.86], dtype=np.float32).reshape(1, 1, 3)
+    rgb = np.clip(rgb * (1.0 - warm_core[..., None] * 0.20) + neutral * core_tint * (warm_core[..., None] * 0.20), 0.0, 1.0)
+
+    arm_tint = np.array([0.91, 0.99, 1.08], dtype=np.float32).reshape(1, 1, 3)
+    rgb = np.clip(rgb * (1.0 - arm_signal[..., None] * 0.12) + neutral * arm_tint * (arm_signal[..., None] * 0.12), 0.0, 1.0)
+
+    sky_tint = np.array([0.82, 0.80, 0.90], dtype=np.float32).reshape(1, 1, 3)
+    dark_sky = np.clip(clean_sky * sky_signal, 0.0, 1.0)
+    rgb = np.clip(rgb * (1.0 - dark_sky[..., None] * 0.28) + neutral * sky_tint * (dark_sky[..., None] * 0.28), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    background_pixels = (clean_sky > 0.46) & (galaxy_mask < 0.24) & (lum < np.percentile(lum, 72.0))
+    if int(np.count_nonzero(background_pixels)) >= 512:
+        final_floor = float(np.percentile(lum[background_pixels], 46.0))
+    else:
+        final_floor = float(np.percentile(lum, 8.0))
+    final_dark = np.clip((rgb - final_floor * 0.66) / max(1e-6, 1.0 - final_floor * 0.66), 0.0, 1.0)
+    final_dark *= 0.88 + 0.12 * arm_signal[..., None]
+    final_mix = np.clip(clean_sky[..., None] * (0.56 + 0.20 * sky_signal[..., None]), 0.0, 0.72)
+    rgb = np.clip(rgb * (1.0 - final_mix) + final_dark * final_mix, 0.0, 1.0)
+
     if log:
         log(
             "Applied pre-stretched broadband look: "
@@ -613,7 +655,7 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
             f"sky_pixels={int(np.count_nonzero(background_pixels))}, "
             f"sky_gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
             f"protect_mean={float(np.mean(protect)):.5f}, sky_mask_mean={float(np.mean(sky_mask)):.5f}, "
-            f"clean_sky_mean={float(np.mean(clean_sky)):.5f}, final_floor={floor:.5f}"
+            f"clean_sky_mean={float(np.mean(clean_sky)):.5f}, final_floor={final_floor:.5f}"
         )
     return _to_uint16(rgb)
 
