@@ -19,6 +19,8 @@ from .settings import PROJECT_ROOT, default_settings, load_settings
 
 UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "web_uploads"
 MAX_WORKERS = 1
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
 
 
 @dataclass
@@ -203,7 +205,7 @@ def _html() -> str:
         <input id="file" type="file" accept=".fits,.fit,.fts,.tif,.tiff" />
         <div>
           <strong>Drag & drop your astrophotography file</strong>
-          <span id="fileName">Supports FITS and TIFF formats</span>
+          <span id="fileName">Supports FITS and TIFF formats up to 50 MB</span>
         </div>
       </label>
       <button id="run" class="cta" disabled>Run Full Pipeline</button>
@@ -239,12 +241,13 @@ def _html() -> str:
 
     function setFile(file) {
       selectedFile = file;
-      fileName.textContent = file ? file.name : "Supports FITS and TIFF formats";
-      run.disabled = !file;
+      fileName.textContent = file ? file.name : "Supports FITS and TIFF formats up to 50 MB";
+      const tooLarge = file && file.size > 50 * 1024 * 1024;
+      run.disabled = !file || tooLarge;
       beforeFrame.innerHTML = file ? '<span class="empty">Preview will appear after upload</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
-      statusEl.textContent = file ? "Ready to run full pipeline." : "Choose a file to begin.";
+      statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 50 MB." : file ? "Ready to run full pipeline." : "Choose a file to begin.";
       warningEl.style.display = "none";
       warningEl.textContent = "";
     }
@@ -389,14 +392,24 @@ async def create_job(file: UploadFile = File(...)) -> dict[str, str]:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
         raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
+    content_length = file.headers.get("content-length")
+    if content_length and int(content_length) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
 
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4().hex
     upload_dir = UPLOAD_ROOT / job_id
     upload_dir.mkdir(parents=True, exist_ok=False)
     input_path = upload_dir / Path(file.filename or f"upload{suffix}").name
+    total = 0
     with input_path.open("wb") as handle:
-        shutil.copyfileobj(file.file, handle)
+        while chunk := file.file.read(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                handle.close()
+                shutil.rmtree(upload_dir, ignore_errors=True)
+                raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
+            handle.write(chunk)
 
     with jobs_lock:
         jobs[job_id] = WebJob(id=job_id)
