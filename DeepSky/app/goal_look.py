@@ -490,6 +490,82 @@ def apply_broadband_look(image: np.ndarray, log: LogCallback | None = None) -> n
     return _to_uint16(rgb)
 
 
+def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+
+    rgb = _to_float01(arr)
+    lum = _luminance(rgb)
+
+    # Pre-stretched data already has useful tone mapping. Keep the histogram mostly intact.
+    black = float(np.percentile(lum, 1.5))
+    white = float(np.percentile(lum, 99.85))
+    rgb = np.clip((rgb - black * 0.55) / max(1e-6, white - black * 0.55), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    extended = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 10.0)
+    galaxy_mask = np.clip(
+        (extended - np.percentile(extended, 52.0))
+        / max(1e-6, np.percentile(extended, 98.8) - np.percentile(extended, 52.0)),
+        0.0,
+        1.0,
+    ) ** 0.55
+    star_mask = np.clip(
+        (lum - np.percentile(lum, 97.2))
+        / max(1e-6, np.percentile(lum, 99.98) - np.percentile(lum, 97.2)),
+        0.0,
+        1.0,
+    ) ** 1.6
+    protect = cv2.GaussianBlur(np.maximum(galaxy_mask, star_mask).astype(np.float32), (0, 0), 2.2)
+
+    sky_mask = np.clip(1.0 - protect, 0.0, 1.0)
+    sky_mask *= np.clip(
+        (np.percentile(lum, 72.0) - lum)
+        / max(1e-6, np.percentile(lum, 72.0) - np.percentile(lum, 1.0)),
+        0.0,
+        1.0,
+    )
+    sky_mask = cv2.GaussianBlur(sky_mask.astype(np.float32), (0, 0), 4.0)
+
+    background_pixels = (sky_mask > 0.55) & (lum < np.percentile(lum, 68.0))
+    gains = np.ones(3, dtype=np.float32)
+    if int(np.count_nonzero(background_pixels)) >= 512:
+        sky = np.median(rgb[background_pixels], axis=0)
+        neutral = float(np.mean(sky))
+        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.82, 1.14)
+        gains[1] = min(gains[1], 0.94)
+        balanced = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
+        rgb = np.clip(rgb * (1.0 - sky_mask[..., None] * 0.72) + balanced * (sky_mask[..., None] * 0.72), 0.0, 1.0)
+
+    rgb = _suppress_green_excess(rgb, strength=0.78)
+
+    # Smooth color speckle mostly in empty sky; preserve galaxy luminance and arms.
+    lab = cv2.cvtColor(np.clip(rgb * 255.0, 0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    a_smooth = cv2.bilateralFilter(a_channel, d=7, sigmaColor=18, sigmaSpace=12)
+    b_smooth = cv2.bilateralFilter(b_channel, d=7, sigmaColor=18, sigmaSpace=12)
+    chroma_smoothed = cv2.cvtColor(cv2.merge([l_channel, a_smooth, b_smooth]), cv2.COLOR_LAB2RGB).astype(np.float32) / 255.0
+    chroma_mix = np.clip(sky_mask[..., None] * 0.65, 0.0, 0.72)
+    rgb = np.clip(rgb * (1.0 - chroma_mix) + chroma_smoothed * chroma_mix, 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    sky_floor = float(np.percentile(lum[background_pixels], 24.0)) if int(np.count_nonzero(background_pixels)) >= 512 else float(np.percentile(lum, 5.0))
+    darkened = np.clip((rgb - sky_floor * 0.42) / max(1e-6, 1.0 - sky_floor * 0.42), 0.0, 1.0)
+    black_mix = np.clip(sky_mask[..., None] * 0.55, 0.0, 0.62)
+    rgb = np.clip(rgb * (1.0 - black_mix) + darkened * black_mix, 0.0, 1.0)
+
+    if log:
+        log(
+            "Applied pre-stretched broadband look: "
+            f"black={black:.5f}, white={white:.5f}, sky_floor={sky_floor:.5f}, "
+            f"sky_pixels={int(np.count_nonzero(background_pixels))}, "
+            f"sky_gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
+            f"protect_mean={float(np.mean(protect)):.5f}, sky_mask_mean={float(np.mean(sky_mask)):.5f}"
+        )
+    return _to_uint16(rgb)
+
+
 def apply_goal_look(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:

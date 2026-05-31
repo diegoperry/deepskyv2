@@ -12,6 +12,7 @@ from .cli_tools import find_executable, run_deepsnr, run_starnet
 from .goal_look import (
     apply_broadband_look,
     apply_goal_look,
+    apply_prestretched_broadband_look,
     blend_broadband_background_denoise,
     chroma_percentile,
     red_emission_dominance,
@@ -309,10 +310,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log(f"Applying pre-stretched object finish for: {object_type}")
         source = load_image(working, write_log)
         if object_type == "galaxy":
-            calibrated_image = _apply_broadband_background_cleanup(source, job_folder, settings, write_log, "prestretched_galaxy")
+            calibrated_image = apply_prestretched_broadband_look(source, write_log)
             save_tiff(calibrated, calibrated_image, write_log)
         elif object_type == "star cluster":
-            calibrated_image = _apply_broadband_background_cleanup(source, job_folder, settings, write_log, "prestretched_star_cluster")
+            calibrated_image = apply_prestretched_broadband_look(source, write_log)
             save_tiff(calibrated, calibrated_image, write_log)
         else:
             write_log("Pre-stretched nebula selected; preserving uploaded stretch without emission re-stretch.")
