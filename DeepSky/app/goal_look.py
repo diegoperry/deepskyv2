@@ -648,6 +648,19 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     final_mix = np.clip(clean_sky[..., None] * (0.56 + 0.20 * sky_signal[..., None]), 0.0, 0.72)
     rgb = np.clip(rgb * (1.0 - final_mix) + final_dark * final_mix, 0.0, 1.0)
 
+    lum = _luminance(rgb)
+    highlight = np.clip(
+        (lum - np.percentile(lum, 88.0))
+        / max(1e-6, np.percentile(lum, 99.75) - np.percentile(lum, 88.0)),
+        0.0,
+        1.0,
+    )
+    compressed_lum = lum / (1.0 + highlight * 0.58 * lum)
+    compressed_lum = np.clip(compressed_lum * (1.0 + highlight * 0.10), 0.0, 1.0)
+    compression_mix = np.clip(highlight[..., None] * (0.58 + 0.18 * warm_core[..., None]), 0.0, 0.72)
+    compressed_rgb = np.clip(rgb * (compressed_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
+    rgb = np.clip(rgb * (1.0 - compression_mix) + compressed_rgb * compression_mix, 0.0, 1.0)
+
     if log:
         log(
             "Applied pre-stretched broadband look: "
