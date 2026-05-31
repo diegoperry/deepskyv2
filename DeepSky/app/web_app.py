@@ -8,7 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
 from .input_analysis import analyze_input_stretch
@@ -129,6 +129,30 @@ def _html() -> str:
       cursor: pointer;
     }
     .cta:disabled { opacity: .55; cursor: not-allowed; }
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      margin-top: 22px;
+    }
+    .mode {
+      border: 1px solid #2c4773;
+      border-radius: 10px;
+      background: #0b1628;
+      color: #cfe0ff;
+      font-weight: 800;
+      font-size: 15px;
+      padding: 14px 22px;
+      min-width: 170px;
+      cursor: pointer;
+    }
+    .mode.active {
+      border-color: rgba(246, 196, 83, .8);
+      background: rgba(246, 196, 83, .14);
+      color: #ffe3a0;
+    }
     .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
     .warning {
       display: none;
@@ -208,7 +232,10 @@ def _html() -> str:
           <span id="fileName">Supports FITS and TIFF formats up to 50 MB</span>
         </div>
       </label>
-      <button id="run" class="cta" disabled>Run Full Pipeline</button>
+      <div class="actions">
+        <button id="preStretched" class="mode" type="button" aria-pressed="false">Pre-stretched</button>
+        <button id="run" class="cta" disabled>Run Full Pipeline</button>
+      </div>
       <div id="warning" class="warning"></div>
       <div id="status" class="status">Choose a file to begin.</div>
     </section>
@@ -230,6 +257,7 @@ def _html() -> str:
     const fileInput = document.getElementById("file");
     const fileName = document.getElementById("fileName");
     const run = document.getElementById("run");
+    const preStretched = document.getElementById("preStretched");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const logEl = document.getElementById("log");
@@ -238,6 +266,7 @@ def _html() -> str:
     const downloads = document.getElementById("downloads");
     let selectedFile = null;
     let activeJob = null;
+    let isPreStretched = false;
 
     function setFile(file) {
       selectedFile = file;
@@ -250,7 +279,24 @@ def _html() -> str:
       statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 50 MB." : file ? "Ready to run full pipeline." : "Choose a file to begin.";
       warningEl.style.display = "none";
       warningEl.textContent = "";
+      if (isPreStretched) {
+        warningEl.style.display = "block";
+        warningEl.textContent = "Pre-stretched mode is on. DeepSky will skip its stretch/color-stretch stage and process the image as already stretched.";
+      }
     }
+
+    preStretched.addEventListener("click", () => {
+      isPreStretched = !isPreStretched;
+      preStretched.classList.toggle("active", isPreStretched);
+      preStretched.setAttribute("aria-pressed", String(isPreStretched));
+      if (isPreStretched) {
+        warningEl.style.display = "block";
+        warningEl.textContent = "Pre-stretched mode is on. DeepSky will skip its stretch/color-stretch stage and process the image as already stretched.";
+      } else {
+        warningEl.style.display = "none";
+        warningEl.textContent = "";
+      }
+    });
 
     fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
     drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.classList.add("drag"); });
@@ -304,6 +350,7 @@ def _html() -> str:
       afterFrame.innerHTML = '<span class="empty">Processing</span>';
       const data = new FormData();
       data.append("file", selectedFile);
+      data.append("pre_stretched", isPreStretched ? "true" : "false");
       const res = await fetch("/api/jobs", { method: "POST", body: data });
       if (!res.ok) {
         statusEl.textContent = await res.text();
@@ -340,7 +387,7 @@ def _job_response(job: WebJob) -> dict[str, Any]:
     return payload
 
 
-def _run_job(job_id: str, input_path: Path) -> None:
+def _run_job(job_id: str, input_path: Path, pre_stretched: bool = False) -> None:
     with jobs_lock:
         job = jobs[job_id]
         job.status = "running"
@@ -367,6 +414,9 @@ def _run_job(job_id: str, input_path: Path) -> None:
         settings = load_settings()
         defaults = default_settings()
         settings.output_folder = str(PROJECT_ROOT / "outputs")
+        settings.prestretched_input = pre_stretched
+        if pre_stretched:
+            write_log("Pre-stretched upload flag received from UI.")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
             if not Path(getattr(settings, attr)).exists():
                 setattr(settings, attr, getattr(defaults, attr))
@@ -388,7 +438,7 @@ def index() -> str:
 
 
 @app.post("/api/jobs")
-async def create_job(file: UploadFile = File(...)) -> dict[str, str]:
+async def create_job(file: UploadFile = File(...), pre_stretched: bool = Form(False)) -> dict[str, str]:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
         raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
@@ -413,7 +463,11 @@ async def create_job(file: UploadFile = File(...)) -> dict[str, str]:
 
     with jobs_lock:
         jobs[job_id] = WebJob(id=job_id)
-    executor.submit(_run_job, job_id, input_path)
+        if pre_stretched:
+            jobs[job_id].warnings.append(
+                "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
+            )
+    executor.submit(_run_job, job_id, input_path, pre_stretched)
     return {"id": job_id}
 
 

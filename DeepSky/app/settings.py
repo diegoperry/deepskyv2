@@ -33,6 +33,7 @@ class AppSettings:
     galaxy_background_darkness: int
     galaxy_chroma_noise_reduction: int
     galaxy_protect_detail: bool
+    prestretched_input: bool
 
 
 def _default_tool_folder(name: str, extracted_prefix: str) -> Path:
@@ -65,6 +66,7 @@ def default_settings() -> AppSettings:
         galaxy_background_darkness=90,
         galaxy_chroma_noise_reduction=96,
         galaxy_protect_detail=True,
+        prestretched_input=False,
     )
 
 

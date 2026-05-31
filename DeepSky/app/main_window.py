@@ -378,6 +378,7 @@ class MainWindow(QMainWindow):
             galaxy_background_darkness=self.background_darkness_slider.value(),
             galaxy_chroma_noise_reduction=self.chroma_noise_slider.value(),
             galaxy_protect_detail=self.protect_galaxy_check.isChecked(),
+            prestretched_input=False,
         )
         save_settings(self.settings)
         return self.settings

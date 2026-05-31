@@ -271,7 +271,14 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     convert_to_working_tiff(original, working, write_log)
     _log_existing_image(working, write_log, "working.tif")
 
-    if mode == PipelineMode.STRETCH:
+    if settings.prestretched_input:
+        write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril stretch and color-stretch stage.")
+        write_log("Using the uploaded image as calibrated image for denoise/star processing.")
+        shutil.copy2(working, stretched)
+        _log_existing_image(stretched, write_log, "stretched.tif")
+        shutil.copy2(working, calibrated)
+        _log_existing_image(calibrated, write_log, "calibrated.tif")
+    elif mode == PipelineMode.STRETCH:
         write_log("Applying local astrophotography stretch.")
         stretched_image = astrophotography_stretch(load_image(working, write_log))
         save_tiff(stretched, stretched_image, write_log)
