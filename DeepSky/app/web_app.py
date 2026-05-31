@@ -153,6 +153,24 @@ def _html() -> str:
       background: rgba(246, 196, 83, .14);
       color: #ffe3a0;
     }
+    .select {
+      display: grid;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      text-align: left;
+    }
+    .select select {
+      min-width: 190px;
+      border: 1px solid #2c4773;
+      border-radius: 10px;
+      background: #0b1628;
+      color: #f7fbff;
+      font-weight: 800;
+      font-size: 15px;
+      padding: 13px 14px;
+    }
     .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
     .warning {
       display: none;
@@ -233,6 +251,14 @@ def _html() -> str:
         </div>
       </label>
       <div class="actions">
+        <label class="select">
+          Object
+          <select id="objectType">
+            <option value="Nebula" selected>Nebula</option>
+            <option value="Galaxy">Galaxy</option>
+            <option value="Star Cluster">Star Cluster</option>
+          </select>
+        </label>
         <button id="preStretched" class="mode" type="button" aria-pressed="false">Pre-stretched</button>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
@@ -257,6 +283,7 @@ def _html() -> str:
     const fileInput = document.getElementById("file");
     const fileName = document.getElementById("fileName");
     const run = document.getElementById("run");
+    const objectType = document.getElementById("objectType");
     const preStretched = document.getElementById("preStretched");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
@@ -350,6 +377,7 @@ def _html() -> str:
       afterFrame.innerHTML = '<span class="empty">Processing</span>';
       const data = new FormData();
       data.append("file", selectedFile);
+      data.append("object_type", objectType.value);
       data.append("pre_stretched", isPreStretched ? "true" : "false");
       const res = await fetch("/api/jobs", { method: "POST", body: data });
       if (!res.ok) {
@@ -387,7 +415,7 @@ def _job_response(job: WebJob) -> dict[str, Any]:
     return payload
 
 
-def _run_job(job_id: str, input_path: Path, pre_stretched: bool = False) -> None:
+def _run_job(job_id: str, input_path: Path, pre_stretched: bool = False, object_type: str = "Nebula") -> None:
     with jobs_lock:
         job = jobs[job_id]
         job.status = "running"
@@ -415,6 +443,8 @@ def _run_job(job_id: str, input_path: Path, pre_stretched: bool = False) -> None
         defaults = default_settings()
         settings.output_folder = str(PROJECT_ROOT / "outputs")
         settings.prestretched_input = pre_stretched
+        settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
+        write_log(f"Selected object type: {settings.object_type}")
         if pre_stretched:
             write_log("Pre-stretched upload flag received from UI.")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
@@ -438,7 +468,11 @@ def index() -> str:
 
 
 @app.post("/api/jobs")
-async def create_job(file: UploadFile = File(...), pre_stretched: bool = Form(False)) -> dict[str, str]:
+async def create_job(
+    file: UploadFile = File(...),
+    object_type: str = Form("Nebula"),
+    pre_stretched: bool = Form(False),
+) -> dict[str, str]:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
         raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
@@ -467,7 +501,7 @@ async def create_job(file: UploadFile = File(...), pre_stretched: bool = Form(Fa
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
             )
-    executor.submit(_run_job, job_id, input_path, pre_stretched)
+    executor.submit(_run_job, job_id, input_path, pre_stretched, object_type)
     return {"id": job_id}
 
 

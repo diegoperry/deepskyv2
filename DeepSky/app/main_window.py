@@ -379,6 +379,7 @@ class MainWindow(QMainWindow):
             galaxy_chroma_noise_reduction=self.chroma_noise_slider.value(),
             galaxy_protect_detail=self.protect_galaxy_check.isChecked(),
             prestretched_input=False,
+            object_type=getattr(self.settings, "object_type", "Nebula"),
         )
         save_settings(self.settings)
         return self.settings

@@ -61,6 +61,47 @@ def _log_existing_image(path: Path, write_log: LogCallback, label: str) -> None:
     write_log(f"{label}: {describe_array(path, image)}")
 
 
+def _normalized_object_type(settings: AppSettings) -> str:
+    value = getattr(settings, "object_type", "Nebula").strip().lower()
+    if value in {"galaxy", "star cluster"}:
+        return value
+    return "nebula"
+
+
+def _apply_broadband_background_cleanup(
+    image: np.ndarray,
+    job_folder: Path,
+    settings: AppSettings,
+    write_log: LogCallback,
+    label: str,
+) -> np.ndarray:
+    finished_image = apply_broadband_look(image, write_log)
+    deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
+    if not deepsnr_exe:
+        write_log(f"DeepSNR {label} background cleanup skipped; executable not found.")
+        return finished_image
+
+    pre_denoise = job_folder / f"{label}_pre_deepsnr.tif"
+    deepsnr_background = job_folder / f"{label}_deepsnr.tif"
+    save_tiff(pre_denoise, finished_image, write_log)
+    write_log(f"DeepSNR {label} background cleanup executable: {deepsnr_exe}")
+    try:
+        run_deepsnr(pre_denoise, deepsnr_background, deepsnr_exe, write_log)
+        _log_existing_image(deepsnr_background, write_log, f"{label}_deepsnr.tif")
+        return blend_broadband_background_denoise(
+            finished_image,
+            load_image(deepsnr_background, write_log),
+            settings.galaxy_background_smoothness,
+            settings.galaxy_background_darkness,
+            settings.galaxy_chroma_noise_reduction,
+            settings.galaxy_protect_detail,
+            write_log,
+        )
+    except Exception as exc:
+        write_log(f"DeepSNR {label} background cleanup failed; keeping broadband finish. Error: {exc}")
+        return finished_image
+
+
 def _run_siril_calibration(
     original: Path,
     working: Path,
@@ -83,7 +124,7 @@ def _run_siril_calibration(
     siril_exe = find_siril_executable(Path(settings.siril_folder))
     if not siril_exe:
         write_log("Siril executable not found; using Python fallback color calibration.")
-        return _run_python_fallback_calibration(working, stretched, calibrated, write_log)
+        return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
 
     pcc_command = build_siril_pcc_command(original) if mode == "Siril Photometric" else None
     if mode == "Siril Photometric" and pcc_command:
@@ -93,7 +134,7 @@ def _run_siril_calibration(
         write_log(f"Siril PCC metadata command: {pcc_command}")
     elif mode == "Siril Photometric":
         write_log("Siril PCC metadata unavailable; using Python fallback color calibration.")
-        return _run_python_fallback_calibration(working, stretched, calibrated, write_log)
+        return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
     else:
         siril_input = job_folder / "siril_input.tif"
         shutil.copy2(working, siril_input)
@@ -140,7 +181,7 @@ def _run_siril_calibration(
     except Exception as exc:
         if mode in {"Basic", "Siril Photometric"}:
             write_log(f"Siril {mode} failed; using Python fallback color calibration. Error: {exc}")
-            return _run_python_fallback_calibration(working, stretched, calibrated, write_log)
+            return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
         raise
     if not siril_output_fit.exists():
         raise RuntimeError(f"Siril completed but did not create {siril_output_fit}")
@@ -155,10 +196,14 @@ def _run_siril_calibration(
     _log_existing_image(raw_siril, write_log, "siril_calibrated.tif")
 
     if mode == "Basic":
+        object_type = _normalized_object_type(settings)
         chroma_95 = chroma_percentile(siril_image, 95.0)
         emission_score = red_emission_dominance(siril_image)
-        write_log(f"Siril Basic chroma check: p95={chroma_95:.5f}; red_emission_dominance={emission_score:.3f}")
-        if chroma_95 < 0.18 and emission_score >= 3.0:
+        write_log(
+            f"Siril Basic object type: {object_type}; "
+            f"chroma p95={chroma_95:.5f}; red_emission_dominance={emission_score:.3f}"
+        )
+        if object_type == "nebula" and chroma_95 < 0.18 and emission_score >= 3.0:
             write_log("Siril Basic output is low-chroma with strong red emission; using Python star-photometry color as nebula source.")
             source = load_image(working, write_log)
             python_color = python_fallback_color_calibration(source, write_log)
@@ -166,32 +211,17 @@ def _run_siril_calibration(
             save_tiff(python_reference, python_color, write_log)
             _log_existing_image(python_reference, write_log, "python_color_reference.tif")
             finished_image = apply_goal_look(python_color, write_log)
+        elif object_type == "galaxy":
+            write_log("Object type is Galaxy; using neutral broadband finish with protected background cleanup.")
+            finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "galaxy")
+        elif object_type == "star cluster":
+            write_log("Object type is Star Cluster; using neutral star-preserving broadband finish.")
+            finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "star_cluster")
         elif emission_score < 3.0:
-            write_log("Broadband/galaxy-like color detected; using neutral broadband finish.")
-            finished_image = apply_broadband_look(siril_image, write_log)
-            deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
-            if deepsnr_exe:
-                pre_denoise = job_folder / "broadband_pre_deepsnr.tif"
-                deepsnr_background = job_folder / "broadband_deepsnr.tif"
-                save_tiff(pre_denoise, finished_image, write_log)
-                write_log(f"DeepSNR background cleanup executable: {deepsnr_exe}")
-                try:
-                    run_deepsnr(pre_denoise, deepsnr_background, deepsnr_exe, write_log)
-                    _log_existing_image(deepsnr_background, write_log, "broadband_deepsnr.tif")
-                    finished_image = blend_broadband_background_denoise(
-                        finished_image,
-                        load_image(deepsnr_background, write_log),
-                        settings.galaxy_background_smoothness,
-                        settings.galaxy_background_darkness,
-                        settings.galaxy_chroma_noise_reduction,
-                        settings.galaxy_protect_detail,
-                        write_log,
-                    )
-                except Exception as exc:
-                    write_log(f"DeepSNR background cleanup failed; keeping broadband finish. Error: {exc}")
-            else:
-                write_log("DeepSNR background cleanup skipped; executable not found.")
+            write_log("Nebula mode selected, but broadband-like color detected; using neutral broadband finish.")
+            finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "broadband")
         else:
+            write_log("Object type is Nebula; using emission nebula color finish.")
             finished_image = apply_goal_look(siril_image, write_log)
     else:
         write_log("Siril PCC succeeded; preserving Siril photometric color without manual color shaping.")
@@ -208,13 +238,15 @@ def _run_python_fallback_calibration(
     working: Path,
     stretched: Path,
     calibrated: Path,
+    settings: AppSettings,
     write_log: LogCallback,
 ) -> Path:
     source = load_image(working, write_log)
     python_color = python_fallback_color_calibration(source, write_log)
     emission_score = red_emission_dominance(python_color)
-    write_log(f"Python fallback scene classification: red_emission_dominance={emission_score:.3f}")
-    if emission_score >= 3.0:
+    object_type = _normalized_object_type(settings)
+    write_log(f"Python fallback object type: {object_type}; red_emission_dominance={emission_score:.3f}")
+    if object_type == "nebula":
         calibrated_image = apply_goal_look(python_color, write_log)
     else:
         calibrated_image = apply_broadband_look(python_color, write_log)
