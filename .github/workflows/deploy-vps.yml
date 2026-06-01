@@ -37,32 +37,58 @@ jobs:
       - name: Deploy to live VPS source path
         shell: powershell
         run: |
+          $diagnostics = "$env:GITHUB_WORKSPACE\deploy-diagnostics.txt"
+          "Deploy diagnostics $(Get-Date -Format o)" | Set-Content -LiteralPath $diagnostics
           $repoPath = "C:\Apps\deepskyv2"
           $sourceApp = "$env:GITHUB_WORKSPACE\DeepSky\app"
           $sourceWebApp = "$sourceApp\web_app.py"
           $liveApp = "$repoPath\DeepSky\app"
           $liveWebApp = "$repoPath\DeepSky\app\web_app.py"
 
-          Write-Host "Deploying web UI source:"
-          Write-Host "  source app: $sourceApp"
-          Write-Host "  live app:   $liveApp"
+          try {
+            "Runner user: $env:USERNAME" | Add-Content -LiteralPath $diagnostics
+            "Workspace: $env:GITHUB_WORKSPACE" | Add-Content -LiteralPath $diagnostics
+            "Source app: $sourceApp" | Add-Content -LiteralPath $diagnostics
+            "Live app: $liveApp" | Add-Content -LiteralPath $diagnostics
+            "C:\Apps exists: $(Test-Path -LiteralPath 'C:\Apps')" | Add-Content -LiteralPath $diagnostics
+            "Repo path exists: $(Test-Path -LiteralPath $repoPath)" | Add-Content -LiteralPath $diagnostics
+            "DeepSky path exists: $(Test-Path -LiteralPath "$repoPath\DeepSky")" | Add-Content -LiteralPath $diagnostics
+            "Live app exists before: $(Test-Path -LiteralPath $liveApp)" | Add-Content -LiteralPath $diagnostics
 
-          New-Item -ItemType Directory -Force -Path $liveApp | Out-Null
+            Write-Host "Deploying web UI source:"
+            Write-Host "  source app: $sourceApp"
+            Write-Host "  live app:   $liveApp"
 
-          Get-ChildItem -LiteralPath $sourceApp -File -Filter *.py | ForEach-Object {
-            $destination = Join-Path $liveApp $_.Name
-            Write-Host "Copying $($_.FullName) -> $destination"
-            Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+            New-Item -ItemType Directory -Force -Path $liveApp | Out-Null
+
+            Get-ChildItem -LiteralPath $sourceApp -File -Filter *.py | ForEach-Object {
+              $destination = Join-Path $liveApp $_.Name
+              Write-Host "Copying $($_.FullName) -> $destination"
+              Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+            }
+
+            Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\DeepSky\requirements.txt" -Destination "$repoPath\DeepSky\requirements.txt" -Force
+            Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force -ErrorAction SilentlyContinue
+
+            if (-not (Select-String -LiteralPath $liveWebApp -Pattern "DeepSky Built By" -Quiet)) {
+              throw "Live web_app.py does not contain the footer marker after deploy."
+            }
+
+            "Live app exists after: $(Test-Path -LiteralPath $liveApp)" | Add-Content -LiteralPath $diagnostics
+            "Footer marker verified in: $liveWebApp" | Add-Content -LiteralPath $diagnostics
+            Write-Host "Verified footer marker in live source file: $liveWebApp"
+          } catch {
+            "ERROR: $($_.Exception.Message)" | Add-Content -LiteralPath $diagnostics
+            "STACK: $($_.ScriptStackTrace)" | Add-Content -LiteralPath $diagnostics
+            throw
           }
 
-          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\DeepSky\requirements.txt" -Destination "$repoPath\DeepSky\requirements.txt" -Force
-          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force -ErrorAction SilentlyContinue
-
-          if (-not (Select-String -LiteralPath $liveWebApp -Pattern "DeepSky Built By" -Quiet)) {
-            throw "Live web_app.py does not contain the footer marker after deploy."
-          }
-
-          Write-Host "Verified footer marker in live source file: $liveWebApp"
+      - name: Upload deploy diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-diagnostics
+          path: deploy-diagnostics.txt
 
       - name: Install Python dependencies
         shell: powershell
