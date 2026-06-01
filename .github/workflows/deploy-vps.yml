@@ -6,9 +6,6 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 concurrency:
   group: deepsky-vps-deploy
   cancel-in-progress: true
@@ -18,166 +15,57 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout latest code
-        uses: actions/checkout@v4
-        with:
-          lfs: false
-
-      - name: Verify checked out web UI source
+      - name: Update VPS repo
         shell: powershell
         run: |
-          $sourceWebApp = "$env:GITHUB_WORKSPACE\DeepSky\app\web_app.py"
-          Write-Host "Checked out web app source: $sourceWebApp"
+          cd C:\Apps\deepskyv2
+          git fetch origin main
+          git reset --hard origin/main
+          git lfs pull
 
-          if (-not (Test-Path -LiteralPath $sourceWebApp)) {
-            throw "Missing checked out web_app.py at $sourceWebApp"
-          }
-
-          if (-not (Select-String -LiteralPath $sourceWebApp -Pattern "DeepSky Built By" -Quiet)) {
-            throw "Checked out web_app.py does not contain the footer marker."
-          }
-
-      - name: Deploy to live VPS source path
+      - name: Verify footer source exists
         shell: powershell
         run: |
-          $diagnostics = "$env:GITHUB_WORKSPACE\deploy-diagnostics.txt"
-          "Deploy diagnostics $(Get-Date -Format o)" | Set-Content -LiteralPath $diagnostics
-          $repoPath = "C:\Apps\deepskyv2"
-          $sourceApp = "$env:GITHUB_WORKSPACE\DeepSky\app"
-          $sourceWebApp = "$sourceApp\web_app.py"
-          $liveApp = "$repoPath\DeepSky\app"
-          $liveWebApp = "$repoPath\DeepSky\app\web_app.py"
+          $webApp = "C:\Apps\deepskyv2\DeepSky\app\web_app.py"
 
-          try {
-            "Runner user: $env:USERNAME" | Add-Content -LiteralPath $diagnostics
-            "Workspace: $env:GITHUB_WORKSPACE" | Add-Content -LiteralPath $diagnostics
-            "Source app: $sourceApp" | Add-Content -LiteralPath $diagnostics
-            "Live app: $liveApp" | Add-Content -LiteralPath $diagnostics
-            "C:\Apps exists: $(Test-Path -LiteralPath 'C:\Apps')" | Add-Content -LiteralPath $diagnostics
-            "Repo path exists: $(Test-Path -LiteralPath $repoPath)" | Add-Content -LiteralPath $diagnostics
-            "DeepSky path exists: $(Test-Path -LiteralPath "$repoPath\DeepSky")" | Add-Content -LiteralPath $diagnostics
-            "Live app exists before: $(Test-Path -LiteralPath $liveApp)" | Add-Content -LiteralPath $diagnostics
-
-            Write-Host "Deploying web UI source:"
-            Write-Host "  source app: $sourceApp"
-            Write-Host "  live app:   $liveApp"
-
-            $copyScript = "$env:GITHUB_WORKSPACE\deploy-copy-live-source.ps1"
-            Set-Content -LiteralPath $copyScript -Encoding UTF8 -Value @"
-            `$repoPath = "C:\Apps\deepskyv2"
-            `$sourceApp = "$env:GITHUB_WORKSPACE\DeepSky\app"
-            `$liveApp = "`$repoPath\DeepSky\app"
-            New-Item -ItemType Directory -Force -Path `$liveApp | Out-Null
-            Get-ChildItem -LiteralPath `$sourceApp -File -Filter *.py | ForEach-Object {
-              `$destination = Join-Path `$liveApp `$_.Name
-              Copy-Item -LiteralPath `$_.FullName -Destination `$destination -Force
-            }
-            Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\DeepSky\requirements.txt" -Destination "`$repoPath\DeepSky\requirements.txt" -Force
-            Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\DeepSky\README.md" -Destination "`$repoPath\DeepSky\README.md" -Force -ErrorAction SilentlyContinue
-            if (-not (Select-String -LiteralPath "`$repoPath\DeepSky\app\web_app.py" -Pattern "DeepSky Built By" -Quiet)) {
-              throw "Live web_app.py does not contain the footer marker after scheduled copy."
-            }
-"@
-
-            try {
-              powershell.exe -NoProfile -ExecutionPolicy Bypass -File $copyScript
-            } catch {
-              Write-Warning "Direct copy failed, trying scheduled task copy. Error: $($_.Exception.Message)"
-              C:\Windows\System32\schtasks.exe /Create /TN "DeepSky Deploy Copy" /SC ONCE /ST 23:59 /RL HIGHEST /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$copyScript`"" /F
-              C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Deploy Copy"
-              Start-Sleep -Seconds 8
-              C:\Windows\System32\schtasks.exe /Delete /TN "DeepSky Deploy Copy" /F
-            }
-
-            if (-not (Select-String -LiteralPath $liveWebApp -Pattern "DeepSky Built By" -Quiet)) {
-              throw "Live web_app.py does not contain the footer marker after deploy."
-            }
-
-            "Live app exists after: $(Test-Path -LiteralPath $liveApp)" | Add-Content -LiteralPath $diagnostics
-            "Footer marker verified in: $liveWebApp" | Add-Content -LiteralPath $diagnostics
-            Write-Host "Verified footer marker in live source file: $liveWebApp"
-          } catch {
-            "ERROR: $($_.Exception.Message)" | Add-Content -LiteralPath $diagnostics
-            "STACK: $($_.ScriptStackTrace)" | Add-Content -LiteralPath $diagnostics
-            throw
+          if (-not (Test-Path -LiteralPath $webApp)) {
+            throw "Missing live web_app.py at $webApp"
           }
 
-      - name: Upload deploy diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deploy-diagnostics
-          path: deploy-diagnostics.txt
-
-      - name: Publish deploy diagnostics
-        if: failure()
-        shell: powershell
-        run: |
-          if (-not (Test-Path -LiteralPath deploy-diagnostics.txt)) {
-            Write-Host "No deploy diagnostics file found."
-            exit 0
+          if (-not (Select-String -LiteralPath $webApp -Pattern "DeepSky Built By" -Quiet)) {
+            throw "Live web_app.py does not contain footer marker."
           }
 
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          Copy-Item -LiteralPath deploy-diagnostics.txt -Destination deploy-diagnostics-latest.txt -Force
-          git add deploy-diagnostics-latest.txt
-          git commit -m "Publish deploy diagnostics" || exit 0
-          git push
+          Write-Host "Verified footer marker in $webApp"
 
       - name: Install Python dependencies
         shell: powershell
         run: |
-          $python = "C:\Python311\pkg\tools\python.exe"
-          if (-not (Test-Path -LiteralPath $python)) {
-            $python = "python"
-          }
-
           cd C:\Apps\deepskyv2\DeepSky
-          & $python -m pip install -r requirements.txt
+          C:\Python311\pkg\tools\python.exe -m pip install -r requirements.txt
 
       - name: Restart DeepSky web app
         shell: powershell
         run: |
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Scheduled task was not already running, continuing."
-            $global:LASTEXITCODE = 0
-          }
-
-          Start-Sleep -Seconds 3
+          Start-Sleep -Seconds 5
 
           Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe'" |
             Where-Object { $_.CommandLine -like "*uvicorn*app.web_app*" } |
             ForEach-Object {
-              Write-Host "Stopping stale DeepSky web process $($_.ProcessId): $($_.CommandLine)"
+              Write-Host "Stopping stale DeepSky process $($_.ProcessId)"
               Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
             }
 
-          $listeners = C:\Windows\System32\netstat.exe -ano | Select-String ":8000" | ForEach-Object {
-            $parts = ($_ -split "\s+") | Where-Object { $_ }
-            if ($parts.Length -ge 5 -and $parts[3] -eq "LISTENING") { [int]$parts[4] }
-          }
-          foreach ($pidToStop in $listeners | Select-Object -Unique) {
-            Write-Host "Stopping process listening on 8000: $pidToStop"
-            Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue
-          }
-
           C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to start scheduled task DeepSky Web App."
-          }
-
           Start-Sleep -Seconds 8
 
           C:\Windows\System32\netstat.exe -ano | C:\Windows\System32\findstr.exe :8000
-          if ($LASTEXITCODE -ne 0) {
-            throw "DeepSky did not start listening on port 8000."
-          }
 
           $html = (Invoke-WebRequest -Uri "http://127.0.0.1:8000/?v=$env:GITHUB_SHA" -UseBasicParsing -TimeoutSec 20).Content
+
           if (-not $html.Contains("DeepSky Built By")) {
-            throw "Restarted local DeepSky app did not serve the footer marker."
+            throw "Local DeepSky app did not serve the footer marker after restart."
           }
 
-          Write-Host "DeepSky deployed, restarted, and verified on localhost:8000."
+          Write-Host "DeepSky deployed, restarted, and verified."
