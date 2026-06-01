@@ -16,25 +16,53 @@ jobs:
 
     steps:
       - name: Pull latest code on VPS
-        shell: cmd
+        shell: powershell
         run: |
-          cd /d C:\Apps\deepskyv2
-          "C:\Program Files\Git\cmd\git.exe" fetch origin main
-          "C:\Program Files\Git\cmd\git.exe" reset --hard origin/main
-          "C:\Program Files\Git\cmd\git.exe" lfs pull
+          $repoPath = "C:\Apps\deepskyv2"
+          $git = "C:\Program Files\Git\cmd\git.exe"
+          if (-not (Test-Path $git)) {
+            $git = "git"
+          }
+
+          New-Item -ItemType Directory -Force C:\Apps | Out-Null
+
+          if (-not (Test-Path "$repoPath\.git")) {
+            if (Test-Path $repoPath) {
+              Remove-Item -LiteralPath $repoPath -Recurse -Force
+            }
+            & $git clone https://github.com/diegoperry/deepskyv2.git $repoPath
+          }
+
+          cd $repoPath
+          & $git fetch origin main
+          & $git reset --hard origin/main
+          & $git status --short
+          & $git rev-parse --short HEAD
+
+          & $git lfs version
+          if ($LASTEXITCODE -eq 0) {
+            & $git lfs pull
+          } else {
+            Write-Host "Git LFS is not installed on the runner; skipping git lfs pull."
+          }
 
       - name: Install Python dependencies
-        shell: cmd
+        shell: powershell
         run: |
-          cd /d C:\Apps\deepskyv2\DeepSky
-          C:\Python311\pkg\tools\python.exe -m pip install -r requirements.txt
+          $python = "C:\Python311\pkg\tools\python.exe"
+          if (-not (Test-Path $python)) {
+            $python = "python"
+          }
+
+          cd C:\Apps\deepskyv2\DeepSky
+          & $python -m pip install -r requirements.txt
 
       - name: Restart DeepSky web app
-        shell: cmd
+        shell: powershell
         run: |
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
-          timeout /t 3 /nobreak
+          Start-Sleep -Seconds 3
           C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
-          timeout /t 5 /nobreak
+          Start-Sleep -Seconds 5
           C:\Windows\System32\netstat.exe -ano | C:\Windows\System32\findstr.exe :8000
-          echo DeepSky deployed and restarted.
+          Write-Host "DeepSky deployed and restarted."
