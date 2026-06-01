@@ -6,6 +6,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: deepsky-vps-deploy
   cancel-in-progress: true
@@ -89,6 +92,22 @@ jobs:
         with:
           name: deploy-diagnostics
           path: deploy-diagnostics.txt
+
+      - name: Publish deploy diagnostics
+        if: failure()
+        shell: powershell
+        run: |
+          if (-not (Test-Path -LiteralPath deploy-diagnostics.txt)) {
+            Write-Host "No deploy diagnostics file found."
+            exit 0
+          }
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          Copy-Item -LiteralPath deploy-diagnostics.txt -Destination deploy-diagnostics-latest.txt -Force
+          git add deploy-diagnostics-latest.txt
+          git commit -m "Publish deploy diagnostics" || exit 0
+          git push
 
       - name: Install Python dependencies
         shell: powershell
