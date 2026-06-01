@@ -298,7 +298,7 @@ def _html() -> str:
     <nav class="downloads" id="downloads"></nav>
     <pre class="log" id="log">Processing log will appear here.</pre>
     <footer class="footer">
-      DeepSky Built By
+      DeepSky Processor Built By
       <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a>
     </footer>
   </main>
