@@ -15,92 +15,25 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout latest code
-        uses: actions/checkout@v4
-        with:
-          lfs: false
-
-      - name: Verify checked out code
+      - name: Update VPS repo
         shell: powershell
         run: |
-          $source = $env:GITHUB_WORKSPACE
-          Write-Host "Workspace: $source"
-          $webApp = "$source\DeepSky\app\web_app.py"
-          if (-not (Select-String -LiteralPath $webApp -Pattern "DeepSky Built By" -Quiet)) {
-            throw "Checked out web_app.py does not contain the footer marker."
-          }
+          cd C:\Apps\deepskyv2
+          git fetch origin main
+          git reset --hard origin/main
+          git lfs pull
 
-      - name: Patch deployed web app copies
+      - name: Install dependencies
         shell: powershell
         run: |
-          $sourceWebApp = "$env:GITHUB_WORKSPACE\DeepSky\app\web_app.py"
-          $roots = @("C:\Apps", "C:\Users\Administrator", "C:\Users\diego")
-          $patched = 0
+          cd C:\Apps\deepskyv2\DeepSky
+          python -m pip install -r requirements.txt
 
-          foreach ($root in $roots) {
-            if (-not (Test-Path $root)) {
-              continue
-            }
-
-            Get-ChildItem -Path $root -Filter web_app.py -Recurse -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match "deepsky" } |
-              ForEach-Object {
-                Write-Host "Patching deployed web app: $($_.FullName)"
-                Copy-Item -LiteralPath $sourceWebApp -Destination $_.FullName -Force
-                $patched += 1
-              }
-          }
-
-          Write-Host "Patched web_app.py copies: $patched"
-          if ($patched -lt 1) {
-            throw "No deployed DeepSky web_app.py copies found to patch."
-          }
-
-      - name: Install Python dependencies
+      - name: Restart DeepSky
         shell: powershell
         run: |
-          $python = "C:\Python311\pkg\tools\python.exe"
-          if (-not (Test-Path $python)) {
-            $python = "python"
-          }
-
-          cd "$env:GITHUB_WORKSPACE\DeepSky"
-          & $python -m pip install -r requirements.txt
-
-      - name: Restart DeepSky web app
-        shell: powershell
-        run: |
-          $repoPath = $env:GITHUB_WORKSPACE
-          $python = "C:\Python311\pkg\tools\python.exe"
-          if (-not (Test-Path $python)) {
-            $python = "python"
-          }
-
-          $launcher = "$repoPath\run_deepsky_web.cmd"
-          Set-Content -LiteralPath $launcher -Encoding ASCII -Value @(
-            "@echo off",
-            "cd /d ""$repoPath\DeepSky""",
-            """$python"" -m uvicorn app.web_app:app --host 127.0.0.1 --port 8000 --log-level info >> ""$repoPath\deepsky-web.log"" 2>> ""$repoPath\deepsky-web.err.log"""
-          )
-
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
-          Start-Sleep -Seconds 3
-          Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe'" |
-            Where-Object { $_.CommandLine -like "*uvicorn*app.web_app*" } |
-            ForEach-Object {
-              Write-Host "Stopping old DeepSky web process $($_.ProcessId): $($_.CommandLine)"
-              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-            }
-
-          $listeners = C:\Windows\System32\netstat.exe -ano | Select-String ":8000" | ForEach-Object {
-            $parts = ($_ -split "\s+") | Where-Object { $_ }
-            if ($parts.Length -ge 5 -and $parts[3] -eq "LISTENING") { [int]$parts[4] }
-          }
-          foreach ($pidToStop in $listeners | Select-Object -Unique) {
-            Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue
-          }
-
-          C:\Windows\System32\schtasks.exe /Create /TN "DeepSky Web App" /SC ONCE /ST 23:59 /TR $launcher /F
+          Start-Sleep -Seconds 5
           C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
           Start-Sleep -Seconds 5
           C:\Windows\System32\netstat.exe -ano | C:\Windows\System32\findstr.exe :8000
