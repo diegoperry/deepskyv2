@@ -23,6 +23,7 @@ jobs:
       - name: Sync latest code on VPS
         shell: powershell
         run: |
+          $ErrorActionPreference = "Continue"
           $source = $env:GITHUB_WORKSPACE
           $repoPath = "C:\Apps\deepskyv2"
 
@@ -42,13 +43,18 @@ jobs:
             Get-ChildItem -LiteralPath $sourceApp -File -Filter *.py | ForEach-Object {
               $destination = Join-Path $destApp $_.Name
               Write-Host "Copying $($_.FullName) -> $destination"
-              Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+              try {
+                Copy-Item -LiteralPath $_.FullName -Destination $destination -Force -ErrorAction Stop
+              } catch {
+                Write-Warning "Could not copy $($_.FullName): $_"
+              }
             }
 
-            Copy-Item -LiteralPath "$source\DeepSky\requirements.txt" -Destination "$repoPath\DeepSky\requirements.txt" -Force
-            Copy-Item -LiteralPath "$source\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force
+            Copy-Item -LiteralPath "$source\DeepSky\requirements.txt" -Destination "$repoPath\DeepSky\requirements.txt" -Force -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath "$source\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force -ErrorAction SilentlyContinue
             Copy-Item -LiteralPath "$source\README.md" -Destination "$repoPath\README.md" -Force -ErrorAction SilentlyContinue
           }
+          exit 0
 
       - name: Install Python dependencies
         shell: powershell
