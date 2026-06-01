@@ -30,6 +30,32 @@ jobs:
             throw "Checked out web_app.py does not contain the footer marker."
           }
 
+      - name: Patch deployed web app copies
+        shell: powershell
+        run: |
+          $sourceWebApp = "$env:GITHUB_WORKSPACE\DeepSky\app\web_app.py"
+          $roots = @("C:\Apps", "C:\Users\Administrator", "C:\Users\diego")
+          $patched = 0
+
+          foreach ($root in $roots) {
+            if (-not (Test-Path $root)) {
+              continue
+            }
+
+            Get-ChildItem -Path $root -Filter web_app.py -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match "deepsky" } |
+              ForEach-Object {
+                Write-Host "Patching deployed web app: $($_.FullName)"
+                Copy-Item -LiteralPath $sourceWebApp -Destination $_.FullName -Force
+                $patched += 1
+              }
+          }
+
+          Write-Host "Patched web_app.py copies: $patched"
+          if ($patched -lt 1) {
+            throw "No deployed DeepSky web_app.py copies found to patch."
+          }
+
       - name: Install Python dependencies
         shell: powershell
         run: |
