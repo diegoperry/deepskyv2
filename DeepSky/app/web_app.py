@@ -218,6 +218,18 @@ def _html() -> str:
       text-decoration: none;
       font-weight: 700;
     }
+    .footer {
+      margin-top: 24px;
+      text-align: center;
+      color: #6f86aa;
+      font-size: 14px;
+    }
+    .footer a {
+      color: #9cbcff;
+      text-decoration: none;
+      font-weight: 800;
+    }
+    .footer a:hover { text-decoration: underline; }
     .log {
       margin-top: 18px;
       border: 1px solid var(--line);
@@ -285,6 +297,10 @@ def _html() -> str:
     </section>
     <nav class="downloads" id="downloads"></nav>
     <pre class="log" id="log">Processing log will appear here.</pre>
+    <footer class="footer">
+      DeepSky Built By
+      <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a>
+    </footer>
   </main>
   <script>
     const drop = document.getElementById("drop");
