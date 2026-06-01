@@ -59,6 +59,13 @@ jobs:
 
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
           Start-Sleep -Seconds 3
+          Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe'" |
+            Where-Object { $_.CommandLine -like "*uvicorn*app.web_app*" } |
+            ForEach-Object {
+              Write-Host "Stopping old DeepSky web process $($_.ProcessId): $($_.CommandLine)"
+              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+
           $listeners = C:\Windows\System32\netstat.exe -ano | Select-String ":8000" | ForEach-Object {
             $parts = ($_ -split "\s+") | Where-Object { $_ }
             if ($parts.Length -ge 5 -and $parts[3] -eq "LISTENING") { [int]$parts[4] }
