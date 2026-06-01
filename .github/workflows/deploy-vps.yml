@@ -38,18 +38,25 @@ jobs:
         shell: powershell
         run: |
           $repoPath = "C:\Apps\deepskyv2"
-          $sourceWebApp = "$env:GITHUB_WORKSPACE\DeepSky\app\web_app.py"
+          $sourceApp = "$env:GITHUB_WORKSPACE\DeepSky\app"
+          $sourceWebApp = "$sourceApp\web_app.py"
+          $liveApp = "$repoPath\DeepSky\app"
           $liveWebApp = "$repoPath\DeepSky\app\web_app.py"
 
           Write-Host "Deploying web UI source:"
-          Write-Host "  from: $sourceWebApp"
-          Write-Host "  to:   $liveWebApp"
+          Write-Host "  source app: $sourceApp"
+          Write-Host "  live app:   $liveApp"
 
-          if (-not (Test-Path -LiteralPath "$repoPath\DeepSky\app")) {
-            throw "Live app folder not found: $repoPath\DeepSky\app"
+          New-Item -ItemType Directory -Force -Path $liveApp | Out-Null
+
+          Get-ChildItem -LiteralPath $sourceApp -File -Filter *.py | ForEach-Object {
+            $destination = Join-Path $liveApp $_.Name
+            Write-Host "Copying $($_.FullName) -> $destination"
+            Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
           }
 
-          Copy-Item -LiteralPath $sourceWebApp -Destination $liveWebApp -Force
+          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\DeepSky\requirements.txt" -Destination "$repoPath\DeepSky\requirements.txt" -Force
+          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force -ErrorAction SilentlyContinue
 
           if (-not (Select-String -LiteralPath $liveWebApp -Pattern "DeepSky Built By" -Quiet)) {
             throw "Live web_app.py does not contain the footer marker after deploy."
