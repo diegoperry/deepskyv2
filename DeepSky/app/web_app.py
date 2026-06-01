@@ -12,12 +12,13 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
 from .input_analysis import analyze_input_stretch
-from .image_io import SUPPORTED_INPUTS
+from .image_io import SUPPORTED_INPUTS, make_preview
 from .pipeline import PipelineMode, run_pipeline
 from .settings import PROJECT_ROOT, default_settings, load_settings
 
 
 UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "web_uploads"
+PREVIEW_ROOT = UPLOAD_ROOT / "previews"
 MAX_WORKERS = 1
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
@@ -259,7 +260,14 @@ def _html() -> str:
             <option value="Star Cluster">Star Cluster</option>
           </select>
         </label>
-        <button id="preStretched" class="mode" type="button" aria-pressed="false">Pre-stretched</button>
+        <label class="select">
+          Input
+          <select id="inputMode">
+            <option value="Auto" selected>Auto</option>
+            <option value="Linear">Linear</option>
+            <option value="Pre-stretched">Pre-stretched</option>
+          </select>
+        </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div id="warning" class="warning"></div>
@@ -284,7 +292,7 @@ def _html() -> str:
     const fileName = document.getElementById("fileName");
     const run = document.getElementById("run");
     const objectType = document.getElementById("objectType");
-    const preStretched = document.getElementById("preStretched");
+    const inputMode = document.getElementById("inputMode");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const logEl = document.getElementById("log");
@@ -293,45 +301,66 @@ def _html() -> str:
     const downloads = document.getElementById("downloads");
     let selectedFile = null;
     let activeJob = null;
-    let isPreStretched = false;
+    let previewRequest = 0;
 
-    function setFile(file) {
+    async function setFile(file) {
       selectedFile = file;
+      const requestId = ++previewRequest;
       fileName.textContent = file ? file.name : "Supports FITS and TIFF formats up to 50 MB";
       const tooLarge = file && file.size > 50 * 1024 * 1024;
       run.disabled = !file || tooLarge;
-      beforeFrame.innerHTML = file ? '<span class="empty">Preview will appear after upload</span>' : '<span class="empty">No image selected</span>';
+      beforeFrame.innerHTML = file ? '<span class="empty">Loading preview</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
-      statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 50 MB." : file ? "Ready to run full pipeline." : "Choose a file to begin.";
+      statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 50 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
       warningEl.style.display = "none";
       warningEl.textContent = "";
-      if (isPreStretched) {
+      if (inputMode.value === "Pre-stretched") {
         warningEl.style.display = "block";
         warningEl.textContent = "Pre-stretched mode is on. DeepSky will skip its stretch/color-stretch stage and process the image as already stretched.";
+      } else if (inputMode.value === "Auto") {
+        warningEl.style.display = "block";
+        warningEl.textContent = "Auto input mode is on. DeepSky will choose linear, gentle SeeStar-safe stretch, or pre-stretched processing from the file histogram.";
+      }
+      if (!file || tooLarge) return;
+      try {
+        const data = new FormData();
+        data.append("file", file);
+        const res = await fetch("/api/preview", { method: "POST", body: data });
+        if (requestId !== previewRequest) return;
+        if (!res.ok) throw new Error(await res.text());
+        const preview = await res.json();
+        beforeFrame.innerHTML = `<img src="${preview.preview_url}&t=${Date.now()}" alt="Before preview">`;
+        statusEl.textContent = "Ready to run full pipeline.";
+      } catch (error) {
+        if (requestId !== previewRequest) return;
+        beforeFrame.innerHTML = '<span class="empty">Preview unavailable</span>';
+        statusEl.textContent = "Ready to run full pipeline.";
+        warningEl.style.display = "block";
+        warningEl.textContent = `Preview could not be generated yet. ${error.message || error}`;
       }
     }
 
-    preStretched.addEventListener("click", () => {
-      isPreStretched = !isPreStretched;
-      preStretched.classList.toggle("active", isPreStretched);
-      preStretched.setAttribute("aria-pressed", String(isPreStretched));
-      if (isPreStretched) {
+    inputMode.addEventListener("change", () => {
+      if (inputMode.value === "Pre-stretched") {
         warningEl.style.display = "block";
         warningEl.textContent = "Pre-stretched mode is on. DeepSky will skip its stretch/color-stretch stage and process the image as already stretched.";
+      } else if (inputMode.value === "Auto") {
+        warningEl.style.display = "block";
+        warningEl.textContent = "Auto input mode is on. DeepSky will choose linear, gentle SeeStar-safe stretch, or pre-stretched processing from the file histogram.";
       } else {
         warningEl.style.display = "none";
         warningEl.textContent = "";
       }
     });
 
-    fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
+    fileInput.addEventListener("change", () => { void setFile(fileInput.files[0]); });
     drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.classList.add("drag"); });
     drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
     drop.addEventListener("drop", (event) => {
       event.preventDefault();
       drop.classList.remove("drag");
-      if (event.dataTransfer.files.length) setFile(event.dataTransfer.files[0]);
+      if (event.dataTransfer.files.length) void setFile(event.dataTransfer.files[0]);
     });
 
     async function poll(jobId) {
@@ -344,7 +373,7 @@ def _html() -> str:
       }
       logEl.textContent = job.log?.length ? job.log.join("\\n") : "Processing...";
       logEl.scrollTop = logEl.scrollHeight;
-      if (job.before_preview) {
+      if (job.before_preview && !beforeFrame.querySelector("img")) {
         beforeFrame.innerHTML = `<img src="${job.before_preview}&t=${Date.now()}" alt="Before preview">`;
       }
       if (job.after_preview) {
@@ -378,7 +407,8 @@ def _html() -> str:
       const data = new FormData();
       data.append("file", selectedFile);
       data.append("object_type", objectType.value);
-      data.append("pre_stretched", isPreStretched ? "true" : "false");
+      data.append("input_mode", inputMode.value);
+      data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       const res = await fetch("/api/jobs", { method: "POST", body: data });
       if (!res.ok) {
         statusEl.textContent = await res.text();
@@ -415,7 +445,13 @@ def _job_response(job: WebJob) -> dict[str, Any]:
     return payload
 
 
-def _run_job(job_id: str, input_path: Path, pre_stretched: bool = False, object_type: str = "Nebula") -> None:
+def _run_job(
+    job_id: str,
+    input_path: Path,
+    pre_stretched: bool = False,
+    object_type: str = "Nebula",
+    input_mode: str = "Auto",
+) -> None:
     with jobs_lock:
         job = jobs[job_id]
         job.status = "running"
@@ -436,17 +472,21 @@ def _run_job(job_id: str, input_path: Path, pre_stretched: bool = False, object_
                     jobs[job_id].log.append(f"Input stretch analysis: {metrics}")
             else:
                 write_log(f"Input stretch analysis: {analysis.message} ({metrics})")
+            write_log(f"Auto input recommendation: {analysis.recommended_mode} ({analysis.recommended_reason}).")
         except Exception as exc:
             write_log(f"Input stretch analysis skipped: {exc}")
 
         settings = load_settings()
         defaults = default_settings()
         settings.output_folder = str(PROJECT_ROOT / "outputs")
-        settings.prestretched_input = pre_stretched
+        mode = input_mode if input_mode in {"Auto", "Linear", "Pre-stretched"} else "Auto"
+        if pre_stretched and mode == "Auto":
+            mode = "Pre-stretched"
+        settings.input_processing_mode = mode
+        settings.prestretched_input = mode == "Pre-stretched"
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         write_log(f"Selected object type: {settings.object_type}")
-        if pre_stretched:
-            write_log("Pre-stretched upload flag received from UI.")
+        write_log(f"Selected input mode: {settings.input_processing_mode}")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
             if not Path(getattr(settings, attr)).exists():
                 setattr(settings, attr, getattr(defaults, attr))
@@ -467,11 +507,55 @@ def index() -> str:
     return _html()
 
 
+@app.post("/api/preview")
+async def create_preview(file: UploadFile = File(...)) -> dict[str, str]:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SUPPORTED_INPUTS:
+        raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
+    content_length = file.headers.get("content-length")
+    if content_length and int(content_length) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
+
+    PREVIEW_ROOT.mkdir(parents=True, exist_ok=True)
+    preview_id = uuid.uuid4().hex
+    preview_dir = PREVIEW_ROOT / preview_id
+    preview_dir.mkdir(parents=True, exist_ok=False)
+    input_path = preview_dir / Path(file.filename or f"preview{suffix}").name
+    total = 0
+    with input_path.open("wb") as handle:
+        while chunk := file.file.read(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                shutil.rmtree(preview_dir, ignore_errors=True)
+                raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
+            handle.write(chunk)
+
+    preview_path = preview_dir / "before_preview.png"
+    try:
+        make_preview(input_path, preview_path)
+    except Exception as exc:
+        shutil.rmtree(preview_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
+    return {"preview_url": f"/api/previews/{preview_id}?inline=1"}
+
+
+@app.get("/api/previews/{preview_id}")
+def get_preview(preview_id: str, inline: int = 1) -> FileResponse:
+    if not preview_id or any(ch not in "0123456789abcdef" for ch in preview_id):
+        raise HTTPException(status_code=404, detail="Preview not found.")
+    preview_path = PREVIEW_ROOT / preview_id / "before_preview.png"
+    if not preview_path.exists():
+        raise HTTPException(status_code=404, detail="Preview not found.")
+    disposition = "inline" if inline else "attachment"
+    return FileResponse(preview_path, media_type="image/png", filename="before_preview.png", content_disposition_type=disposition)
+
+
 @app.post("/api/jobs")
 async def create_job(
     file: UploadFile = File(...),
     object_type: str = Form("Nebula"),
     pre_stretched: bool = Form(False),
+    input_mode: str = Form("Auto"),
 ) -> dict[str, str]:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
@@ -501,7 +585,7 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
             )
-    executor.submit(_run_job, job_id, input_path, pre_stretched, object_type)
+    executor.submit(_run_job, job_id, input_path, pre_stretched, object_type, input_mode)
     return {"id": job_id}
 
 

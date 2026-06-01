@@ -33,6 +33,7 @@ class AppSettings:
     galaxy_background_darkness: int
     galaxy_chroma_noise_reduction: int
     galaxy_protect_detail: bool
+    input_processing_mode: str
     prestretched_input: bool
     object_type: str
 
@@ -67,6 +68,7 @@ def default_settings() -> AppSettings:
         galaxy_background_darkness=90,
         galaxy_chroma_noise_reduction=96,
         galaxy_protect_detail=True,
+        input_processing_mode="Auto",
         prestretched_input=False,
         object_type="Nebula",
     )

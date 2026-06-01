@@ -14,6 +14,8 @@ class StretchAnalysis:
     confidence: str
     message: str
     metrics: dict[str, float]
+    recommended_mode: str
+    recommended_reason: str
 
 
 def _luminance(image: np.ndarray) -> np.ndarray:
@@ -65,6 +67,16 @@ def analyze_input_stretch(path: Path) -> StretchAnalysis:
     if bright_fraction > 0.005 and dynamic_width < 0.96:
         score += 1
 
+    if score >= 5 or (p50 > 0.075 and background_lift > 0.04 and shadow_fraction < 0.40):
+        recommended_mode = "pre_stretched"
+        recommended_reason = "hard-stretched histogram; skip the main stretch to avoid noise and blown highlights"
+    elif score >= 3:
+        recommended_mode = "gentle_stretch"
+        recommended_reason = "soft-stretched/SeeStar-like histogram; use a gentle stretch instead of full linear stretch"
+    else:
+        recommended_mode = "linear"
+        recommended_reason = "linear/raw-style histogram; use the normal stretch"
+
     likely_stretched = score >= 3
     confidence = "high" if score >= 5 else "medium" if score >= 3 else "low"
     if likely_stretched:
@@ -91,4 +103,6 @@ def analyze_input_stretch(path: Path) -> StretchAnalysis:
             "midtone_fraction": midtone_fraction,
             "score": float(score),
         },
+        recommended_mode=recommended_mode,
+        recommended_reason=recommended_reason,
     )

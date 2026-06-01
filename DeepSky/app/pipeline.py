@@ -69,6 +69,15 @@ def _normalized_object_type(settings: AppSettings) -> str:
     return "nebula"
 
 
+def _normalized_input_mode(settings: AppSettings) -> str:
+    value = getattr(settings, "input_processing_mode", "Auto").strip().lower()
+    if value in {"pre-stretched", "pre_stretched", "prestretched"}:
+        return "pre_stretched"
+    if value == "linear":
+        return "linear"
+    return "auto"
+
+
 def _apply_broadband_background_cleanup(
     image: np.ndarray,
     job_folder: Path,
@@ -278,6 +287,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     shutil.copy2(input_path, original)
     write_log(f"Copied original: {original.name}")
     _log_existing_image(original, write_log, "original")
+    analysis = None
     try:
         analysis = analyze_input_stretch(original)
         metrics = ", ".join(f"{key}={value:.4f}" for key, value in analysis.metrics.items())
@@ -286,6 +296,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             write_log(f"Input stretch analysis: {metrics}")
         else:
             write_log(f"Input stretch analysis: {analysis.message} ({metrics})")
+        write_log(f"Auto input recommendation: {analysis.recommended_mode} ({analysis.recommended_reason}).")
     except Exception as exc:
         write_log(f"Input stretch analysis skipped: {exc}")
 
@@ -304,7 +315,20 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     convert_to_working_tiff(original, working, write_log)
     _log_existing_image(working, write_log, "working.tif")
 
-    if settings.prestretched_input:
+    input_mode = _normalized_input_mode(settings)
+    use_prestretched = bool(getattr(settings, "prestretched_input", False)) or input_mode == "pre_stretched"
+    use_gentle_stretch = False
+    if input_mode == "auto" and analysis is not None:
+        use_prestretched = analysis.recommended_mode == "pre_stretched"
+        use_gentle_stretch = analysis.recommended_mode == "gentle_stretch"
+        write_log(f"Auto input mode selected: {analysis.recommended_mode}.")
+    elif input_mode == "linear":
+        use_prestretched = False
+        write_log("Manual input mode selected: linear.")
+    elif use_prestretched:
+        write_log("Manual input mode selected: pre-stretched.")
+
+    if use_prestretched:
         object_type = _normalized_object_type(settings)
         write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril initial stretch.")
         write_log(f"Applying pre-stretched object finish for: {object_type}")
@@ -320,6 +344,19 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             shutil.copy2(working, calibrated)
         shutil.copy2(calibrated, stretched)
         _log_existing_image(stretched, write_log, "stretched.tif")
+        _log_existing_image(calibrated, write_log, "calibrated.tif")
+    elif use_gentle_stretch:
+        write_log("Applying gentle SeeStar-safe stretch.")
+        stretched_image = astrophotography_stretch(load_image(working, write_log), strength="gentle")
+        save_tiff(stretched, stretched_image, write_log)
+        _log_existing_image(stretched, write_log, "stretched.tif")
+        object_type = _normalized_object_type(settings)
+        if object_type in {"galaxy", "star cluster"}:
+            write_log(f"Applying gentle-stretch broadband finish for: {object_type}.")
+            calibrated_image = apply_prestretched_broadband_look(stretched_image, write_log)
+            save_tiff(calibrated, calibrated_image, write_log)
+        else:
+            shutil.copy2(stretched, calibrated)
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif mode == PipelineMode.STRETCH:
         write_log("Applying local astrophotography stretch.")

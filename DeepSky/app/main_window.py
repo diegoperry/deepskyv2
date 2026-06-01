@@ -378,6 +378,7 @@ class MainWindow(QMainWindow):
             galaxy_background_darkness=self.background_darkness_slider.value(),
             galaxy_chroma_noise_reduction=self.chroma_noise_slider.value(),
             galaxy_protect_detail=self.protect_galaxy_check.isChecked(),
+            input_processing_mode=getattr(self.settings, "input_processing_mode", "Auto"),
             prestretched_input=False,
             object_type=getattr(self.settings, "object_type", "Nebula"),
         )
