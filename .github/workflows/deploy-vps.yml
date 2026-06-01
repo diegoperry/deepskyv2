@@ -24,26 +24,34 @@ jobs:
             $git = "git"
           }
 
+          function Invoke-Git {
+            & $git @args
+            if ($LASTEXITCODE -ne 0) {
+              throw "git $args failed with exit code $LASTEXITCODE"
+            }
+          }
+
           New-Item -ItemType Directory -Force C:\Apps | Out-Null
 
           if (-not (Test-Path "$repoPath\.git")) {
             if (Test-Path $repoPath) {
               Remove-Item -LiteralPath $repoPath -Recurse -Force
             }
-            & $git clone https://github.com/diegoperry/deepskyv2.git $repoPath
+            Invoke-Git clone https://github.com/diegoperry/deepskyv2.git $repoPath
           }
 
           cd $repoPath
-          & $git fetch origin main
-          & $git reset --hard origin/main
-          & $git status --short
-          & $git rev-parse --short HEAD
+          Invoke-Git fetch origin main
+          Invoke-Git reset --hard origin/main
+          Invoke-Git status --short
+          Invoke-Git rev-parse --short HEAD
 
           & $git lfs version
           if ($LASTEXITCODE -eq 0) {
-            & $git lfs pull
+            Invoke-Git lfs pull
           } else {
             Write-Host "Git LFS is not installed on the runner; skipping git lfs pull."
+            $global:LASTEXITCODE = 0
           }
 
       - name: Install Python dependencies
