@@ -1,0 +1,33 @@
+name: Deploy DeepSky VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Pull latest code on VPS
+        shell: powershell
+        run: |
+          cd C:\Apps\deepskyv2
+          git pull
+          git lfs pull
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          $env:Path = "C:\Python311\pkg\tools;C:\Python311\pkg\tools\Scripts;$env:Path"
+          cd C:\Apps\deepskyv2\DeepSky
+          python -m pip install -r requirements.txt
+
+      - name: Restart DeepSky web app
+        shell: powershell
+        run: |
+          C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
+          Start-Sleep -Seconds 3
+          C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
+          Write-Host "DeepSky deployed and restarted."
