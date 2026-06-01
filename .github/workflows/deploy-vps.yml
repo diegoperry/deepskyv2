@@ -35,4 +35,6 @@ jobs:
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
           timeout /t 3 /nobreak
           C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
+          timeout /t 5 /nobreak
+          C:\Windows\System32\netstat.exe -ano | C:\Windows\System32\findstr.exe :8000
           echo DeepSky deployed and restarted.
