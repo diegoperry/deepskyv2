@@ -54,6 +54,11 @@ jobs:
             Copy-Item -LiteralPath "$source\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force -ErrorAction SilentlyContinue
             Copy-Item -LiteralPath "$source\README.md" -Destination "$repoPath\README.md" -Force -ErrorAction SilentlyContinue
           }
+
+          $deployedWebApp = "$repoPath\DeepSky\app\web_app.py"
+          if (-not (Select-String -LiteralPath $deployedWebApp -Pattern "DeepSky Built By" -Quiet)) {
+            throw "Deployed web_app.py does not contain the footer marker."
+          }
           exit 0
 
       - name: Install Python dependencies
@@ -70,8 +75,30 @@ jobs:
       - name: Restart DeepSky web app
         shell: powershell
         run: |
+          $repoPath = "C:\Apps\deepskyv2"
+          $python = "C:\Python311\pkg\tools\python.exe"
+          if (-not (Test-Path $python)) {
+            $python = "python"
+          }
+
+          $launcher = "$repoPath\run_deepsky_web.cmd"
+          Set-Content -LiteralPath $launcher -Encoding ASCII -Value @(
+            "@echo off",
+            "cd /d ""$repoPath\DeepSky""",
+            """$python"" -m uvicorn app.web_app:app --host 127.0.0.1 --port 8000 --log-level info >> ""$repoPath\deepsky-web.log"" 2>> ""$repoPath\deepsky-web.err.log"""
+          )
+
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
           Start-Sleep -Seconds 3
+          $listeners = C:\Windows\System32\netstat.exe -ano | Select-String ":8000" | ForEach-Object {
+            $parts = ($_ -split "\s+") | Where-Object { $_ }
+            if ($parts.Length -ge 5 -and $parts[3] -eq "LISTENING") { [int]$parts[4] }
+          }
+          foreach ($pidToStop in $listeners | Select-Object -Unique) {
+            Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue
+          }
+
+          C:\Windows\System32\schtasks.exe /Create /TN "DeepSky Web App" /SC ONCE /ST 23:59 /TR $launcher /F
           C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
           Start-Sleep -Seconds 5
           C:\Windows\System32\netstat.exe -ano | C:\Windows\System32\findstr.exe :8000
