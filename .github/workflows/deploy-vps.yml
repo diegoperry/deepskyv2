@@ -16,23 +16,23 @@ jobs:
 
     steps:
       - name: Pull latest code on VPS
-        shell: powershell
+        shell: cmd
         run: |
-          cd C:\Apps\deepskyv2
-          git pull origin main
-          git lfs pull
+          cd /d C:\Apps\deepskyv2
+          "C:\Program Files\Git\cmd\git.exe" fetch origin main
+          "C:\Program Files\Git\cmd\git.exe" reset --hard origin/main
+          "C:\Program Files\Git\cmd\git.exe" lfs pull
 
       - name: Install Python dependencies
-        shell: powershell
+        shell: cmd
         run: |
-          $env:Path = "C:\Python311\pkg\tools;C:\Python311\pkg\tools\Scripts;$env:Path"
-          cd C:\Apps\deepskyv2\DeepSky
-          python -m pip install -r requirements.txt
+          cd /d C:\Apps\deepskyv2\DeepSky
+          C:\Python311\pkg\tools\python.exe -m pip install -r requirements.txt
 
       - name: Restart DeepSky web app
-        shell: powershell
+        shell: cmd
         run: |
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
-          Start-Sleep -Seconds 3
+          timeout /t 3 /nobreak
           C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
-          Write-Host "DeepSky deployed and restarted."
+          echo DeepSky deployed and restarted.
