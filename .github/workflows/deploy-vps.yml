@@ -15,26 +15,101 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Update VPS repo
-        shell: powershell
-        run: |
-          cd C:\Apps\deepskyv2
-          git fetch origin main
-          git reset --hard origin/main
-          git lfs pull
+      - name: Checkout latest code
+        uses: actions/checkout@v4
+        with:
+          lfs: false
 
-      - name: Install dependencies
+      - name: Verify checked out web UI source
         shell: powershell
         run: |
+          $sourceWebApp = "$env:GITHUB_WORKSPACE\DeepSky\app\web_app.py"
+          Write-Host "Checked out web app source: $sourceWebApp"
+
+          if (-not (Test-Path -LiteralPath $sourceWebApp)) {
+            throw "Missing checked out web_app.py at $sourceWebApp"
+          }
+
+          if (-not (Select-String -LiteralPath $sourceWebApp -Pattern "DeepSky Built By" -Quiet)) {
+            throw "Checked out web_app.py does not contain the footer marker."
+          }
+
+      - name: Deploy to live VPS source path
+        shell: powershell
+        run: |
+          $repoPath = "C:\Apps\deepskyv2"
+          $sourceWebApp = "$env:GITHUB_WORKSPACE\DeepSky\app\web_app.py"
+          $liveWebApp = "$repoPath\DeepSky\app\web_app.py"
+
+          Write-Host "Deploying web UI source:"
+          Write-Host "  from: $sourceWebApp"
+          Write-Host "  to:   $liveWebApp"
+
+          if (-not (Test-Path -LiteralPath "$repoPath\DeepSky\app")) {
+            throw "Live app folder not found: $repoPath\DeepSky\app"
+          }
+
+          Copy-Item -LiteralPath $sourceWebApp -Destination $liveWebApp -Force
+
+          if (-not (Select-String -LiteralPath $liveWebApp -Pattern "DeepSky Built By" -Quiet)) {
+            throw "Live web_app.py does not contain the footer marker after deploy."
+          }
+
+          Write-Host "Verified footer marker in live source file: $liveWebApp"
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          $python = "C:\Python311\pkg\tools\python.exe"
+          if (-not (Test-Path -LiteralPath $python)) {
+            $python = "python"
+          }
+
           cd C:\Apps\deepskyv2\DeepSky
-          python -m pip install -r requirements.txt
+          & $python -m pip install -r requirements.txt
 
-      - name: Restart DeepSky
+      - name: Restart DeepSky web app
         shell: powershell
         run: |
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
-          Start-Sleep -Seconds 5
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Scheduled task was not already running, continuing."
+            $global:LASTEXITCODE = 0
+          }
+
+          Start-Sleep -Seconds 3
+
+          Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe'" |
+            Where-Object { $_.CommandLine -like "*uvicorn*app.web_app*" } |
+            ForEach-Object {
+              Write-Host "Stopping stale DeepSky web process $($_.ProcessId): $($_.CommandLine)"
+              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+
+          $listeners = C:\Windows\System32\netstat.exe -ano | Select-String ":8000" | ForEach-Object {
+            $parts = ($_ -split "\s+") | Where-Object { $_ }
+            if ($parts.Length -ge 5 -and $parts[3] -eq "LISTENING") { [int]$parts[4] }
+          }
+          foreach ($pidToStop in $listeners | Select-Object -Unique) {
+            Write-Host "Stopping process listening on 8000: $pidToStop"
+            Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue
+          }
+
           C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
-          Start-Sleep -Seconds 5
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to start scheduled task DeepSky Web App."
+          }
+
+          Start-Sleep -Seconds 8
+
           C:\Windows\System32\netstat.exe -ano | C:\Windows\System32\findstr.exe :8000
-          Write-Host "DeepSky deployed and restarted."
+          if ($LASTEXITCODE -ne 0) {
+            throw "DeepSky did not start listening on port 8000."
+          }
+
+          $html = (Invoke-WebRequest -Uri "http://127.0.0.1:8000/?v=$env:GITHUB_SHA" -UseBasicParsing -TimeoutSec 20).Content
+          if (-not $html.Contains("DeepSky Built By")) {
+            throw "Restarted local DeepSky app did not serve the footer marker."
+          }
+
+          Write-Host "DeepSky deployed, restarted, and verified on localhost:8000."
