@@ -34,15 +34,16 @@ jobs:
 
           $sourceApp = [System.IO.Path]::GetFullPath("$source\DeepSky\app")
           $destApp = [System.IO.Path]::GetFullPath("$repoPath\DeepSky\app")
+          New-Item -ItemType Directory -Force $destApp | Out-Null
 
           if ($sourceApp.TrimEnd('\') -ieq $destApp.TrimEnd('\')) {
             Write-Host "Runner workspace is already the deploy path; skipping file sync."
           } else {
-            C:\Windows\System32\robocopy.exe $sourceApp $destApp /MIR /XD __pycache__
-            if ($LASTEXITCODE -gt 7) {
-              throw "robocopy DeepSky\app failed with exit code $LASTEXITCODE"
+            Get-ChildItem -LiteralPath $sourceApp -File -Filter *.py | ForEach-Object {
+              $destination = Join-Path $destApp $_.Name
+              Write-Host "Copying $($_.FullName) -> $destination"
+              Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
             }
-            $global:LASTEXITCODE = 0
 
             Copy-Item -LiteralPath "$source\DeepSky\requirements.txt" -Destination "$repoPath\DeepSky\requirements.txt" -Force
             Copy-Item -LiteralPath "$source\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force
