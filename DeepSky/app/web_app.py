@@ -255,7 +255,7 @@ def _html() -> str:
     <section class="hero">
       <div class="pill">● DeepSky Astrophotography Pipeline v1.0</div>
       <h1>Process the <span class="cosmos">Cosmos</span></h1>
-      <p class="subtitle">Automated deep-sky processing. Drop a FITS or TIFF file, run the full pipeline, and compare the before and after.</p>
+      <p class="subtitle">Turn raw deep-sky captures into processed results in minutes. Upload a FITS or TIFF file, run the full pipeline, and compare the before and after side by side.</p>
       <label id="drop" class="drop">
         <input id="file" type="file" accept=".fits,.fit,.fts,.tif,.tiff" />
         <div>
