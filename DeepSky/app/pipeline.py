@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
+from astropy.io import fits
 
 from .cli_tools import find_executable, run_deepsnr, run_starnet
 from .goal_look import (
@@ -78,6 +79,44 @@ def _normalized_input_mode(settings: AppSettings) -> str:
     return "auto"
 
 
+def _looks_like_seestar_shadow_nebula(input_path: Path, settings: AppSettings, analysis: object | None) -> bool:
+    if _normalized_object_type(settings) != "nebula" or analysis is None:
+        return False
+    metrics = getattr(analysis, "metrics", {})
+    if getattr(analysis, "recommended_mode", "") != "linear":
+        return False
+    if float(metrics.get("shadow_fraction", 0.0)) < 0.995 or float(metrics.get("p99", 1.0)) > 0.006:
+        return False
+
+    try:
+        with fits.open(input_path, memmap=False) as hdul:
+            header = next((hdu.header for hdu in hdul if hdu.data is not None), hdul[0].header)
+            instrument = str(header.get("INSTRUME", "")).lower()
+            target = str(header.get("OBJECT", "")).lower()
+    except Exception:
+        return False
+
+    if "seestar" not in instrument:
+        return False
+    dark_nebula_targets = ("ic 434", "ic434", "horsehead", "b33", "barnard 33")
+    return any(name in target for name in dark_nebula_targets)
+
+
+def _run_local_stretch_calibration(
+    working: Path,
+    stretched: Path,
+    calibrated: Path,
+    write_log: LogCallback,
+    strength: str = "normal",
+) -> Path:
+    stretched_image = astrophotography_stretch(load_image(working, write_log), strength=strength)
+    save_tiff(stretched, stretched_image, write_log)
+    _log_existing_image(stretched, write_log, "stretched.tif")
+    shutil.copy2(stretched, calibrated)
+    _log_existing_image(calibrated, write_log, "calibrated.tif")
+    return calibrated
+
+
 def _apply_broadband_background_cleanup(
     image: np.ndarray,
     job_folder: Path,
@@ -124,12 +163,7 @@ def _run_siril_calibration(
     mode = settings.color_calibration_mode
     if mode == "Off":
         write_log("Color calibration is off; applying local stretch only.")
-        stretched_image = astrophotography_stretch(load_image(working, write_log))
-        save_tiff(stretched, stretched_image, write_log)
-        _log_existing_image(stretched, write_log, "stretched.tif")
-        shutil.copy2(stretched, calibrated)
-        _log_existing_image(calibrated, write_log, "calibrated.tif")
-        return calibrated
+        return _run_local_stretch_calibration(working, stretched, calibrated, write_log)
 
     siril_exe = find_siril_executable(Path(settings.siril_folder))
     if not siril_exe:
@@ -360,13 +394,20 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif mode == PipelineMode.STRETCH:
         write_log("Applying local astrophotography stretch.")
-        stretched_image = astrophotography_stretch(load_image(working, write_log))
-        save_tiff(stretched, stretched_image, write_log)
-        _log_existing_image(stretched, write_log, "stretched.tif")
-        shutil.copy2(stretched, calibrated)
-        _log_existing_image(calibrated, write_log, "calibrated.tif")
+        _run_local_stretch_calibration(working, stretched, calibrated, write_log)
     else:
-        _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
+        if (
+            _normalized_input_mode(settings) == "auto"
+            and settings.color_calibration_mode == "Basic"
+            and _looks_like_seestar_shadow_nebula(original, settings, analysis)
+        ):
+            write_log(
+                "Auto detected a SeeStar linear dark-nebula frame; skipping Siril Basic to avoid "
+                "over-stretching shadow nebulosity and color noise."
+            )
+            _run_local_stretch_calibration(working, stretched, calibrated, write_log)
+        else:
+            _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
 
     current = calibrated
 
