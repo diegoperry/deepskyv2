@@ -32,7 +32,7 @@ jobs:
             throw "Missing live web_app.py at $webApp"
           }
 
-          if (-not (Select-String -LiteralPath $webApp -Pattern "DeepSky Built By" -Quiet)) {
+          if (-not (Select-String -LiteralPath $webApp -Pattern "DeepSky Processor Built By" -Quiet)) {
             throw "Live web_app.py does not contain footer marker."
           }
 
@@ -64,7 +64,7 @@ jobs:
 
           $html = (Invoke-WebRequest -Uri "http://127.0.0.1:8000/?v=$env:GITHUB_SHA" -UseBasicParsing -TimeoutSec 20).Content
 
-          if (-not $html.Contains("DeepSky Built By")) {
+          if (-not $html.Contains("DeepSky Processor Built By")) {
             throw "Local DeepSky app did not serve the footer marker after restart."
           }
 
