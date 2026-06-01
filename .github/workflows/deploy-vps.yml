@@ -47,8 +47,21 @@ jobs:
       - name: Restart DeepSky web app
         shell: powershell
         run: |
-          C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App" 2>$null
-          Start-Sleep -Seconds 5
+          $appRoot = "C:\Apps\deepskyv2\DeepSky"
+          $pythonExe = "C:\Python311\pkg\tools\python.exe"
+          $logDir = "C:\Apps\deepskyv2\logs"
+          $outLog = Join-Path $logDir "deepsky-web.out.log"
+          $errLog = Join-Path $logDir "deepsky-web.err.log"
+
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
+          Write-Host "Stopping any process listening on port 8000..."
+          Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            ForEach-Object {
+              Write-Host "Stopping port 8000 process $_"
+              Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+            }
 
           Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe'" |
             Where-Object { $_.CommandLine -like "*uvicorn*app.web_app*" -or $_.CommandLine -like "*C:\Apps\deepskyv2\DeepSky*" } |
@@ -57,7 +70,19 @@ jobs:
               Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
             }
 
-          C:\Windows\System32\schtasks.exe /Run /TN "DeepSky Web App"
+          Start-Sleep -Seconds 3
+
+          Write-Host "Starting DeepSky web app from $appRoot..."
+          $process = Start-Process `
+            -FilePath $pythonExe `
+            -ArgumentList @("-m", "uvicorn", "app.web_app:app", "--host", "127.0.0.1", "--port", "8000") `
+            -WorkingDirectory $appRoot `
+            -RedirectStandardOutput $outLog `
+            -RedirectStandardError $errLog `
+            -WindowStyle Hidden `
+            -PassThru
+
+          Write-Host "Started DeepSky process $($process.Id)"
 
           $served = $false
           for ($attempt = 1; $attempt -le 12; $attempt++) {
