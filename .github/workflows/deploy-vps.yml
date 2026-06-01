@@ -20,46 +20,15 @@ jobs:
         with:
           lfs: false
 
-      - name: Sync latest code on VPS
+      - name: Verify checked out code
         shell: powershell
         run: |
-          $ErrorActionPreference = "Continue"
           $source = $env:GITHUB_WORKSPACE
-          $repoPath = "C:\Apps\deepskyv2"
-
           Write-Host "Workspace: $source"
-          Write-Host "Deploy path: $repoPath"
-
-          New-Item -ItemType Directory -Force $repoPath | Out-Null
-          New-Item -ItemType Directory -Force "$repoPath\DeepSky" | Out-Null
-
-          $sourceApp = [System.IO.Path]::GetFullPath("$source\DeepSky\app")
-          $destApp = [System.IO.Path]::GetFullPath("$repoPath\DeepSky\app")
-          New-Item -ItemType Directory -Force $destApp | Out-Null
-
-          if ($sourceApp.TrimEnd('\') -ieq $destApp.TrimEnd('\')) {
-            Write-Host "Runner workspace is already the deploy path; skipping file sync."
-          } else {
-            Get-ChildItem -LiteralPath $sourceApp -File -Filter *.py | ForEach-Object {
-              $destination = Join-Path $destApp $_.Name
-              Write-Host "Copying $($_.FullName) -> $destination"
-              try {
-                Copy-Item -LiteralPath $_.FullName -Destination $destination -Force -ErrorAction Stop
-              } catch {
-                Write-Warning "Could not copy $($_.FullName): $_"
-              }
-            }
-
-            Copy-Item -LiteralPath "$source\DeepSky\requirements.txt" -Destination "$repoPath\DeepSky\requirements.txt" -Force -ErrorAction SilentlyContinue
-            Copy-Item -LiteralPath "$source\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force -ErrorAction SilentlyContinue
-            Copy-Item -LiteralPath "$source\README.md" -Destination "$repoPath\README.md" -Force -ErrorAction SilentlyContinue
+          $webApp = "$source\DeepSky\app\web_app.py"
+          if (-not (Select-String -LiteralPath $webApp -Pattern "DeepSky Built By" -Quiet)) {
+            throw "Checked out web_app.py does not contain the footer marker."
           }
-
-          $deployedWebApp = "$repoPath\DeepSky\app\web_app.py"
-          if (-not (Select-String -LiteralPath $deployedWebApp -Pattern "DeepSky Built By" -Quiet)) {
-            throw "Deployed web_app.py does not contain the footer marker."
-          }
-          exit 0
 
       - name: Install Python dependencies
         shell: powershell
@@ -69,13 +38,13 @@ jobs:
             $python = "python"
           }
 
-          cd C:\Apps\deepskyv2\DeepSky
+          cd "$env:GITHUB_WORKSPACE\DeepSky"
           & $python -m pip install -r requirements.txt
 
       - name: Restart DeepSky web app
         shell: powershell
         run: |
-          $repoPath = "C:\Apps\deepskyv2"
+          $repoPath = $env:GITHUB_WORKSPACE
           $python = "C:\Python311\pkg\tools\python.exe"
           if (-not (Test-Path $python)) {
             $python = "python"
