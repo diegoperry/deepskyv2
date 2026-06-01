@@ -30,12 +30,17 @@ jobs:
           Write-Host "Deploy path: $repoPath"
 
           New-Item -ItemType Directory -Force $repoPath | Out-Null
+          New-Item -ItemType Directory -Force "$repoPath\DeepSky" | Out-Null
 
-          C:\Windows\System32\robocopy.exe $source $repoPath /E /XD .git outputs .venv .build-venv __pycache__ /XF settings.json
+          C:\Windows\System32\robocopy.exe "$source\DeepSky\app" "$repoPath\DeepSky\app" /MIR /XD __pycache__
           if ($LASTEXITCODE -gt 7) {
-            throw "robocopy failed with exit code $LASTEXITCODE"
+            throw "robocopy DeepSky\app failed with exit code $LASTEXITCODE"
           }
           $global:LASTEXITCODE = 0
+
+          Copy-Item -LiteralPath "$source\DeepSky\requirements.txt" -Destination "$repoPath\DeepSky\requirements.txt" -Force
+          Copy-Item -LiteralPath "$source\DeepSky\README.md" -Destination "$repoPath\DeepSky\README.md" -Force
+          Copy-Item -LiteralPath "$source\README.md" -Destination "$repoPath\README.md" -Force -ErrorAction SilentlyContinue
 
       - name: Install Python dependencies
         shell: powershell
