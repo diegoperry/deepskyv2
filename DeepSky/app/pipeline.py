@@ -13,6 +13,7 @@ from .goal_look import (
     apply_broadband_look,
     apply_goal_look,
     apply_prestretched_broadband_look,
+    apply_prestretched_nebula_rgb_reveal,
     blend_broadband_background_denoise,
     chroma_percentile,
     red_emission_dominance,
@@ -350,8 +351,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             calibrated_image = apply_prestretched_broadband_look(source, write_log)
             save_tiff(calibrated, calibrated_image, write_log)
         else:
-            write_log("Pre-stretched nebula selected; preserving uploaded stretch without emission re-stretch.")
-            shutil.copy2(working, calibrated)
+            write_log("Pre-stretched nebula selected; revealing existing RGB pixels without raw re-stretch.")
+            calibrated_image = apply_prestretched_nebula_rgb_reveal(source, write_log)
+            save_tiff(calibrated, calibrated_image, write_log)
         shutil.copy2(calibrated, stretched)
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")

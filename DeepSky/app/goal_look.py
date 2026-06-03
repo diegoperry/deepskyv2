@@ -574,6 +574,141 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     return _to_uint16(rgb)
 
 
+def apply_prestretched_nebula_rgb_reveal(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+
+    source = _to_float01(arr)
+    channels = []
+    lows: list[float] = []
+    highs: list[float] = []
+    for index in range(3):
+        channel = source[..., index]
+        low = float(np.percentile(channel, 0.45))
+        high = float(np.percentile(channel, 99.65))
+        if high <= low:
+            high = low + 1e-6
+        lows.append(low)
+        highs.append(high)
+        channels.append(np.clip((channel - low) / (high - low), 0.0, 1.0))
+    rgb = np.stack(channels, axis=-1).astype(np.float32)
+
+    lum = _luminance(rgb)
+    chroma = np.max(rgb, axis=2) - np.min(rgb, axis=2)
+    hsv = cv2.cvtColor(np.clip(rgb * 255.0, 0, 255).astype(np.uint8), cv2.COLOR_RGB2HSV)
+    saturation = hsv[..., 1].astype(np.float32) / 255.0
+
+    star_mask = np.clip(
+        (lum - np.percentile(lum, 97.4))
+        / max(1e-6, np.percentile(lum, 99.985) - np.percentile(lum, 97.4)),
+        0.0,
+        1.0,
+    ) ** 1.55
+    star_mask = cv2.GaussianBlur(star_mask.astype(np.float32), (0, 0), 0.9)
+
+    extended_lum = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 8.0)
+    signal = np.clip(
+        (extended_lum - np.percentile(extended_lum, 18.0))
+        / max(1e-6, np.percentile(extended_lum, 96.5) - np.percentile(extended_lum, 18.0)),
+        0.0,
+        1.0,
+    ) ** 0.80
+    color_signal = np.clip(
+        (chroma - np.percentile(chroma, 42.0))
+        / max(1e-6, np.percentile(chroma, 98.5) - np.percentile(chroma, 42.0)),
+        0.0,
+        1.0,
+    ) ** 0.72
+    nebula_mask = np.clip(signal * (0.40 + 0.60 * color_signal) * (1.0 - star_mask * 0.88), 0.0, 1.0)
+    nebula_mask = cv2.GaussianBlur(nebula_mask.astype(np.float32), (0, 0), 2.2)
+
+    sky_mask = (
+        (lum < np.percentile(lum, 48.0))
+        & (saturation < np.percentile(saturation, 76.0))
+        & (star_mask < 0.12)
+        & (nebula_mask < 0.22)
+    )
+    gains = np.ones(3, dtype=np.float32)
+    if int(np.count_nonzero(sky_mask)) >= 512:
+        sky = np.median(rgb[sky_mask], axis=0)
+        neutral = float(np.mean(sky))
+        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.72, 1.38).astype(np.float32)
+        balanced = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
+        sky_blend = np.clip(
+            ((np.percentile(lum, 62.0) - lum) / max(1e-6, np.percentile(lum, 62.0) - np.percentile(lum, 1.0)))
+            * (1.0 - star_mask)
+            * (1.0 - nebula_mask * 0.72),
+            0.0,
+            1.0,
+        )
+        sky_blend = cv2.GaussianBlur(sky_blend.astype(np.float32), (0, 0), 3.0)
+        rgb = np.clip(rgb * (1.0 - sky_blend[..., None] * 0.82) + balanced * (sky_blend[..., None] * 0.82), 0.0, 1.0)
+
+    rgb = _suppress_green_excess(rgb, strength=0.62)
+
+    lum = _luminance(rgb)
+    shadow = np.clip(
+        (np.percentile(lum, 32.0) - lum)
+        / max(1e-6, np.percentile(lum, 32.0) - np.percentile(lum, 2.0)),
+        0.0,
+        1.0,
+    )
+    rgb = np.clip(rgb * (1.0 - shadow[..., None] * 0.28), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    chroma_boost = 1.0 + nebula_mask[..., None] * 1.70 + color_signal[..., None] * (1.0 - star_mask[..., None]) * 0.42
+    rgb = np.clip(lum[..., None] + (rgb - lum[..., None]) * chroma_boost, 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    bright_nebula = np.clip(
+        (lum - np.percentile(lum, 58.0))
+        / max(1e-6, np.percentile(lum, 98.2) - np.percentile(lum, 58.0)),
+        0.0,
+        1.0,
+    ) ** 0.9
+    warm_white = lum[..., None] * np.array([1.08, 1.00, 0.90], dtype=np.float32).reshape(1, 1, 3)
+    white_mix = np.clip(nebula_mask[..., None] * bright_nebula[..., None] * 0.30, 0.0, 0.34)
+    rgb = np.clip(rgb * (1.0 - white_mix) + warm_white * white_mix, 0.0, 1.0)
+
+    # Reduce color speckle in the sky only; keep nebula RGB and star color alive.
+    lab = cv2.cvtColor(np.clip(rgb * 255.0, 0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    a_smooth = cv2.bilateralFilter(a_channel, d=7, sigmaColor=16, sigmaSpace=10)
+    b_smooth = cv2.bilateralFilter(b_channel, d=7, sigmaColor=16, sigmaSpace=10)
+    chroma_smoothed = cv2.cvtColor(cv2.merge([l_channel, a_smooth, b_smooth]), cv2.COLOR_LAB2RGB).astype(np.float32) / 255.0
+    sky_float = np.clip(
+        ((np.percentile(lum, 55.0) - lum) / max(1e-6, np.percentile(lum, 55.0) - np.percentile(lum, 1.0)))
+        * (1.0 - nebula_mask)
+        * (1.0 - star_mask),
+        0.0,
+        1.0,
+    )
+    sky_float = cv2.GaussianBlur(sky_float.astype(np.float32), (0, 0), 2.4)
+    rgb = np.clip(rgb * (1.0 - sky_float[..., None] * 0.44) + chroma_smoothed * (sky_float[..., None] * 0.44), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    sky_floor = float(np.percentile(lum[sky_mask], 32.0)) if int(np.count_nonzero(sky_mask)) >= 512 else float(np.percentile(lum, 6.0))
+    darkened = np.clip((rgb - sky_floor * 0.46) / max(1e-6, 1.0 - sky_floor * 0.46), 0.0, 1.0)
+    black_mix = np.clip(sky_float[..., None] * 0.42, 0.0, 0.48)
+    rgb = np.clip(rgb * (1.0 - black_mix) + darkened * black_mix, 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    neutral_star = lum[..., None] + np.clip(rgb - lum[..., None], -0.075, 0.075)
+    rgb = np.clip(rgb * (1.0 - star_mask[..., None] * 0.26) + neutral_star * (star_mask[..., None] * 0.26), 0.0, 1.0)
+
+    if log:
+        log(
+            "Applied pre-stretched nebula RGB reveal: "
+            f"channel_lows={lows[0]:.5f}, {lows[1]:.5f}, {lows[2]:.5f}, "
+            f"channel_highs={highs[0]:.5f}, {highs[1]:.5f}, {highs[2]:.5f}, sky_floor={sky_floor:.5f}, "
+            f"sky_pixels={int(np.count_nonzero(sky_mask))}, "
+            f"sky_gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
+            f"nebula_mask_mean={float(np.mean(nebula_mask)):.5f}, chroma_p95={chroma_percentile(rgb, 95.0):.5f}"
+        )
+    return _to_uint16(rgb)
+
+
 def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: bool = True) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:

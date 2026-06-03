@@ -10,11 +10,12 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
 from .pipeline import PipelineMode, run_pipeline
-from .settings import PROJECT_ROOT, default_settings, load_settings
+from .settings import APP_ROOT, PROJECT_ROOT, default_settings, load_settings
 
 
 UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "web_uploads"
@@ -38,6 +39,303 @@ app = FastAPI(title="DeepSky")
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 jobs: dict[str, WebJob] = {}
 jobs_lock = Lock()
+app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
+
+
+def _landing_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeepSky Processor</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #060a12;
+      --panel: #0b121f;
+      --panel2: #101929;
+      --line: #20304c;
+      --text: #f7fbff;
+      --muted: #91a6ca;
+      --blue: #5c8dff;
+      --violet: #a98cff;
+      --coral: #ff806d;
+      --green: #67e8c9;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 50% -10%, rgba(75, 117, 255, .24), transparent 360px),
+        radial-gradient(circle at 14% 18%, rgba(255, 128, 109, .12), transparent 340px),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: inherit; }
+    .wrap { width: min(1160px, calc(100vw - 40px)); margin: 0 auto; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(6, 10, 18, .78);
+      border-bottom: 1px solid rgba(32, 48, 76, .65);
+      backdrop-filter: blur(14px);
+    }
+    .nav { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { font-weight: 900; letter-spacing: 0; font-size: 20px; }
+    .brand span {
+      background: linear-gradient(90deg, var(--blue), var(--violet), var(--coral));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .navlinks { display: flex; gap: 22px; align-items: center; color: var(--muted); font-weight: 700; font-size: 14px; }
+    .navlinks a { text-decoration: none; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      padding: 0 24px;
+      border-radius: 10px;
+      background: #2f6fe5;
+      color: white;
+      text-decoration: none;
+      font-weight: 900;
+      border: 1px solid rgba(126, 164, 255, .38);
+      box-shadow: 0 14px 36px rgba(47, 111, 229, .24);
+    }
+    .hero {
+      min-height: calc(100vh - 72px);
+      display: grid;
+      align-items: center;
+      padding: 64px 0 42px;
+    }
+    .hero-grid { display: grid; grid-template-columns: 1.02fr .98fr; gap: 46px; align-items: center; }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: #9fc0ff;
+      border: 1px solid rgba(92, 141, 255, .42);
+      background: rgba(17, 29, 54, .72);
+      padding: 7px 13px;
+      border-radius: 999px;
+      font: 13px Consolas, ui-monospace, monospace;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 18px var(--blue); }
+    h1 { margin: 18px 0 0; font-size: clamp(48px, 6.2vw, 86px); line-height: .95; letter-spacing: 0; }
+    .gradient {
+      background: linear-gradient(90deg, var(--blue), var(--violet), var(--coral));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .lead { margin: 22px 0 0; color: var(--muted); font-size: clamp(18px, 2vw, 22px); line-height: 1.55; max-width: 650px; }
+    .hero-actions { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 32px; align-items: center; }
+    .secondary { color: #bfd2f5; text-decoration: none; font-weight: 800; }
+    .trust { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 32px; max-width: 650px; }
+    .trust div { border: 1px solid var(--line); border-radius: 12px; background: rgba(11, 18, 31, .72); padding: 14px; }
+    .trust strong { display: block; font-size: 21px; }
+    .trust span { color: var(--muted); font-size: 13px; }
+    .hero-showcase { border: 1px solid var(--line); border-radius: 18px; background: rgba(10, 16, 28, .78); padding: 14px; box-shadow: 0 30px 80px rgba(0,0,0,.36); }
+    .hero-showcase img { width: 100%; display: block; border-radius: 10px; border: 1px solid #1d2a42; background: #020409; }
+    section { padding: 82px 0; }
+    .section-head { display: grid; gap: 12px; max-width: 760px; margin-bottom: 28px; }
+    h2 { margin: 0; font-size: clamp(34px, 4vw, 54px); line-height: 1.02; letter-spacing: 0; }
+    .section-head p, .copy { color: var(--muted); font-size: 18px; line-height: 1.62; margin: 0; }
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .feature { border: 1px solid var(--line); background: rgba(11, 18, 31, .78); border-radius: 8px; padding: 22px; }
+    .feature h3 { margin: 0 0 10px; font-size: 20px; }
+    .feature p { margin: 0; color: var(--muted); line-height: 1.55; }
+    .comparison-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+    .slider {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      padding: 14px;
+    }
+    .slider h3 { margin: 0 0 12px; font-size: 18px; }
+    .compare {
+      position: relative;
+      aspect-ratio: 4 / 3;
+      overflow: hidden;
+      border: 1px solid #1f2d43;
+      border-radius: 8px;
+      background: #020409;
+    }
+    .compare img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #020409; }
+    .compare .after { clip-path: inset(0 0 0 var(--pos, 50%)); }
+    .handle { position: absolute; top: 0; bottom: 0; left: var(--pos, 50%); width: 2px; background: white; box-shadow: 0 0 18px rgba(255,255,255,.65); }
+    .handle::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      background: #f7fbff;
+      border: 4px solid #2f6fe5;
+    }
+    .compare-labels { position: absolute; inset: 12px 12px auto; display: flex; justify-content: space-between; pointer-events: none; }
+    .compare-labels span { background: rgba(0,0,0,.58); border: 1px solid rgba(255,255,255,.2); border-radius: 999px; padding: 6px 10px; font-weight: 900; font-size: 12px; }
+    .slider input { width: 100%; margin-top: 12px; accent-color: var(--blue); }
+    .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; counter-reset: step; }
+    .step { counter-increment: step; border: 1px solid var(--line); border-radius: 8px; padding: 20px; background: rgba(11,18,31,.75); }
+    .step::before { content: counter(step); display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #2f6fe5; font-weight: 900; margin-bottom: 14px; }
+    .step h3 { margin: 0 0 8px; }
+    .step p { margin: 0; color: var(--muted); line-height: 1.5; }
+    .faq { display: grid; gap: 12px; }
+    details { border: 1px solid var(--line); border-radius: 8px; background: rgba(11, 18, 31, .78); padding: 18px 20px; }
+    summary { cursor: pointer; font-weight: 900; font-size: 18px; }
+    details p { color: var(--muted); line-height: 1.6; margin: 12px 0 0; }
+    .final-cta { text-align: center; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(135deg, rgba(47,111,229,.20), rgba(255,128,109,.12)); padding: 46px 20px; }
+    .final-cta p { margin: 12px auto 26px; max-width: 680px; }
+    footer { border-top: 1px solid rgba(32,48,76,.65); color: #6f86aa; padding: 26px 0; text-align: center; }
+    footer a { color: #9cbcff; text-decoration: none; font-weight: 900; }
+    @media (max-width: 900px) {
+      .hero-grid, .comparison-grid, .features, .steps { grid-template-columns: 1fr; }
+      .hero { min-height: auto; }
+      .trust { grid-template-columns: 1fr; }
+      .navlinks a:not(.button) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap nav">
+      <div class="brand">DeepSky <span>Processor</span></div>
+      <nav class="navlinks">
+        <a href="#results">Results</a>
+        <a href="#how">How it works</a>
+        <a href="#faq">FAQ</a>
+        <a class="button" href="/process">Process An Image</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <div class="eyebrow"><span class="dot"></span> Deep-sky processing in your browser</div>
+          <h1>Turn noisy captures into <span class="gradient">finished space images</span>.</h1>
+          <p class="lead">DeepSky processes FITS and TIFF files with a dedicated astrophotography pipeline for galaxies, nebulae, and star clusters. Upload, run, compare, and download the result.</p>
+          <div class="hero-actions">
+            <a class="button" href="/process">Process An Image</a>
+            <a class="secondary" href="#results">See before and after</a>
+          </div>
+          <div class="trust">
+            <div><strong>50 MB</strong><span>FITS/TIFF uploads</span></div>
+            <div><strong>1 click</strong><span>full pipeline</span></div>
+            <div><strong>RGB</strong><span>color-preserving output</span></div>
+          </div>
+        </div>
+        <div class="hero-showcase">
+          <img src="/static/landing/heart_after.png" alt="Processed emission nebula example">
+        </div>
+      </div>
+    </section>
+    <section id="results">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Built for the messy files real imagers upload.</h2>
+          <p>DeepSky is designed around common SeeStar, FITS, and TIFF workflows: green casts, lifted backgrounds, noisy skies, faint arms, soft nebula structure, and files that may already be stretched.</p>
+        </div>
+        <div class="comparison-grid">
+          <article class="slider">
+            <h3>Emission Nebula</h3>
+            <div class="compare" style="--pos: 50%">
+              <img src="/static/landing/heart_before.png" alt="Before nebula processing">
+              <img class="after" src="/static/landing/heart_after.png" alt="After nebula processing">
+              <div class="handle"></div>
+              <div class="compare-labels"><span>Before</span><span>After</span></div>
+            </div>
+            <input type="range" min="0" max="100" value="50" aria-label="Compare nebula before and after">
+          </article>
+          <article class="slider">
+            <h3>Galaxy</h3>
+            <div class="compare" style="--pos: 50%">
+              <img src="/static/landing/m81_before.png" alt="Before galaxy processing">
+              <img class="after" src="/static/landing/m81_after.png" alt="After galaxy processing">
+              <div class="handle"></div>
+              <div class="compare-labels"><span>Before</span><span>After</span></div>
+            </div>
+            <input type="range" min="0" max="100" value="50" aria-label="Compare galaxy before and after">
+          </article>
+        </div>
+      </div>
+    </section>
+    <section>
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Why use DeepSky?</h2>
+          <p>Astrophotography processing usually means juggling multiple tools, settings, and guesses. DeepSky gives beginners and serious hobbyists a faster first result while keeping the workflow simple.</p>
+        </div>
+        <div class="features">
+          <article class="feature"><h3>Cleaner backgrounds</h3><p>Reduce color speckling and noisy sky while protecting stars and the main target.</p></article>
+          <article class="feature"><h3>Object-aware processing</h3><p>Choose nebula, galaxy, or star cluster so the pipeline uses the right finishing style.</p></article>
+          <article class="feature"><h3>Pre-stretched friendly</h3><p>DeepSky can skip the heavy stretch when an image already has a visible histogram.</p></article>
+          <article class="feature"><h3>Color preservation</h3><p>RGB files stay RGB through preview, processing, and output.</p></article>
+          <article class="feature"><h3>FITS and TIFF support</h3><p>Upload common astronomy formats without converting files by hand first.</p></article>
+          <article class="feature"><h3>Downloadable results</h3><p>Save the final TIFF and processing log after each run.</p></article>
+        </div>
+      </div>
+    </section>
+    <section id="how">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>From upload to result in minutes.</h2>
+        </div>
+        <div class="steps">
+          <article class="step"><h3>Upload</h3><p>Drop a FITS or TIFF file and preview it immediately.</p></article>
+          <article class="step"><h3>Choose target</h3><p>Select nebula, galaxy, or star cluster for the right processing profile.</p></article>
+          <article class="step"><h3>Run pipeline</h3><p>DeepSky stretches, calibrates color, denoises, and prepares the final image.</p></article>
+          <article class="step"><h3>Compare</h3><p>Review before and after side by side, then download the finished TIFF.</p></article>
+        </div>
+      </div>
+    </section>
+    <section id="faq">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>FAQ</h2>
+        </div>
+        <div class="faq">
+          <details open><summary>What files can I upload?</summary><p>DeepSky currently accepts FITS, FIT, FTS, TIF, and TIFF files up to 50 MB.</p></details>
+          <details><summary>Does it work with SeeStar files?</summary><p>Yes. DeepSky is being tuned around real SeeStar-style FITS and TIFF uploads, including both linear and already-stretched files.</p></details>
+          <details><summary>Is this catalog photometric color calibration?</summary><p>When Siril PCC is available and the file has enough metadata, catalog-based star color calibration can be used. Otherwise DeepSky uses pixel-based background and star balancing.</p></details>
+          <details><summary>Will it replace manual processing?</summary><p>No. It is meant to produce a strong first processed result quickly, especially for users who do not want to spend hours tuning multiple astronomy tools.</p></details>
+          <details><summary>Do I need an account?</summary><p>No account or paid tier is required yet. The current version is focused on letting users process an image.</p></details>
+        </div>
+      </div>
+    </section>
+    <section>
+      <div class="wrap final-cta">
+        <h2>Ready to process your next capture?</h2>
+        <p class="copy">Upload a deep-sky image, run the pipeline, and compare the result side by side.</p>
+        <a class="button" href="/process">Process An Image</a>
+      </div>
+    </section>
+  </main>
+  <footer>
+    DeepSky Built By
+    <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a>
+  </footer>
+  <script>
+    document.querySelectorAll(".slider").forEach((slider) => {
+      const compare = slider.querySelector(".compare");
+      const input = slider.querySelector("input");
+      const update = () => compare.style.setProperty("--pos", `${input.value}%`);
+      input.addEventListener("input", update);
+      update();
+    });
+  </script>
+</body>
+</html>"""
 
 
 def _html() -> str:
@@ -520,6 +818,11 @@ def _run_job(
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
+    return _landing_html()
+
+
+@app.get("/process", response_class=HTMLResponse)
+def process_page() -> str:
     return _html()
 
 
