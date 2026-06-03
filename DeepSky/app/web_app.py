@@ -260,12 +260,32 @@ def _landing_html() -> str:
           <article class="slider">
             <h3>Galaxy</h3>
             <div class="compare" style="--pos: 50%">
-              <img src="/static/landing/m81_before.png" alt="Before galaxy processing">
-              <img class="after" src="/static/landing/m81_after.png" alt="After galaxy processing">
+              <img src="/static/landing/galaxy_before.png" alt="Before galaxy processing">
+              <img class="after" src="/static/landing/galaxy_after.png" alt="After galaxy processing">
               <div class="handle"></div>
               <div class="compare-labels"><span>Before</span><span>After</span></div>
             </div>
             <input type="range" min="0" max="100" value="50" aria-label="Compare galaxy before and after">
+          </article>
+          <article class="slider">
+            <h3>Star Cluster</h3>
+            <div class="compare" style="--pos: 50%">
+              <img src="/static/landing/cluster_before.png" alt="Before star cluster processing">
+              <img class="after" src="/static/landing/cluster_after.png" alt="After star cluster processing">
+              <div class="handle"></div>
+              <div class="compare-labels"><span>Before</span><span>After</span></div>
+            </div>
+            <input type="range" min="0" max="100" value="50" aria-label="Compare star cluster before and after">
+          </article>
+          <article class="slider">
+            <h3>Dark Nebula</h3>
+            <div class="compare" style="--pos: 50%">
+              <img src="/static/landing/horsehead_before.jpg" alt="Before dark nebula processing">
+              <img class="after" src="/static/landing/horsehead_after.jpg" alt="After dark nebula processing">
+              <div class="handle"></div>
+              <div class="compare-labels"><span>Before</span><span>After</span></div>
+            </div>
+            <input type="range" min="0" max="100" value="50" aria-label="Compare dark nebula before and after">
           </article>
         </div>
       </div>
