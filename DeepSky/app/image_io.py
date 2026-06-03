@@ -198,20 +198,46 @@ def convert_to_working_tiff(input_path: Path, output_path: Path, log: LogCallbac
     return working
 
 
+def _stretch_rgb_for_preview(image: np.ndarray) -> np.ndarray:
+    channels = []
+    for index in range(3):
+        channel = image[..., index]
+        low = np.percentile(channel, 0.5)
+        high = np.percentile(channel, 99.5)
+        if high <= low:
+            high = low + 1.0
+        channels.append(np.clip((channel - low) / (high - low), 0.0, 1.0))
+
+    display = np.stack(channels, axis=-1).astype(np.float32)
+    luminance = display[..., 0] * 0.2126 + display[..., 1] * 0.7152 + display[..., 2] * 0.0722
+    background_mask = luminance < np.percentile(luminance, 45)
+
+    if np.count_nonzero(background_mask) > 128:
+        background = np.median(display[background_mask], axis=0)
+        neutral = float(np.mean(background))
+        gains = neutral / np.maximum(background, 1e-4)
+        gains = np.clip(gains, 0.55, 1.85)
+        display = np.clip(display * gains.reshape(1, 1, 3), 0.0, 1.0)
+
+    return display
+
+
 def make_preview(input_path: Path, output_path: Path, max_size: tuple[int, int] = (900, 700), log: LogCallback | None = None) -> None:
     image = load_image(input_path, log)
     arr, note = _normalize_image_shape(np.asarray(image))
     if arr.ndim == 3 and arr.shape[-1] == 3:
         display = arr[..., :3].astype(np.float32)
+        display = np.nan_to_num(display, nan=0.0, posinf=0.0, neginf=0.0)
+        display = _stretch_rgb_for_preview(display)
     else:
         display = np.squeeze(arr).astype(np.float32)
+        display = np.nan_to_num(display, nan=0.0, posinf=0.0, neginf=0.0)
+        low = np.percentile(display, 0.5)
+        high = np.percentile(display, 99.5)
+        if high <= low:
+            high = low + 1.0
+        display = np.clip((display - low) / (high - low), 0.0, 1.0)
 
-    display = np.nan_to_num(display, nan=0.0, posinf=0.0, neginf=0.0)
-    low = np.percentile(display, 0.5)
-    high = np.percentile(display, 99.5)
-    if high <= low:
-        high = low + 1.0
-    display = np.clip((display - low) / (high - low), 0.0, 1.0)
     arr8 = (display * 255).astype(np.uint8)
     pil = Image.fromarray(arr8, mode="RGB" if arr8.ndim == 3 else "L")
     pil.thumbnail(max_size)
