@@ -14,6 +14,7 @@ from .goal_look import (
     apply_broadband_look,
     apply_goal_look,
     apply_prestretched_broadband_look,
+    apply_seestar_dark_nebula_look,
     blend_broadband_background_denoise,
     chroma_percentile,
     red_emission_dominance,
@@ -406,6 +407,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 "over-stretching shadow nebulosity and color noise."
             )
             _run_local_stretch_calibration(working, stretched, calibrated, write_log)
+            dark_nebula_image = apply_seestar_dark_nebula_look(load_image(stretched, write_log), write_log)
+            save_tiff(calibrated, dark_nebula_image, write_log)
+            _log_existing_image(calibrated, write_log, "calibrated.tif")
+            shutil.copy2(calibrated, stretched)
+            _log_existing_image(stretched, write_log, "stretched.tif")
         else:
             _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
 

@@ -574,6 +574,105 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     return _to_uint16(rgb)
 
 
+def apply_seestar_dark_nebula_look(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+
+    rgb = _to_float01(arr)
+    lum = _luminance(rgb)
+    background_pixels = lum < np.percentile(lum, 38.0)
+    gains = np.ones(3, dtype=np.float32)
+    if int(np.count_nonzero(background_pixels)) >= 512:
+        sky = np.median(rgb[background_pixels], axis=0)
+        neutral = float(np.mean(sky))
+        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.82, 1.18)
+        gains[1] = min(gains[1], 0.92)
+        rgb = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    red_excess = np.clip(rgb[..., 0] - 0.55 * rgb[..., 1] - 0.40 * rgb[..., 2], 0.0, 1.0)
+    red_low = float(np.percentile(red_excess, 55.0))
+    red_high = float(np.percentile(red_excess, 99.2))
+    red_mask = np.clip((red_excess - red_low) / max(1e-6, red_high - red_low), 0.0, 1.0) ** 0.65
+    red_mask = cv2.GaussianBlur(red_mask.astype(np.float32), (0, 0), 1.2)
+
+    star = np.clip(
+        (lum - np.percentile(lum, 97.5))
+        / max(1e-6, np.percentile(lum, 99.96) - np.percentile(lum, 97.5)),
+        0.0,
+        1.0,
+    ) ** 1.8
+    star = cv2.GaussianBlur(star.astype(np.float32), (0, 0), 0.8)
+
+    dark_nebula = np.clip(
+        (np.percentile(lum, 42.0) - lum)
+        / max(1e-6, np.percentile(lum, 42.0) - np.percentile(lum, 3.0)),
+        0.0,
+        1.0,
+    )
+    signal = np.clip(
+        (lum - np.percentile(lum, 18.0))
+        / max(1e-6, np.percentile(lum, 98.5) - np.percentile(lum, 18.0)),
+        0.0,
+        1.0,
+    ) ** 0.72
+    emission = red_mask * signal * (1.0 - star) * (1.0 - dark_nebula * 0.45)
+    rgb[..., 0] = np.clip(rgb[..., 0] + 0.22 * emission, 0.0, 1.0)
+    rgb[..., 1] = np.clip(rgb[..., 1] - 0.035 * emission, 0.0, 1.0)
+    rgb[..., 2] = np.clip(rgb[..., 2] - 0.035 * emission, 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    blurred = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 12.0)
+    contrast_lum = np.clip(lum + (lum - blurred) * 0.10 * red_mask * (1.0 - star), 0.0, 1.0)
+    rgb = np.clip(rgb * (contrast_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    protected = np.clip(
+        np.maximum(star, cv2.GaussianBlur((red_mask * signal).astype(np.float32), (0, 0), 3.0) * 0.75),
+        0.0,
+        1.0,
+    )
+    sky_mask = np.clip(
+        (np.percentile(lum, 62.0) - lum)
+        / max(1e-6, np.percentile(lum, 62.0) - np.percentile(lum, 1.0)),
+        0.0,
+        1.0,
+    ) * (1.0 - protected)
+    sky_mask = cv2.GaussianBlur(sky_mask.astype(np.float32), (0, 0), 4.0)
+
+    rgb8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+    smoothed = cv2.bilateralFilter(rgb8, d=0, sigmaColor=22, sigmaSpace=18).astype(np.float32) / 255.0
+    smoothed = cv2.GaussianBlur(smoothed, (0, 0), 0.8)
+    rgb = np.clip(rgb * (1.0 - sky_mask[..., None] * 0.45) + smoothed * (sky_mask[..., None] * 0.45), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    sky_floor = float(np.percentile(lum, 7.0))
+    darkened = np.clip((rgb - sky_floor * 0.55) / max(1e-6, 1.0 - sky_floor * 0.55), 0.0, 1.0) * 0.92
+    rgb = np.clip(rgb * (1.0 - sky_mask[..., None] * 0.55) + darkened * (sky_mask[..., None] * 0.55), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    star = np.clip(
+        (lum - np.percentile(lum, 97.2))
+        / max(1e-6, np.percentile(lum, 99.98) - np.percentile(lum, 97.2)),
+        0.0,
+        1.0,
+    ) ** 1.4
+    neutral_star = lum[..., None] + np.clip(rgb - lum[..., None], -0.07, 0.07)
+    rgb = np.clip(rgb * (1.0 - star[..., None] * 0.30) + neutral_star * (star[..., None] * 0.30), 0.0, 1.0)
+
+    if log:
+        final_lum = _luminance(rgb)
+        log(
+            "Applied SeeStar dark-nebula finish: "
+            f"sky_floor={sky_floor:.5f}, red_mask_mean={float(np.mean(red_mask)):.5f}, "
+            f"sky_mask_mean={float(np.mean(sky_mask)):.5f}, "
+            f"sky_gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
+            f"median_luminance={float(np.median(final_lum)):.5f}, chroma_p95={chroma_percentile(rgb, 95.0):.5f}"
+        )
+    return _to_uint16(rgb)
+
+
 def apply_goal_look(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:
