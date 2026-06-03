@@ -158,7 +158,6 @@ def _landing_html() -> str:
       background: var(--panel);
       padding: 14px;
     }
-    .slider h3 { margin: 0 0 12px; font-size: 18px; }
     .compare {
       position: relative;
       aspect-ratio: 4 / 3;
@@ -185,8 +184,6 @@ def _landing_html() -> str:
       background: #f7fbff;
       border: 4px solid #2f6fe5;
     }
-    .compare-labels { position: absolute; inset: 12px 12px auto; display: flex; justify-content: space-between; pointer-events: none; }
-    .compare-labels span { background: rgba(0,0,0,.58); border: 1px solid rgba(255,255,255,.2); border-radius: 999px; padding: 6px 10px; font-weight: 900; font-size: 12px; }
     .slider input { width: 100%; margin-top: 12px; accent-color: var(--blue); }
     .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; counter-reset: step; }
     .step { counter-increment: step; border: 1px solid var(--line); border-radius: 8px; padding: 20px; background: rgba(11,18,31,.75); }
@@ -251,42 +248,34 @@ def _landing_html() -> str:
         </div>
         <div class="comparison-grid">
           <article class="slider">
-            <h3>Heart Nebula</h3>
             <div class="compare" style="--pos: 50%">
               <img src="/static/landing/heart_before.png" alt="Before nebula processing">
               <img class="after" src="/static/landing/heart_after.png" alt="After nebula processing">
               <div class="handle"></div>
-              <div class="compare-labels"><span>Before</span><span>After</span></div>
             </div>
             <input type="range" min="0" max="100" value="50" aria-label="Compare nebula before and after">
           </article>
           <article class="slider">
-            <h3>M81 Galaxy</h3>
             <div class="compare" style="--pos: 50%">
               <img src="/static/landing/galaxy_before.png" alt="Before galaxy processing">
               <img class="after" src="/static/landing/galaxy_after.png" alt="After galaxy processing">
               <div class="handle"></div>
-              <div class="compare-labels"><span>Before</span><span>After</span></div>
             </div>
             <input type="range" min="0" max="100" value="50" aria-label="Compare galaxy before and after">
           </article>
           <article class="slider">
-            <h3>Orion Nebula</h3>
             <div class="compare" style="--pos: 50%">
               <img src="/static/landing/cluster_before.png" alt="Before Orion Nebula processing">
               <img class="after" src="/static/landing/cluster_after.png" alt="After Orion Nebula processing">
               <div class="handle"></div>
-              <div class="compare-labels"><span>Before</span><span>After</span></div>
             </div>
             <input type="range" min="0" max="100" value="50" aria-label="Compare Orion Nebula before and after">
           </article>
           <article class="slider">
-            <h3>Horsehead Nebula</h3>
             <div class="compare" style="--pos: 50%">
               <img src="/static/landing/horsehead_before.jpg" alt="Before Horsehead Nebula processing">
               <img class="after" src="/static/landing/horsehead_after.jpg" alt="After Horsehead Nebula processing">
               <div class="handle"></div>
-              <div class="compare-labels"><span>Before</span><span>After</span></div>
             </div>
             <input type="range" min="0" max="100" value="50" aria-label="Compare Horsehead Nebula before and after">
           </article>
