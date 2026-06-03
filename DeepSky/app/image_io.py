@@ -183,6 +183,18 @@ def _to_uint16_working(image: np.ndarray) -> np.ndarray:
         return (arr.astype(np.float32) / float(info.max) * 65535.0).clip(0, 65535).astype(np.uint16)
 
     data = np.nan_to_num(arr.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    if data.ndim == 3 and data.shape[-1] == 3:
+        channels = []
+        for index in range(3):
+            channel = data[..., index]
+            background = np.percentile(channel, 0.5)
+            channel = np.clip(channel - background, 0.0, None)
+            high = np.percentile(channel, 99.9)
+            if high <= 0:
+                high = float(np.max(channel)) if np.max(channel) > 0 else 1.0
+            channels.append(np.clip(channel / high, 0.0, 1.0))
+        return (np.stack(channels, axis=-1) * 65535.0).astype(np.uint16)
+
     background = np.percentile(data, 0.5)
     data = np.clip(data - background, 0.0, None)
     high = np.percentile(data, 99.9)

@@ -44,7 +44,16 @@ def _normalize_for_histogram(values: np.ndarray) -> np.ndarray:
 
 def analyze_input_stretch(path: Path) -> StretchAnalysis:
     image = load_image(path)
-    luminance = _normalize_for_histogram(_luminance(image))
+    raw_luminance = _luminance(image)
+    finite_luminance = np.nan_to_num(raw_luminance.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    finite_luminance = finite_luminance[np.isfinite(finite_luminance)]
+    raw_scale = 1.0
+    if finite_luminance.size and float(np.nanmax(finite_luminance)) > 1.0:
+        raw_scale = 65535.0 if float(np.nanmax(finite_luminance)) > 1024.0 else 255.0
+    raw_p50 = float(np.percentile(finite_luminance, 50) / raw_scale) if finite_luminance.size else 0.0
+    raw_p99 = float(np.percentile(finite_luminance, 99) / raw_scale) if finite_luminance.size else 0.0
+    raw_p999 = float(np.percentile(finite_luminance, 99.9) / raw_scale) if finite_luminance.size else 0.0
+    luminance = _normalize_for_histogram(raw_luminance)
 
     p01, p1, p10, p50, p90, p99 = [float(np.percentile(luminance, p)) for p in (0.1, 1, 10, 50, 90, 99)]
     bright_fraction = float(np.mean(luminance > 0.80))
@@ -67,7 +76,11 @@ def analyze_input_stretch(path: Path) -> StretchAnalysis:
     if bright_fraction > 0.005 and dynamic_width < 0.96:
         score += 1
 
-    if score >= 5 or (p50 > 0.075 and background_lift > 0.04 and shadow_fraction < 0.40):
+    low_absolute_signal = raw_p50 < 0.14 and raw_p99 < 0.20 and raw_p999 < 0.35
+    if low_absolute_signal and score <= 3:
+        score = min(score, 2)
+
+    if score >= 5 or (p50 > 0.075 and background_lift > 0.04 and shadow_fraction < 0.40 and not low_absolute_signal):
         recommended_mode = "pre_stretched"
         recommended_reason = "hard-stretched histogram; skip the main stretch to avoid noise and blown highlights"
     elif score >= 3:
@@ -101,6 +114,9 @@ def analyze_input_stretch(path: Path) -> StretchAnalysis:
             "bright_fraction": bright_fraction,
             "shadow_fraction": shadow_fraction,
             "midtone_fraction": midtone_fraction,
+            "raw_p50": raw_p50,
+            "raw_p99": raw_p99,
+            "raw_p999": raw_p999,
             "score": float(score),
         },
         recommended_mode=recommended_mode,
