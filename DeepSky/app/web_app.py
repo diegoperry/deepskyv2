@@ -336,7 +336,7 @@ def _html() -> str:
         warningEl.textContent = "Pre-stretched mode is on. DeepSky will skip its stretch/color-stretch stage and process the image as already stretched.";
       } else if (inputMode.value === "Auto") {
         warningEl.style.display = "block";
-        warningEl.textContent = "Auto input mode is on. DeepSky will choose linear, gentle SeeStar-safe stretch, or pre-stretched processing from the file histogram.";
+        warningEl.textContent = "Auto input mode is on. DeepSky will choose linear, gentle stretch, or pre-stretched processing from the file histogram.";
       }
       if (!file || tooLarge) return;
       try {
@@ -363,7 +363,7 @@ def _html() -> str:
         warningEl.textContent = "Pre-stretched mode is on. DeepSky will skip its stretch/color-stretch stage and process the image as already stretched.";
       } else if (inputMode.value === "Auto") {
         warningEl.style.display = "block";
-        warningEl.textContent = "Auto input mode is on. DeepSky will choose linear, gentle SeeStar-safe stretch, or pre-stretched processing from the file histogram.";
+        warningEl.textContent = "Auto input mode is on. DeepSky will choose linear, gentle stretch, or pre-stretched processing from the file histogram.";
       } else {
         warningEl.style.display = "none";
         warningEl.textContent = "";

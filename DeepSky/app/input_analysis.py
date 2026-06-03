@@ -85,7 +85,7 @@ def analyze_input_stretch(path: Path) -> StretchAnalysis:
         recommended_reason = "hard-stretched histogram; skip the main stretch to avoid noise and blown highlights"
     elif score >= 3:
         recommended_mode = "gentle_stretch"
-        recommended_reason = "soft-stretched/SeeStar-like histogram; use a gentle stretch instead of full linear stretch"
+        recommended_reason = "soft-stretched histogram; use a gentle stretch instead of full linear stretch"
     else:
         recommended_mode = "linear"
         recommended_reason = "linear/raw-style histogram; use the normal stretch"

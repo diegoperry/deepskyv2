@@ -7,14 +7,12 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from astropy.io import fits
 
 from .cli_tools import find_executable, run_deepsnr, run_starnet
 from .goal_look import (
     apply_broadband_look,
     apply_goal_look,
     apply_prestretched_broadband_look,
-    apply_seestar_dark_nebula_look,
     blend_broadband_background_denoise,
     chroma_percentile,
     red_emission_dominance,
@@ -78,29 +76,6 @@ def _normalized_input_mode(settings: AppSettings) -> str:
     if value == "linear":
         return "linear"
     return "auto"
-
-
-def _looks_like_seestar_shadow_nebula(input_path: Path, settings: AppSettings, analysis: object | None) -> bool:
-    if _normalized_object_type(settings) != "nebula" or analysis is None:
-        return False
-    metrics = getattr(analysis, "metrics", {})
-    if getattr(analysis, "recommended_mode", "") != "linear":
-        return False
-    if float(metrics.get("shadow_fraction", 0.0)) < 0.995 or float(metrics.get("p99", 1.0)) > 0.006:
-        return False
-
-    try:
-        with fits.open(input_path, memmap=False) as hdul:
-            header = next((hdu.header for hdu in hdul if hdu.data is not None), hdul[0].header)
-            instrument = str(header.get("INSTRUME", "")).lower()
-            target = str(header.get("OBJECT", "")).lower()
-    except Exception:
-        return False
-
-    if "seestar" not in instrument:
-        return False
-    dark_nebula_targets = ("ic 434", "ic434", "horsehead", "b33", "barnard 33")
-    return any(name in target for name in dark_nebula_targets)
 
 
 def _run_local_stretch_calibration(
@@ -381,7 +356,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif use_gentle_stretch:
-        write_log("Applying gentle SeeStar-safe stretch.")
+        write_log("Applying gentle stretch.")
         stretched_image = astrophotography_stretch(load_image(working, write_log), strength="gentle")
         save_tiff(stretched, stretched_image, write_log)
         _log_existing_image(stretched, write_log, "stretched.tif")
@@ -397,23 +372,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("Applying local astrophotography stretch.")
         _run_local_stretch_calibration(working, stretched, calibrated, write_log)
     else:
-        if (
-            _normalized_input_mode(settings) == "auto"
-            and settings.color_calibration_mode == "Basic"
-            and _looks_like_seestar_shadow_nebula(original, settings, analysis)
-        ):
-            write_log(
-                "Auto detected a SeeStar linear dark-nebula frame; skipping Siril Basic to avoid "
-                "over-stretching shadow nebulosity and color noise."
-            )
-            _run_local_stretch_calibration(working, stretched, calibrated, write_log)
-            dark_nebula_image = apply_seestar_dark_nebula_look(load_image(stretched, write_log), write_log)
-            save_tiff(calibrated, dark_nebula_image, write_log)
-            _log_existing_image(calibrated, write_log, "calibrated.tif")
-            shutil.copy2(calibrated, stretched)
-            _log_existing_image(stretched, write_log, "stretched.tif")
-        else:
-            _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
+        _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
 
     current = calibrated
 
