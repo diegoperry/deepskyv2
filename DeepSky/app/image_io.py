@@ -234,21 +234,51 @@ def _stretch_rgb_for_preview(image: np.ndarray) -> np.ndarray:
     return display
 
 
-def make_preview(input_path: Path, output_path: Path, max_size: tuple[int, int] = (900, 700), log: LogCallback | None = None) -> None:
+def _rgb_for_tone_preserving_preview(image: np.ndarray) -> np.ndarray:
+    arr = np.asarray(image)
+    display = arr[..., :3].astype(np.float32)
+    display = np.nan_to_num(display, nan=0.0, posinf=0.0, neginf=0.0)
+    if np.issubdtype(arr.dtype, np.integer):
+        max_value = float(np.iinfo(arr.dtype).max)
+        if max_value > 0:
+            display /= max_value
+    elif display.size and float(np.nanmax(display)) > 1.0:
+        display /= 65535.0
+    return np.clip(display, 0.0, 1.0)
+
+
+def make_preview(
+    input_path: Path,
+    output_path: Path,
+    max_size: tuple[int, int] = (900, 700),
+    log: LogCallback | None = None,
+    stretch_for_display: bool = True,
+) -> None:
     image = load_image(input_path, log)
     arr, note = _normalize_image_shape(np.asarray(image))
     if arr.ndim == 3 and arr.shape[-1] == 3:
-        display = arr[..., :3].astype(np.float32)
-        display = np.nan_to_num(display, nan=0.0, posinf=0.0, neginf=0.0)
-        display = _stretch_rgb_for_preview(display)
+        if stretch_for_display:
+            display = arr[..., :3].astype(np.float32)
+            display = np.nan_to_num(display, nan=0.0, posinf=0.0, neginf=0.0)
+            display = _stretch_rgb_for_preview(display)
+        else:
+            display = _rgb_for_tone_preserving_preview(arr)
     else:
         display = np.squeeze(arr).astype(np.float32)
         display = np.nan_to_num(display, nan=0.0, posinf=0.0, neginf=0.0)
-        low = np.percentile(display, 0.5)
-        high = np.percentile(display, 99.5)
-        if high <= low:
-            high = low + 1.0
-        display = np.clip((display - low) / (high - low), 0.0, 1.0)
+        if stretch_for_display:
+            low = np.percentile(display, 0.5)
+            high = np.percentile(display, 99.5)
+            if high <= low:
+                high = low + 1.0
+            display = np.clip((display - low) / (high - low), 0.0, 1.0)
+        else:
+            if np.issubdtype(arr.dtype, np.integer):
+                max_value = float(np.iinfo(arr.dtype).max)
+                display = display / max_value if max_value > 0 else display * 0.0
+            elif display.size and float(np.nanmax(display)) > 1.0:
+                display = display / 65535.0
+            display = np.clip(display, 0.0, 1.0)
 
     arr8 = (display * 255).astype(np.uint8)
     pil = Image.fromarray(arr8, mode="RGB" if arr8.ndim == 3 else "L")

@@ -574,16 +574,20 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     return _to_uint16(rgb)
 
 
-def apply_goal_look(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: bool = True) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:
         return arr
 
     rgb = _to_float01(arr)
     lum = _luminance(rgb)
-    black = float(np.percentile(lum, 15.0))
-    white = float(np.percentile(lum, 99.7))
-    rgb = np.clip((rgb - black) / max(1e-6, white - black), 0.0, 1.0)
+    if stretch:
+        black = float(np.percentile(lum, 15.0))
+        white = float(np.percentile(lum, 99.7))
+        rgb = np.clip((rgb - black) / max(1e-6, white - black), 0.0, 1.0)
+    else:
+        black = 0.0
+        white = 1.0
 
     lum = _luminance(rgb)
     star_mask = np.clip(
@@ -595,14 +599,15 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None) -> np.nda
     smoothed = cv2.bilateralFilter((rgb * 255.0).astype(np.uint8), 7, 45, 7).astype(np.float32) / 255.0
     rgb = rgb * (0.65 + 0.35 * star_mask[..., None]) + smoothed * (0.35 * (1.0 - star_mask[..., None]))
 
-    rgb = np.clip(rgb, 0.0, 1.0) ** 0.50
+    if stretch:
+        rgb = np.clip(rgb, 0.0, 1.0) ** 0.50
     lum = _luminance(rgb)
     blurred = cv2.GaussianBlur(lum, (0, 0), 20)
-    contrast_lum = np.clip(lum + (lum - blurred) * 0.20, 0.0, 1.0)
+    contrast_lum = np.clip(lum + (lum - blurred) * (0.20 if stretch else 0.08), 0.0, 1.0)
     rgb = np.clip(rgb * (contrast_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
 
     lum = _luminance(rgb)
-    rgb = np.clip(lum[..., None] + (rgb - lum[..., None]) * 1.9, 0.0, 1.0)
+    rgb = np.clip(lum[..., None] + (rgb - lum[..., None]) * (1.9 if stretch else 1.25), 0.0, 1.0)
 
     lum = _luminance(rgb)
     red_excess = np.clip(rgb[..., 0] - 0.52 * rgb[..., 1] - 0.48 * rgb[..., 2], 0.0, 1.0)
@@ -622,9 +627,10 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None) -> np.nda
         1.0,
     )
     emission = red_mask * signal * (1.0 - star_core)
-    rgb[..., 0] += emission * 0.34
-    rgb[..., 1] += emission * 0.041
-    rgb[..., 2] -= emission * 0.044
+    emission_strength = 1.0 if stretch else 0.55
+    rgb[..., 0] += emission * 0.34 * emission_strength
+    rgb[..., 1] += emission * 0.041 * emission_strength
+    rgb[..., 2] -= emission * 0.044 * emission_strength
 
     lum = _luminance(rgb)
     broad_emission = cv2.GaussianBlur((red_mask * signal).astype(np.float32), (0, 0), 5)
@@ -642,10 +648,10 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None) -> np.nda
             np.ones_like(lum) * 0.76,
         ]
     )
-    rgb = np.clip(rgb + white_nebula[..., None] * 0.58 * warm_white, 0.0, 1.0)
+    rgb = np.clip(rgb + white_nebula[..., None] * (0.58 if stretch else 0.22) * warm_white, 0.0, 1.0)
     lum = _luminance(rgb)
     cream = lum[..., None] * np.array([1.10, 1.02, 0.92], dtype=np.float32).reshape(1, 1, 3)
-    white_mix = np.clip(white_nebula[..., None] * 0.55, 0.0, 0.65)
+    white_mix = np.clip(white_nebula[..., None] * (0.55 if stretch else 0.22), 0.0, 0.65)
     rgb = np.clip(rgb * (1.0 - white_mix) + cream * white_mix, 0.0, 1.0)
 
     lum = _luminance(rgb)
@@ -670,14 +676,15 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None) -> np.nda
     rgb[..., 2] += shadow * 0.012
 
     lum = _luminance(rgb)
-    final_black = float(np.percentile(lum, 5.0))
-    rgb = np.clip((rgb - final_black) / max(1e-6, 1.0 - final_black), 0.0, 1.0)
+    final_black = float(np.percentile(lum, 5.0)) if stretch else 0.0
+    if stretch:
+        rgb = np.clip((rgb - final_black) / max(1e-6, 1.0 - final_black), 0.0, 1.0)
     if log:
         chroma_95 = chroma_percentile(rgb, 95.0)
         final_lum = _luminance(rgb)
         log(
             "Applied DeepSky target look: "
-            f"black={black:.5f}, white={white:.5f}, final_black={final_black:.5f}, "
+            f"stretch={stretch}, black={black:.5f}, white={white:.5f}, final_black={final_black:.5f}, "
             f"median_luminance={np.median(final_lum):.5f}, chroma_p95={chroma_95:.5f}"
         )
     return _to_uint16(rgb)

@@ -230,7 +230,7 @@ def _run_siril_calibration(
             python_reference = job_folder / "python_color_reference.tif"
             save_tiff(python_reference, python_color, write_log)
             _log_existing_image(python_reference, write_log, "python_color_reference.tif")
-            finished_image = apply_goal_look(python_color, write_log)
+            finished_image = apply_goal_look(python_color, write_log, stretch=False)
         elif object_type == "galaxy":
             write_log("Object type is Galaxy; using neutral broadband finish with protected background cleanup.")
             finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "galaxy")
@@ -242,7 +242,7 @@ def _run_siril_calibration(
             finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "broadband")
         else:
             write_log("Object type is Nebula; using emission nebula color finish.")
-            finished_image = apply_goal_look(siril_image, write_log)
+            finished_image = apply_goal_look(siril_image, write_log, stretch=False)
     else:
         write_log("Siril PCC succeeded; preserving Siril photometric color without manual color shaping.")
         finished_image = siril_image
@@ -267,7 +267,7 @@ def _run_python_fallback_calibration(
     object_type = _normalized_object_type(settings)
     write_log(f"Python fallback object type: {object_type}; red_emission_dominance={emission_score:.3f}")
     if object_type == "nebula":
-        calibrated_image = apply_goal_look(python_color, write_log)
+        calibrated_image = apply_goal_look(python_color, write_log, stretch=False)
     else:
         calibrated_image = apply_broadband_look(python_color, write_log)
     save_tiff(calibrated, calibrated_image, write_log)
@@ -408,9 +408,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
 
     after_preview = job_folder / "after_preview.png"
     preview_source = calibrated if mode == PipelineMode.SIRIL else final
-    make_preview(preview_source, after_preview, log=write_log)
+    make_preview(preview_source, after_preview, log=write_log, stretch_for_display=False)
     calibrated_preview = job_folder / "calibrated_preview.png"
-    make_preview(calibrated, calibrated_preview, log=write_log)
+    make_preview(calibrated, calibrated_preview, log=write_log, stretch_for_display=False)
     write_log(f"Final image: {final}")
     write_log("Done.")
 
