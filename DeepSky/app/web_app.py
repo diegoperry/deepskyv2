@@ -166,6 +166,9 @@ def _landing_html() -> str:
       border: 1px solid #1f2d43;
       border-radius: 8px;
       background: #020409;
+      cursor: ew-resize;
+      user-select: none;
+      touch-action: none;
     }
     .compare img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #020409; }
     .compare .after { clip-path: inset(0 0 0 var(--pos, 50%)); }
@@ -248,7 +251,7 @@ def _landing_html() -> str:
         </div>
         <div class="comparison-grid">
           <article class="slider">
-            <h3>Emission Nebula</h3>
+            <h3>Heart Nebula</h3>
             <div class="compare" style="--pos: 50%">
               <img src="/static/landing/heart_before.png" alt="Before nebula processing">
               <img class="after" src="/static/landing/heart_after.png" alt="After nebula processing">
@@ -258,7 +261,7 @@ def _landing_html() -> str:
             <input type="range" min="0" max="100" value="50" aria-label="Compare nebula before and after">
           </article>
           <article class="slider">
-            <h3>Galaxy</h3>
+            <h3>M81 Galaxy</h3>
             <div class="compare" style="--pos: 50%">
               <img src="/static/landing/galaxy_before.png" alt="Before galaxy processing">
               <img class="after" src="/static/landing/galaxy_after.png" alt="After galaxy processing">
@@ -268,24 +271,24 @@ def _landing_html() -> str:
             <input type="range" min="0" max="100" value="50" aria-label="Compare galaxy before and after">
           </article>
           <article class="slider">
-            <h3>Star Cluster</h3>
+            <h3>Orion Nebula</h3>
             <div class="compare" style="--pos: 50%">
-              <img src="/static/landing/cluster_before.png" alt="Before star cluster processing">
-              <img class="after" src="/static/landing/cluster_after.png" alt="After star cluster processing">
+              <img src="/static/landing/cluster_before.png" alt="Before Orion Nebula processing">
+              <img class="after" src="/static/landing/cluster_after.png" alt="After Orion Nebula processing">
               <div class="handle"></div>
               <div class="compare-labels"><span>Before</span><span>After</span></div>
             </div>
-            <input type="range" min="0" max="100" value="50" aria-label="Compare star cluster before and after">
+            <input type="range" min="0" max="100" value="50" aria-label="Compare Orion Nebula before and after">
           </article>
           <article class="slider">
-            <h3>Dark Nebula</h3>
+            <h3>Horsehead Nebula</h3>
             <div class="compare" style="--pos: 50%">
-              <img src="/static/landing/horsehead_before.jpg" alt="Before dark nebula processing">
-              <img class="after" src="/static/landing/horsehead_after.jpg" alt="After dark nebula processing">
+              <img src="/static/landing/horsehead_before.jpg" alt="Before Horsehead Nebula processing">
+              <img class="after" src="/static/landing/horsehead_after.jpg" alt="After Horsehead Nebula processing">
               <div class="handle"></div>
               <div class="compare-labels"><span>Before</span><span>After</span></div>
             </div>
-            <input type="range" min="0" max="100" value="50" aria-label="Compare dark nebula before and after">
+            <input type="range" min="0" max="100" value="50" aria-label="Compare Horsehead Nebula before and after">
           </article>
         </div>
       </div>
@@ -349,9 +352,34 @@ def _landing_html() -> str:
     document.querySelectorAll(".slider").forEach((slider) => {
       const compare = slider.querySelector(".compare");
       const input = slider.querySelector("input");
-      const update = () => compare.style.setProperty("--pos", `${input.value}%`);
-      input.addEventListener("input", update);
-      update();
+      const setPosition = (value) => {
+        const next = Math.max(0, Math.min(100, value));
+        input.value = String(next);
+        compare.style.setProperty("--pos", `${next}%`);
+      };
+      const setFromEvent = (event) => {
+        const rect = compare.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        setPosition((x / rect.width) * 100);
+      };
+      let dragging = false;
+      compare.addEventListener("pointerdown", (event) => {
+        dragging = true;
+        compare.setPointerCapture(event.pointerId);
+        setFromEvent(event);
+      });
+      compare.addEventListener("pointermove", (event) => {
+        if (dragging) setFromEvent(event);
+      });
+      compare.addEventListener("pointerup", (event) => {
+        dragging = false;
+        compare.releasePointerCapture(event.pointerId);
+      });
+      compare.addEventListener("pointercancel", () => {
+        dragging = false;
+      });
+      input.addEventListener("input", () => setPosition(Number(input.value)));
+      setPosition(Number(input.value));
     });
   </script>
 </body>
