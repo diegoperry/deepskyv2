@@ -247,6 +247,23 @@ def _rgb_for_tone_preserving_preview(image: np.ndarray) -> np.ndarray:
     return np.clip(display, 0.0, 1.0)
 
 
+def _downsample_for_preview(image: np.ndarray, max_size: tuple[int, int]) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim < 2:
+        return arr
+
+    max_width, max_height = max_size
+    height, width = arr.shape[:2]
+    if height <= 0 or width <= 0:
+        return arr
+
+    scale = max(height / max_height, width / max_width, 1.0)
+    step = max(1, int(np.ceil(scale)))
+    if step <= 1:
+        return arr
+    return arr[::step, ::step, ...] if arr.ndim == 3 else arr[::step, ::step]
+
+
 def make_preview(
     input_path: Path,
     output_path: Path,
@@ -256,6 +273,7 @@ def make_preview(
 ) -> None:
     image = load_image(input_path, log)
     arr, note = _normalize_image_shape(np.asarray(image))
+    arr = _downsample_for_preview(arr, max_size)
     if arr.ndim == 3 and arr.shape[-1] == 3:
         if stretch_for_display:
             display = arr[..., :3].astype(np.float32)
