@@ -79,6 +79,27 @@ def _normalized_input_mode(settings: AppSettings) -> str:
     return "auto"
 
 
+def _normalized_stretch_level(settings: AppSettings) -> str:
+    value = getattr(settings, "stretch_level", "Standard").strip().lower()
+    if value in {"slightly aggressive", "slight", "slightly_aggressive"}:
+        return "slight"
+    if value == "aggressive":
+        return "aggressive"
+    return "standard"
+
+
+def _stretch_strength_for(base: str, stretch_level: str) -> str:
+    if stretch_level == "standard":
+        return base
+    if base == "seestar":
+        return "seestar_aggressive" if stretch_level == "aggressive" else "seestar_slight"
+    if base == "gentle":
+        return "aggressive" if stretch_level == "aggressive" else "slight"
+    if base == "normal":
+        return "aggressive" if stretch_level == "aggressive" else "slight"
+    return base
+
+
 def _run_local_stretch_calibration(
     working: Path,
     stretched: Path,
@@ -330,6 +351,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     _log_existing_image(working, write_log, "working.tif")
 
     input_mode = _normalized_input_mode(settings)
+    stretch_level = _normalized_stretch_level(settings)
+    write_log(f"Selected stretch level: {stretch_level}.")
     use_seestar_path = detected_telescope == "seestar"
     use_prestretched = bool(getattr(settings, "prestretched_input", False)) or input_mode == "pre_stretched"
     use_gentle_stretch = False
@@ -366,7 +389,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif use_gentle_stretch:
-        stretch_strength = "seestar" if use_seestar_path else "gentle"
+        base_strength = "seestar" if use_seestar_path else "gentle"
+        stretch_strength = _stretch_strength_for(base_strength, stretch_level)
         write_log(f"Applying {stretch_strength} stretch.")
         stretched_image = astrophotography_stretch(load_image(working, write_log), strength=stretch_strength)
         save_tiff(stretched, stretched_image, write_log)
@@ -382,8 +406,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             save_tiff(calibrated, calibrated_image, write_log)
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif mode == PipelineMode.STRETCH:
-        write_log("Applying local astrophotography stretch.")
-        _run_local_stretch_calibration(working, stretched, calibrated, write_log)
+        stretch_strength = _stretch_strength_for("normal", stretch_level)
+        write_log(f"Applying local astrophotography stretch: {stretch_strength}.")
+        _run_local_stretch_calibration(working, stretched, calibrated, write_log, strength=stretch_strength)
     else:
         _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
 

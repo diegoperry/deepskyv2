@@ -45,7 +45,27 @@ def stretch_channel(
 
 def astrophotography_stretch(image: np.ndarray, strength: str = "normal") -> np.ndarray:
     arr = np.asarray(image)
-    if strength == "seestar":
+    if strength == "seestar_aggressive":
+        stretch_kwargs = {
+            "background_percentile": 0.05,
+            "background_subtract": 0.14,
+            "white_percentile": 99.82,
+            "black_percentile": 0.005,
+            "high_percentile": 99.92,
+            "stretch_factor": 10.0,
+        }
+        max_scale = 7.0
+    elif strength == "seestar_slight":
+        stretch_kwargs = {
+            "background_percentile": 0.08,
+            "background_subtract": 0.17,
+            "white_percentile": 99.86,
+            "black_percentile": 0.008,
+            "high_percentile": 99.94,
+            "stretch_factor": 8.0,
+        }
+        max_scale = 6.0
+    elif strength == "seestar":
         stretch_kwargs = {
             "background_percentile": 0.1,
             "background_subtract": 0.20,
@@ -55,6 +75,26 @@ def astrophotography_stretch(image: np.ndarray, strength: str = "normal") -> np.
             "stretch_factor": 6.5,
         }
         max_scale = 5.2
+    elif strength == "aggressive":
+        stretch_kwargs = {
+            "background_percentile": 0.1,
+            "background_subtract": 0.55,
+            "white_percentile": 99.75,
+            "black_percentile": 0.04,
+            "high_percentile": 99.9,
+            "stretch_factor": 10.0,
+        }
+        max_scale = 7.0
+    elif strength == "slight":
+        stretch_kwargs = {
+            "background_percentile": 0.1,
+            "background_subtract": 0.42,
+            "white_percentile": 99.84,
+            "black_percentile": 0.03,
+            "high_percentile": 99.93,
+            "stretch_factor": 6.5,
+        }
+        max_scale = 5.8
     elif strength == "gentle":
         stretch_kwargs = {
             "background_percentile": 0.1,
