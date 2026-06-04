@@ -81,22 +81,32 @@ def _normalized_input_mode(settings: AppSettings) -> str:
 
 def _normalized_stretch_level(settings: AppSettings) -> str:
     value = getattr(settings, "stretch_level", "Standard").strip().lower()
-    if value in {"slightly aggressive", "slight", "slightly_aggressive"}:
-        return "slight"
+    if value in {"subtle", "slightly aggressive", "slight", "slightly_aggressive"}:
+        return "subtle"
     if value == "aggressive":
         return "aggressive"
     return "standard"
 
 
 def _stretch_strength_for(base: str, stretch_level: str) -> str:
-    if stretch_level == "standard":
-        return base
     if base == "seestar":
-        return "seestar_aggressive" if stretch_level == "aggressive" else "seestar_slight"
+        if stretch_level == "subtle":
+            return "seestar_slight"
+        if stretch_level == "aggressive":
+            return "seestar_extra_aggressive"
+        return "seestar_aggressive"
     if base == "gentle":
-        return "aggressive" if stretch_level == "aggressive" else "slight"
+        if stretch_level == "subtle":
+            return "slight"
+        if stretch_level == "aggressive":
+            return "extra_aggressive"
+        return "aggressive"
     if base == "normal":
-        return "aggressive" if stretch_level == "aggressive" else "slight"
+        if stretch_level == "subtle":
+            return "slight"
+        if stretch_level == "aggressive":
+            return "extra_aggressive"
+        return "aggressive"
     return base
 
 

@@ -659,9 +659,9 @@ def _html() -> str:
         <label class="select">
           Stretch
           <select id="stretchLevel">
-            <option value="Standard">Standard</option>
-            <option value="Slightly Aggressive">Slightly Aggressive</option>
-            <option value="Aggressive" selected>Aggressive</option>
+            <option value="Subtle">Subtle</option>
+            <option value="Standard" selected>Standard</option>
+            <option value="Aggressive">Aggressive</option>
           </select>
         </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
@@ -1008,7 +1008,7 @@ def _run_job(
         settings.input_processing_mode = mode
         settings.prestretched_input = mode == "Pre-stretched"
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
-        settings.stretch_level = stretch_level if stretch_level in {"Standard", "Slightly Aggressive", "Aggressive"} else "Standard"
+        settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")

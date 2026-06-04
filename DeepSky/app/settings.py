@@ -71,7 +71,7 @@ def default_settings() -> AppSettings:
         galaxy_chroma_noise_reduction=96,
         galaxy_protect_detail=True,
         input_processing_mode="Auto",
-        stretch_level="Aggressive",
+        stretch_level="Standard",
         telescope_profile="Auto",
         prestretched_input=False,
         object_type="Nebula",
