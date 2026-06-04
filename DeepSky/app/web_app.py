@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -18,8 +20,11 @@ from .pipeline import PipelineMode, run_pipeline
 from .settings import APP_ROOT, PROJECT_ROOT, default_settings, load_settings
 
 
-UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "web_uploads"
-PREVIEW_ROOT = UPLOAD_ROOT / "previews"
+WEB_WORK_ROOT = Path(tempfile.gettempdir()) / "deepsky_web"
+UPLOAD_ROOT = WEB_WORK_ROOT / "uploads"
+PREVIEW_ROOT = WEB_WORK_ROOT / "previews"
+JOB_OUTPUT_ROOT = WEB_WORK_ROOT / "jobs"
+TEMP_FILE_TTL_SECONDS = 6 * 60 * 60
 MAX_WORKERS = 1
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
@@ -29,6 +34,7 @@ MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
 class WebJob:
     id: str
     status: str = "queued"
+    created_at: float = field(default_factory=time.time)
     log: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     result: dict[str, Path] | None = None
@@ -40,6 +46,38 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 jobs: dict[str, WebJob] = {}
 jobs_lock = Lock()
 app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
+
+
+def _cleanup_old_temp_files() -> None:
+    cutoff = time.time() - TEMP_FILE_TTL_SECONDS
+    for root in (UPLOAD_ROOT, PREVIEW_ROOT, JOB_OUTPUT_ROOT):
+        if not root.exists():
+            continue
+        for child in root.iterdir():
+            try:
+                if child.stat().st_mtime < cutoff:
+                    if child.is_dir():
+                        shutil.rmtree(child, ignore_errors=True)
+                    else:
+                        child.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+
+def _delete_job_files(job: WebJob) -> None:
+    paths: list[Path] = []
+    if job.result and "job_folder" in job.result:
+        paths.append(Path(job.result["job_folder"]))
+    paths.append(UPLOAD_ROOT / job.id)
+    for path in paths:
+        try:
+            if path.exists():
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+        except OSError:
+            continue
 
 
 def _landing_html() -> str:
@@ -893,7 +931,6 @@ def _html() -> str:
         downloads.innerHTML = `
           <a href="${job.final}" download>Download final TIFF</a>
           <a href="${job.log_file}" download>Download log</a>
-          <a href="${job.job_folder}" target="_blank" rel="noreferrer">Open job files</a>
         `;
         run.disabled = false;
         return;
@@ -961,7 +998,6 @@ def _job_response(job: WebJob) -> dict[str, Any]:
                 "after_preview": f"/api/jobs/{job.id}/file/after_preview?inline=1",
                 "final": f"/api/jobs/{job.id}/file/final",
                 "log_file": f"/api/jobs/{job.id}/file/log",
-                "job_folder": f"/api/jobs/{job.id}/files",
             }
         )
     return payload
@@ -1001,7 +1037,9 @@ def _run_job(
 
         settings = load_settings()
         defaults = default_settings()
-        settings.output_folder = str(PROJECT_ROOT / "outputs")
+        output_root = JOB_OUTPUT_ROOT / job_id
+        output_root.mkdir(parents=True, exist_ok=True)
+        settings.output_folder = str(output_root)
         mode = input_mode if input_mode in {"Auto", "Linear", "Pre-stretched"} else "Auto"
         if pre_stretched and mode == "Auto":
             mode = "Pre-stretched"
@@ -1016,7 +1054,9 @@ def _run_job(
             if not Path(getattr(settings, attr)).exists():
                 setattr(settings, attr, getattr(defaults, attr))
         result = run_pipeline(input_path, settings, PipelineMode.FULL, write_log)
+        shutil.rmtree(input_path.parent, ignore_errors=True)
     except Exception as exc:
+        shutil.rmtree(input_path.parent, ignore_errors=True)
         with jobs_lock:
             jobs[job_id].status = "failed"
             jobs[job_id].error = str(exc)
@@ -1039,6 +1079,7 @@ def process_page() -> str:
 
 @app.post("/api/preview")
 async def create_preview(file: UploadFile = File(...)) -> dict[str, str]:
+    _cleanup_old_temp_files()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
         raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
@@ -1088,6 +1129,7 @@ async def create_job(
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
 ) -> dict[str, str]:
+    _cleanup_old_temp_files()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
         raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
@@ -1122,6 +1164,7 @@ async def create_job(
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
+    _cleanup_old_temp_files()
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
@@ -1151,11 +1194,4 @@ def get_job_file(job_id: str, kind: str, inline: bool = False):
 
 @app.get("/api/jobs/{job_id}/files", response_class=PlainTextResponse)
 def list_job_files(job_id: str) -> str:
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if not job or not job.result:
-            raise HTTPException(status_code=404, detail="Job not ready.")
-        folder = Path(job.result["job_folder"])
-    if not folder.exists():
-        raise HTTPException(status_code=404, detail="Job folder not found.")
-    return "\n".join(str(path) for path in sorted(folder.iterdir()))
+    raise HTTPException(status_code=404, detail="Job file listing is disabled.")
