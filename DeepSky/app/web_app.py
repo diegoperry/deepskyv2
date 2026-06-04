@@ -519,6 +519,38 @@ def _html() -> str:
       line-height: 1.45;
       text-align: left;
     }
+    .progress-panel {
+      display: grid;
+      gap: 10px;
+      width: min(720px, 100%);
+      margin: 16px auto 0;
+    }
+    .progress-panel[hidden] { display: none; }
+    .progress-row {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr) 48px;
+      align-items: center;
+      gap: 12px;
+      color: #8fb0df;
+      font-size: 13px;
+      font-weight: 800;
+      text-align: left;
+    }
+    .progress-track {
+      height: 9px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #0b1524;
+      border: 1px solid #203552;
+    }
+    .progress-fill {
+      display: block;
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2f6fe5, #7aa7ff);
+      transition: width .22s ease;
+    }
     .previews {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -625,6 +657,18 @@ def _html() -> str:
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div id="warning" class="warning"></div>
+      <div id="progressPanel" class="progress-panel" hidden>
+        <div class="progress-row" id="uploadProgressRow">
+          <span id="uploadProgressLabel">Uploading file</span>
+          <div class="progress-track"><span id="uploadProgressFill" class="progress-fill"></span></div>
+          <span id="uploadProgressValue">0%</span>
+        </div>
+        <div class="progress-row" id="previewProgressRow">
+          <span id="previewProgressLabel">Loading preview</span>
+          <div class="progress-track"><span id="previewProgressFill" class="progress-fill"></span></div>
+          <span id="previewProgressValue">0%</span>
+        </div>
+      </div>
       <div id="status" class="status">Choose a file to begin.</div>
     </section>
     <section class="previews">
@@ -654,6 +698,15 @@ def _html() -> str:
     const telescopeProfile = document.getElementById("telescopeProfile");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
+    const progressPanel = document.getElementById("progressPanel");
+    const uploadProgressRow = document.getElementById("uploadProgressRow");
+    const uploadProgressLabel = document.getElementById("uploadProgressLabel");
+    const uploadProgressFill = document.getElementById("uploadProgressFill");
+    const uploadProgressValue = document.getElementById("uploadProgressValue");
+    const previewProgressRow = document.getElementById("previewProgressRow");
+    const previewProgressLabel = document.getElementById("previewProgressLabel");
+    const previewProgressFill = document.getElementById("previewProgressFill");
+    const previewProgressValue = document.getElementById("previewProgressValue");
     const logEl = document.getElementById("log");
     const beforeFrame = document.getElementById("beforeFrame");
     const afterFrame = document.getElementById("afterFrame");
@@ -662,9 +715,69 @@ def _html() -> str:
     let activeJob = null;
     let previewRequest = 0;
 
+    function setProgress(fill, value, percent) {
+      const bounded = Math.max(0, Math.min(100, Math.round(percent)));
+      fill.style.width = `${bounded}%`;
+      value.textContent = `${bounded}%`;
+    }
+
+    function resetProgress() {
+      progressPanel.hidden = true;
+      uploadProgressRow.hidden = false;
+      previewProgressRow.hidden = false;
+      setProgress(uploadProgressFill, uploadProgressValue, 0);
+      setProgress(previewProgressFill, previewProgressValue, 0);
+    }
+
+    function showUploadProgress(label) {
+      progressPanel.hidden = false;
+      uploadProgressRow.hidden = false;
+      previewProgressRow.hidden = true;
+      uploadProgressLabel.textContent = label;
+      setProgress(uploadProgressFill, uploadProgressValue, 0);
+    }
+
+    function showPreviewProgress() {
+      progressPanel.hidden = false;
+      uploadProgressRow.hidden = false;
+      previewProgressRow.hidden = false;
+      previewProgressLabel.textContent = "Loading preview";
+      setProgress(previewProgressFill, previewProgressValue, 8);
+    }
+
+    function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url);
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onUploadProgress) {
+            onUploadProgress((event.loaded / event.total) * 100);
+          }
+        };
+        xhr.upload.onload = () => {
+          if (onUploadProgress) onUploadProgress(100);
+          if (onServerWait) onServerWait();
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText));
+            } catch (error) {
+              reject(error);
+            }
+          } else {
+            reject(new Error(xhr.responseText || `Request failed with status ${xhr.status}`));
+          }
+        };
+        xhr.onerror = () => reject(new Error("Network error while uploading file."));
+        xhr.send(data);
+      });
+    }
+
     async function setFile(file) {
       selectedFile = file;
       const requestId = ++previewRequest;
+      resetProgress();
       fileName.textContent = file ? file.name : "Supports FITS and TIFF formats up to 115 MB";
       const tooLarge = file && file.size > 115 * 1024 * 1024;
       run.disabled = !file || tooLarge;
@@ -685,14 +798,32 @@ def _html() -> str:
       try {
         const data = new FormData();
         data.append("file", file);
-        const res = await fetch("/api/preview", { method: "POST", body: data });
+        let previewTimer = null;
+        showUploadProgress("Uploading preview");
+        const preview = await postFormJson("/api/preview", data, {
+          onUploadProgress: (percent) => setProgress(uploadProgressFill, uploadProgressValue, percent),
+          onServerWait: () => {
+            showPreviewProgress();
+            let progress = 12;
+            previewTimer = setInterval(() => {
+              progress = Math.min(92, progress + Math.max(1, (92 - progress) * 0.12));
+              setProgress(previewProgressFill, previewProgressValue, progress);
+            }, 450);
+          },
+        }).finally(() => {
+          if (previewTimer) clearInterval(previewTimer);
+        });
         if (requestId !== previewRequest) return;
-        if (!res.ok) throw new Error(await res.text());
-        const preview = await res.json();
+        setProgress(uploadProgressFill, uploadProgressValue, 100);
+        setProgress(previewProgressFill, previewProgressValue, 100);
         beforeFrame.innerHTML = `<img src="${preview.preview_url}&t=${Date.now()}" alt="Before preview">`;
         statusEl.textContent = "Ready to run full pipeline.";
+        setTimeout(() => {
+          if (requestId === previewRequest) progressPanel.hidden = true;
+        }, 700);
       } catch (error) {
         if (requestId !== previewRequest) return;
+        progressPanel.hidden = true;
         beforeFrame.innerHTML = '<span class="empty">Preview unavailable</span>';
         statusEl.textContent = "Ready to run full pipeline.";
         warningEl.style.display = "block";
@@ -763,19 +894,30 @@ def _html() -> str:
       logEl.textContent = "Uploading file...";
       downloads.innerHTML = "";
       afterFrame.innerHTML = '<span class="empty">Processing</span>';
+      showUploadProgress("Uploading job");
       const data = new FormData();
       data.append("file", selectedFile);
       data.append("object_type", objectType.value);
       data.append("input_mode", inputMode.value);
       data.append("telescope_profile", telescopeProfile.value);
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
-      const res = await fetch("/api/jobs", { method: "POST", body: data });
-      if (!res.ok) {
-        statusEl.textContent = await res.text();
+      let job;
+      try {
+        job = await postFormJson("/api/jobs", data, {
+          onUploadProgress: (percent) => setProgress(uploadProgressFill, uploadProgressValue, percent),
+          onServerWait: () => {
+            setProgress(uploadProgressFill, uploadProgressValue, 100);
+            previewProgressRow.hidden = true;
+            statusEl.textContent = "Starting pipeline...";
+          },
+        });
+      } catch (error) {
+        statusEl.textContent = error.message || String(error);
+        progressPanel.hidden = true;
         run.disabled = false;
         return;
       }
-      const job = await res.json();
+      progressPanel.hidden = true;
       activeJob = job.id;
       poll(activeJob);
     });
