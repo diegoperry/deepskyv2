@@ -45,7 +45,17 @@ def stretch_channel(
 
 def astrophotography_stretch(image: np.ndarray, strength: str = "normal") -> np.ndarray:
     arr = np.asarray(image)
-    if strength == "gentle":
+    if strength == "seestar":
+        stretch_kwargs = {
+            "background_percentile": 0.1,
+            "background_subtract": 0.20,
+            "white_percentile": 99.9,
+            "black_percentile": 0.01,
+            "high_percentile": 99.96,
+            "stretch_factor": 6.5,
+        }
+        max_scale = 5.2
+    elif strength == "gentle":
         stretch_kwargs = {
             "background_percentile": 0.1,
             "background_subtract": 0.30,

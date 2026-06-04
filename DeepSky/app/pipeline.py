@@ -79,13 +79,6 @@ def _normalized_input_mode(settings: AppSettings) -> str:
     return "auto"
 
 
-def _normalized_telescope_profile(settings: AppSettings) -> str:
-    value = getattr(settings, "telescope_profile", "Auto").strip().lower()
-    if value in {"seestar", "see star", "zwo seestar"}:
-        return "seestar"
-    return "auto"
-
-
 def _run_local_stretch_calibration(
     working: Path,
     stretched: Path,
@@ -337,10 +330,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     _log_existing_image(working, write_log, "working.tif")
 
     input_mode = _normalized_input_mode(settings)
-    telescope_profile = _normalized_telescope_profile(settings)
-    use_seestar_path = telescope_profile == "seestar" or (
-        telescope_profile == "auto" and detected_telescope == "seestar"
-    )
+    use_seestar_path = detected_telescope == "seestar"
     use_prestretched = bool(getattr(settings, "prestretched_input", False)) or input_mode == "pre_stretched"
     use_gentle_stretch = False
     if input_mode == "auto" and analysis is not None:
@@ -355,7 +345,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
 
     if use_seestar_path and not use_prestretched:
         use_gentle_stretch = True
-        write_log("SeeStar telescope profile selected; using gentle smart-telescope path.")
+        write_log("SeeStar metadata detected; using smart-telescope baseline stretch path.")
 
     if use_prestretched:
         object_type = _normalized_object_type(settings)
@@ -376,8 +366,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif use_gentle_stretch:
-        write_log("Applying gentle stretch.")
-        stretched_image = astrophotography_stretch(load_image(working, write_log), strength="gentle")
+        stretch_strength = "seestar" if use_seestar_path else "gentle"
+        write_log(f"Applying {stretch_strength} stretch.")
+        stretched_image = astrophotography_stretch(load_image(working, write_log), strength=stretch_strength)
         save_tiff(stretched, stretched_image, write_log)
         _log_existing_image(stretched, write_log, "stretched.tif")
         object_type = _normalized_object_type(settings)

@@ -656,13 +656,6 @@ def _html() -> str:
             <option value="Pre-stretched">Pre-stretched</option>
           </select>
         </label>
-        <label class="select">
-          Telescope
-          <select id="telescopeProfile">
-            <option value="Auto" selected>Auto</option>
-            <option value="SeeStar">SeeStar</option>
-          </select>
-        </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div id="warning" class="warning"></div>
@@ -704,7 +697,6 @@ def _html() -> str:
     const run = document.getElementById("run");
     const objectType = document.getElementById("objectType");
     const inputMode = document.getElementById("inputMode");
-    const telescopeProfile = document.getElementById("telescopeProfile");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
@@ -917,7 +909,6 @@ def _html() -> str:
       data.append("file", selectedFile);
       data.append("object_type", objectType.value);
       data.append("input_mode", inputMode.value);
-      data.append("telescope_profile", telescopeProfile.value);
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -972,7 +963,6 @@ def _run_job(
     pre_stretched: bool = False,
     object_type: str = "Nebula",
     input_mode: str = "Auto",
-    telescope_profile: str = "Auto",
 ) -> None:
     with jobs_lock:
         job = jobs[job_id]
@@ -1007,10 +997,8 @@ def _run_job(
         settings.input_processing_mode = mode
         settings.prestretched_input = mode == "Pre-stretched"
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
-        settings.telescope_profile = telescope_profile if telescope_profile in {"Auto", "SeeStar"} else "Auto"
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
-        write_log(f"Selected telescope profile: {settings.telescope_profile}")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
             if not Path(getattr(settings, attr)).exists():
                 setattr(settings, attr, getattr(defaults, attr))
@@ -1085,7 +1073,6 @@ async def create_job(
     object_type: str = Form("Nebula"),
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
-    telescope_profile: str = Form("Auto"),
 ) -> dict[str, str]:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
@@ -1115,7 +1102,7 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
             )
-    executor.submit(_run_job, job_id, input_path, pre_stretched, object_type, input_mode, telescope_profile)
+    executor.submit(_run_job, job_id, input_path, pre_stretched, object_type, input_mode)
     return {"id": job_id}
 
 
