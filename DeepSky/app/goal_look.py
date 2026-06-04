@@ -533,8 +533,7 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     if int(np.count_nonzero(background_pixels)) >= 512:
         sky = np.median(rgb[background_pixels], axis=0)
         neutral = float(np.mean(sky))
-        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.90, 1.12)
-        gains[1] = min(gains[1], 0.88)
+        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.78, 1.35)
         balanced = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
         rgb = np.clip(rgb * (1.0 - sky_mask[..., None] * 0.72) + balanced * (sky_mask[..., None] * 0.72), 0.0, 1.0)
 
