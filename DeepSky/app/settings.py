@@ -34,6 +34,7 @@ class AppSettings:
     galaxy_chroma_noise_reduction: int
     galaxy_protect_detail: bool
     input_processing_mode: str
+    telescope_profile: str
     prestretched_input: bool
     object_type: str
 
@@ -69,6 +70,7 @@ def default_settings() -> AppSettings:
         galaxy_chroma_noise_reduction=96,
         galaxy_protect_detail=True,
         input_processing_mode="Auto",
+        telescope_profile="Auto",
         prestretched_input=False,
         object_type="Nebula",
     )

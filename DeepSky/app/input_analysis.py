@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from astropy.io import fits
 
 from .image_io import load_image
 
@@ -16,6 +17,24 @@ class StretchAnalysis:
     metrics: dict[str, float]
     recommended_mode: str
     recommended_reason: str
+
+
+SEESTAR_HEADER_KEYS = ("TELESCOP", "INSTRUME", "CREATOR", "PRODUCER", "OBSERVER", "PROGRAM")
+
+
+def detect_telescope_profile(path: Path) -> str:
+    source = Path(path)
+    if source.suffix.lower() not in {".fit", ".fits", ".fts"}:
+        return "generic"
+    try:
+        header = fits.getheader(source)
+    except Exception:
+        return "generic"
+
+    values = " ".join(str(header.get(key, "")) for key in SEESTAR_HEADER_KEYS).lower()
+    if "seestar" in values or "zwo seestar" in values:
+        return "seestar"
+    return "generic"
 
 
 def _luminance(image: np.ndarray) -> np.ndarray:

@@ -26,7 +26,7 @@ from .image_io import (
     make_preview,
     save_tiff,
 )
-from .input_analysis import analyze_input_stretch
+from .input_analysis import analyze_input_stretch, detect_telescope_profile
 from .image_math import add_images, subtract_images
 from .python_color_calibration import python_fallback_color_calibration
 from .settings import AppSettings
@@ -76,6 +76,13 @@ def _normalized_input_mode(settings: AppSettings) -> str:
         return "pre_stretched"
     if value == "linear":
         return "linear"
+    return "auto"
+
+
+def _normalized_telescope_profile(settings: AppSettings) -> str:
+    value = getattr(settings, "telescope_profile", "Auto").strip().lower()
+    if value in {"seestar", "see star", "zwo seestar"}:
+        return "seestar"
     return "auto"
 
 
@@ -299,7 +306,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     write_log(f"Copied original: {original.name}")
     _log_existing_image(original, write_log, "original")
     analysis = None
+    detected_telescope = "generic"
     try:
+        detected_telescope = detect_telescope_profile(original)
+        write_log(f"Detected telescope profile: {detected_telescope}.")
         analysis = analyze_input_stretch(original)
         metrics = ", ".join(f"{key}={value:.4f}" for key, value in analysis.metrics.items())
         if analysis.likely_stretched:
@@ -327,6 +337,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     _log_existing_image(working, write_log, "working.tif")
 
     input_mode = _normalized_input_mode(settings)
+    telescope_profile = _normalized_telescope_profile(settings)
+    use_seestar_path = telescope_profile == "seestar" or (
+        telescope_profile == "auto" and detected_telescope == "seestar"
+    )
     use_prestretched = bool(getattr(settings, "prestretched_input", False)) or input_mode == "pre_stretched"
     use_gentle_stretch = False
     if input_mode == "auto" and analysis is not None:
@@ -338,6 +352,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("Manual input mode selected: linear.")
     elif use_prestretched:
         write_log("Manual input mode selected: pre-stretched.")
+
+    if use_seestar_path and not use_prestretched:
+        use_gentle_stretch = True
+        write_log("SeeStar telescope profile selected; using gentle smart-telescope path.")
 
     if use_prestretched:
         object_type = _normalized_object_type(settings)
@@ -368,7 +386,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             calibrated_image = apply_prestretched_broadband_look(stretched_image, write_log)
             save_tiff(calibrated, calibrated_image, write_log)
         else:
-            shutil.copy2(stretched, calibrated)
+            write_log("Applying gentle-stretch nebula finish.")
+            calibrated_image = apply_goal_look(stretched_image, write_log, stretch=False)
+            save_tiff(calibrated, calibrated_image, write_log)
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif mode == PipelineMode.STRETCH:
         write_log("Applying local astrophotography stretch.")
