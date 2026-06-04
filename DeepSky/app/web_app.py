@@ -551,6 +551,15 @@ def _html() -> str:
       background: linear-gradient(90deg, #2f6fe5, #7aa7ff);
       transition: width .22s ease;
     }
+    .progress-fill.indeterminate {
+      width: 38%;
+      background: linear-gradient(90deg, transparent, #2f6fe5, #7aa7ff, transparent);
+      animation: progressSlide 1.05s ease-in-out infinite;
+    }
+    @keyframes progressSlide {
+      0% { transform: translateX(-120%); }
+      100% { transform: translateX(285%); }
+    }
     .previews {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -716,15 +725,26 @@ def _html() -> str:
     let previewRequest = 0;
 
     function setProgress(fill, value, percent) {
+      fill.classList.remove("indeterminate");
+      fill.style.transform = "";
       const bounded = Math.max(0, Math.min(100, Math.round(percent)));
       fill.style.width = `${bounded}%`;
       value.textContent = `${bounded}%`;
+    }
+
+    function setIndeterminateProgress(fill, value, text) {
+      fill.style.width = "";
+      fill.style.transform = "";
+      fill.classList.add("indeterminate");
+      value.textContent = text;
     }
 
     function resetProgress() {
       progressPanel.hidden = true;
       uploadProgressRow.hidden = false;
       previewProgressRow.hidden = false;
+      uploadProgressFill.classList.remove("indeterminate");
+      previewProgressFill.classList.remove("indeterminate");
       setProgress(uploadProgressFill, uploadProgressValue, 0);
       setProgress(previewProgressFill, previewProgressValue, 0);
     }
@@ -734,7 +754,7 @@ def _html() -> str:
       uploadProgressRow.hidden = false;
       previewProgressRow.hidden = true;
       uploadProgressLabel.textContent = label;
-      setProgress(uploadProgressFill, uploadProgressValue, 0);
+      setIndeterminateProgress(uploadProgressFill, uploadProgressValue, "Uploading");
     }
 
     function showPreviewProgress() {
@@ -742,16 +762,21 @@ def _html() -> str:
       uploadProgressRow.hidden = false;
       previewProgressRow.hidden = false;
       previewProgressLabel.textContent = "Loading preview";
-      setProgress(previewProgressFill, previewProgressValue, 8);
+      setIndeterminateProgress(previewProgressFill, previewProgressValue, "Working");
     }
 
     function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
+        let lastPercent = 0;
         xhr.open("POST", url);
         xhr.upload.onprogress = (event) => {
           if (event.lengthComputable && onUploadProgress) {
-            onUploadProgress((event.loaded / event.total) * 100);
+            const percent = (event.loaded / event.total) * 100;
+            if (percent >= 3 && percent > lastPercent + 1) {
+              lastPercent = percent;
+              onUploadProgress(percent);
+            }
           }
         };
         xhr.upload.onload = () => {
@@ -798,20 +823,13 @@ def _html() -> str:
       try {
         const data = new FormData();
         data.append("file", file);
-        let previewTimer = null;
         showUploadProgress("Uploading preview");
         const preview = await postFormJson("/api/preview", data, {
           onUploadProgress: (percent) => setProgress(uploadProgressFill, uploadProgressValue, percent),
           onServerWait: () => {
+            uploadProgressValue.textContent = "Done";
             showPreviewProgress();
-            let progress = 12;
-            previewTimer = setInterval(() => {
-              progress = Math.min(92, progress + Math.max(1, (92 - progress) * 0.12));
-              setProgress(previewProgressFill, previewProgressValue, progress);
-            }, 450);
           },
-        }).finally(() => {
-          if (previewTimer) clearInterval(previewTimer);
         });
         if (requestId !== previewRequest) return;
         setProgress(uploadProgressFill, uploadProgressValue, 100);
@@ -907,6 +925,7 @@ def _html() -> str:
           onUploadProgress: (percent) => setProgress(uploadProgressFill, uploadProgressValue, percent),
           onServerWait: () => {
             setProgress(uploadProgressFill, uploadProgressValue, 100);
+            uploadProgressValue.textContent = "Done";
             previewProgressRow.hidden = true;
             statusEl.textContent = "Starting pipeline...";
           },
