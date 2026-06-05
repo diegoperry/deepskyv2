@@ -547,6 +547,18 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     lum_after_green = _luminance(rgb)
     rgb = np.clip(rgb * (lum_before_green / np.maximum(lum_after_green, 1e-5))[..., None], 0.0, 1.0)
 
+    lum = _luminance(rgb)
+    galaxy_core = np.clip(
+        (lum - np.percentile(lum, 94.0))
+        / max(1e-6, np.percentile(lum, 99.82) - np.percentile(lum, 94.0)),
+        0.0,
+        1.0,
+    ) ** 1.15
+    galaxy_core = cv2.GaussianBlur((galaxy_core * galaxy_mask * (1.0 - star_mask * 0.75)).astype(np.float32), (0, 0), 1.35)
+    core_white = lum[..., None] * np.array([1.04, 1.02, 0.96], dtype=np.float32).reshape(1, 1, 3)
+    core_mix = np.clip(galaxy_core[..., None] * 0.58, 0.0, 0.62)
+    rgb = np.clip(rgb * (1.0 - core_mix) + core_white * core_mix, 0.0, 1.0)
+
     # Smooth color speckle mostly in empty sky; preserve galaxy luminance and arms.
     lab = cv2.cvtColor(np.clip(rgb * 255.0, 0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
@@ -562,13 +574,26 @@ def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None
     black_mix = np.clip(sky_mask[..., None] * 0.55, 0.0, 0.62)
     rgb = np.clip(rgb * (1.0 - black_mix) + darkened * black_mix, 0.0, 1.0)
 
+    lum = _luminance(rgb)
+    final_core = np.clip(
+        (lum - np.percentile(lum, 92.0))
+        / max(1e-6, np.percentile(lum, 99.72) - np.percentile(lum, 92.0)),
+        0.0,
+        1.0,
+    ) ** 0.85
+    final_core = cv2.GaussianBlur((final_core * galaxy_mask * (1.0 - star_mask * 0.30)).astype(np.float32), (0, 0), 1.4)
+    neutral_core = lum[..., None] * np.array([1.01, 1.005, 0.995], dtype=np.float32).reshape(1, 1, 3)
+    final_core_mix = np.clip(final_core[..., None] * 0.94, 0.0, 0.92)
+    rgb = np.clip(rgb * (1.0 - final_core_mix) + neutral_core * final_core_mix, 0.0, 1.0)
+
     if log:
         log(
             "Applied pre-stretched broadband look: "
             f"black={black:.5f}, white={white:.5f}, sky_floor={sky_floor:.5f}, "
             f"sky_pixels={int(np.count_nonzero(background_pixels))}, "
             f"sky_gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
-            f"protect_mean={float(np.mean(protect)):.5f}, sky_mask_mean={float(np.mean(sky_mask)):.5f}"
+            f"protect_mean={float(np.mean(protect)):.5f}, sky_mask_mean={float(np.mean(sky_mask)):.5f}, "
+            f"core_white_mix={float(np.max(final_core_mix)):.5f}"
         )
     return _to_uint16(rgb)
 

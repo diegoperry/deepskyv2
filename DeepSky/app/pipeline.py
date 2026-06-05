@@ -89,25 +89,80 @@ def _normalized_stretch_level(settings: AppSettings) -> str:
 
 
 def _stretch_strength_for(base: str, stretch_level: str) -> str:
-    if base == "seestar":
+    return _adjust_stretch_strength(base, stretch_level)
+
+
+def _adjust_stretch_strength(base_strength: str, stretch_level: str) -> str:
+    ladders = (
+        ["gentle", "slight", "normal", "aggressive", "extra_aggressive"],
+        ["seestar_slight", "seestar", "seestar_aggressive", "seestar_extra_aggressive"],
+    )
+    for ladder in ladders:
+        if base_strength in ladder:
+            index = ladder.index(base_strength)
+            if stretch_level == "subtle":
+                index -= 1
+            elif stretch_level == "aggressive":
+                index += 1
+            return ladder[max(0, min(len(ladder) - 1, index))]
+
+    if base_strength == "seestar":
         if stretch_level == "subtle":
             return "seestar_slight"
         if stretch_level == "aggressive":
             return "seestar_extra_aggressive"
         return "seestar_aggressive"
-    if base == "gentle":
+    if base_strength == "gentle":
         if stretch_level == "subtle":
             return "slight"
         if stretch_level == "aggressive":
             return "aggressive"
         return "gentle"
-    if base == "normal":
+    if base_strength == "normal":
         if stretch_level == "subtle":
             return "slight"
         if stretch_level == "aggressive":
             return "aggressive"
         return "normal"
-    return base
+    return base_strength
+
+
+def _auto_baseline_stretch_strength(
+    analysis: object | None,
+    detected_telescope: str,
+    object_type: str,
+    *,
+    gentle_recommended: bool,
+) -> tuple[str, str]:
+    metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
+    raw_p99 = float(metrics.get("raw_p99", 0.0))
+    raw_p999 = float(metrics.get("raw_p999", 0.0))
+    shadow_fraction = float(metrics.get("shadow_fraction", 0.0))
+    midtone_fraction = float(metrics.get("midtone_fraction", 0.0))
+    recommended_mode = getattr(analysis, "recommended_mode", "")
+
+    if detected_telescope == "seestar":
+        if object_type == "galaxy":
+            if raw_p999 < 0.012:
+                return "seestar_aggressive", f"very faint SeeStar galaxy signal raw_p999={raw_p999:.5f}"
+            return "seestar", f"protected SeeStar galaxy baseline raw_p999={raw_p999:.5f}"
+        if raw_p999 < 0.012:
+            return "seestar_extra_aggressive", f"very faint SeeStar signal raw_p999={raw_p999:.5f}"
+        if raw_p999 < 0.032:
+            return "seestar_aggressive", f"faint SeeStar signal raw_p999={raw_p999:.5f}"
+        return "seestar", f"moderate SeeStar signal raw_p999={raw_p999:.5f}"
+
+    if recommended_mode == "pre_stretched":
+        return "gentle", "histogram already looks stretched"
+    if gentle_recommended:
+        return "gentle", "soft-stretched histogram"
+    if shadow_fraction > 0.98 and midtone_fraction < 0.003:
+        return "aggressive", f"very dark linear histogram shadow_fraction={shadow_fraction:.5f}"
+    if raw_p99 > 0.085 and raw_p999 < 0.14:
+        return "normal", f"bright low-dynamic-range linear signal raw_p99={raw_p99:.5f}"
+    if raw_p999 < 0.08:
+        return "aggressive", f"faint linear signal raw_p999={raw_p999:.5f}"
+    return "normal", "normal linear histogram"
 
 
 def _run_local_stretch_calibration(
@@ -362,6 +417,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
 
     input_mode = _normalized_input_mode(settings)
     stretch_level = _normalized_stretch_level(settings)
+    object_type = _normalized_object_type(settings)
     write_log(f"Selected stretch level: {stretch_level}.")
     use_seestar_path = detected_telescope == "seestar"
     use_prestretched = bool(getattr(settings, "prestretched_input", False)) or input_mode == "pre_stretched"
@@ -381,7 +437,6 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("SeeStar metadata detected; using smart-telescope baseline stretch path.")
 
     if use_prestretched:
-        object_type = _normalized_object_type(settings)
         write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril initial stretch.")
         write_log(f"Applying pre-stretched object finish for: {object_type}")
         source = load_image(working, write_log)
@@ -399,13 +454,18 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif use_gentle_stretch:
-        base_strength = "seestar" if use_seestar_path else "gentle"
-        stretch_strength = _stretch_strength_for(base_strength, stretch_level)
-        write_log(f"Applying {stretch_strength} stretch.")
+        base_strength, baseline_reason = _auto_baseline_stretch_strength(
+            analysis,
+            detected_telescope,
+            object_type,
+            gentle_recommended=not use_seestar_path,
+        )
+        stretch_strength = _adjust_stretch_strength(base_strength, stretch_level)
+        write_log(f"Auto stretch baseline: {base_strength} ({baseline_reason}).")
+        write_log(f"Applying {stretch_strength} stretch after user adjustment: {stretch_level}.")
         stretched_image = astrophotography_stretch(load_image(working, write_log), strength=stretch_strength)
         save_tiff(stretched, stretched_image, write_log)
         _log_existing_image(stretched, write_log, "stretched.tif")
-        object_type = _normalized_object_type(settings)
         if object_type in {"galaxy", "star cluster"}:
             write_log(f"Applying gentle-stretch broadband finish for: {object_type}.")
             calibrated_image = apply_prestretched_broadband_look(stretched_image, write_log)
@@ -416,8 +476,15 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             save_tiff(calibrated, calibrated_image, write_log)
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif mode == PipelineMode.STRETCH:
-        stretch_strength = _stretch_strength_for("normal", stretch_level)
-        write_log(f"Applying local astrophotography stretch: {stretch_strength}.")
+        base_strength, baseline_reason = _auto_baseline_stretch_strength(
+            analysis,
+            detected_telescope,
+            object_type,
+            gentle_recommended=False,
+        )
+        stretch_strength = _adjust_stretch_strength(base_strength, stretch_level)
+        write_log(f"Auto stretch baseline: {base_strength} ({baseline_reason}).")
+        write_log(f"Applying local astrophotography stretch: {stretch_strength} after user adjustment: {stretch_level}.")
         _run_local_stretch_calibration(working, stretched, calibrated, write_log, strength=stretch_strength)
     else:
         _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
