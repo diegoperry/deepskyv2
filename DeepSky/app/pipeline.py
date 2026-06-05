@@ -99,14 +99,14 @@ def _stretch_strength_for(base: str, stretch_level: str) -> str:
         if stretch_level == "subtle":
             return "slight"
         if stretch_level == "aggressive":
-            return "extra_aggressive"
-        return "aggressive"
+            return "aggressive"
+        return "gentle"
     if base == "normal":
         if stretch_level == "subtle":
             return "slight"
         if stretch_level == "aggressive":
-            return "extra_aggressive"
-        return "aggressive"
+            return "aggressive"
+        return "normal"
     return base
 
 

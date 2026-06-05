@@ -24,6 +24,7 @@ WEB_WORK_ROOT = Path(tempfile.gettempdir()) / "deepsky_web"
 UPLOAD_ROOT = WEB_WORK_ROOT / "uploads"
 PREVIEW_ROOT = WEB_WORK_ROOT / "previews"
 JOB_OUTPUT_ROOT = WEB_WORK_ROOT / "jobs"
+LEGACY_WEB_UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "web_uploads"
 TEMP_FILE_TTL_SECONDS = 6 * 60 * 60
 MAX_WORKERS = 1
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -50,6 +51,8 @@ app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="s
 
 def _cleanup_old_temp_files() -> None:
     cutoff = time.time() - TEMP_FILE_TTL_SECONDS
+    if LEGACY_WEB_UPLOAD_ROOT.exists():
+        shutil.rmtree(LEGACY_WEB_UPLOAD_ROOT, ignore_errors=True)
     for root in (UPLOAD_ROOT, PREVIEW_ROOT, JOB_OUTPUT_ROOT):
         if not root.exists():
             continue
@@ -1117,6 +1120,7 @@ async def create_preview(file: UploadFile = File(...)) -> dict[str, str]:
     preview_path = preview_dir / "before_preview.png"
     try:
         make_preview(input_path, preview_path)
+        input_path.unlink(missing_ok=True)
     except Exception as exc:
         shutil.rmtree(preview_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
