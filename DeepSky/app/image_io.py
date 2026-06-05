@@ -184,10 +184,18 @@ def _to_uint16_working(image: np.ndarray) -> np.ndarray:
 
     data = np.nan_to_num(arr.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     if data.ndim == 3 and data.shape[-1] == 3:
+        backgrounds = np.percentile(data, 0.5, axis=(0, 1))
+        background_mean = float(np.mean(backgrounds))
+        background_spread = float((np.max(backgrounds) - np.min(backgrounds)) / max(background_mean, 1e-6))
+        channel_highs = np.percentile(data, 99.0, axis=(0, 1))
+        red_emission_like = channel_highs[0] > max(channel_highs[1], channel_highs[2]) * 1.20
+        if red_emission_like or background_spread > 0.05:
+            data = np.clip(data - backgrounds.reshape(1, 1, 3), 0.0, None)
+        else:
+            luminance = data[..., 0] * 0.2126 + data[..., 1] * 0.7152 + data[..., 2] * 0.0722
+            background = np.percentile(luminance, 0.5)
+            data = np.clip(data - background, 0.0, None)
         luminance = data[..., 0] * 0.2126 + data[..., 1] * 0.7152 + data[..., 2] * 0.0722
-        background = np.percentile(luminance, 0.5)
-        data = np.clip(data - background, 0.0, None)
-        luminance = np.clip(luminance - background, 0.0, None)
         high = np.percentile(luminance, 99.9)
         if high <= 0:
             high = float(np.max(luminance)) if np.max(luminance) > 0 else 1.0

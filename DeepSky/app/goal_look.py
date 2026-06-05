@@ -813,6 +813,39 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
     final_black = float(np.percentile(lum, 5.0)) if stretch else 0.0
     if stretch:
         rgb = np.clip((rgb - final_black) / max(1e-6, 1.0 - final_black), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    sky_mask = lum < np.percentile(lum, 52.0)
+    if int(np.count_nonzero(sky_mask)) >= 512:
+        sky = np.median(rgb[sky_mask], axis=0)
+        green_target = 0.56 * sky[0] + 0.44 * sky[2]
+        if sky[1] > green_target * 1.18 + 0.006:
+            low = float(np.percentile(lum, 4.0))
+            high = float(np.percentile(lum, 78.0))
+            sky_weight = np.clip((high - lum) / max(1e-6, high - low), 0.0, 1.0)
+            star_weight = np.clip(
+                (lum - np.percentile(lum, 96.8))
+                / max(1e-6, np.percentile(lum, 99.96) - np.percentile(lum, 96.8)),
+                0.0,
+                1.0,
+            )
+            red_signal = np.clip(
+                (rgb[..., 0] - np.percentile(rgb[..., 0], 58.0))
+                / max(1e-6, np.percentile(rgb[..., 0], 99.4) - np.percentile(rgb[..., 0], 58.0)),
+                0.0,
+                1.0,
+            )
+            neutral_green = 0.58 * rgb[..., 0] + 0.42 * rgb[..., 2]
+            excess_green = np.maximum(0.0, rgb[..., 1] - neutral_green)
+            reduction = np.clip(sky_weight * (1.0 - star_weight * 0.8) * (1.0 - red_signal * 0.45), 0.0, 0.82)
+            rgb[..., 1] = np.clip(rgb[..., 1] - excess_green * reduction, 0.0, 1.0)
+            if log:
+                after_sky = np.median(rgb[sky_mask], axis=0)
+                log(
+                    "Applied nebula background green guard: "
+                    f"sky_before_RGB={sky[0]:.5f}, {sky[1]:.5f}, {sky[2]:.5f}, "
+                    f"sky_after_RGB={after_sky[0]:.5f}, {after_sky[1]:.5f}, {after_sky[2]:.5f}"
+                )
     if log:
         chroma_95 = chroma_percentile(rgb, 95.0)
         final_lum = _luminance(rgb)

@@ -261,6 +261,55 @@ def _fallback_remove_green(rgb: np.ndarray, log: LogCallback | None) -> np.ndarr
     return output
 
 
+def _duoband_emission_green_control(rgb: np.ndarray, log: LogCallback | None) -> np.ndarray:
+    luminance = _luminance(rgb)
+    sky_mask = luminance < np.percentile(luminance, 55.0)
+    if int(np.count_nonzero(sky_mask)) < 256:
+        return rgb
+
+    sky = np.median(rgb[sky_mask], axis=0)
+    green_excess = sky[1] - max(sky[0], sky[2])
+    if green_excess <= 0.015 and sky[1] <= (0.5 * (sky[0] + sky[2]) * 1.35 + 0.01):
+        return rgb
+
+    output = rgb.copy()
+    neutral_green = 0.58 * output[..., 0] + 0.42 * output[..., 2]
+    excess = np.maximum(0.0, output[..., 1] - neutral_green)
+    sky_weight = np.clip(
+        (np.percentile(luminance, 78.0) - luminance)
+        / max(1e-6, np.percentile(luminance, 78.0) - np.percentile(luminance, 3.0)),
+        0.0,
+        1.0,
+    )
+    star_weight = np.clip(
+        (luminance - np.percentile(luminance, 96.5))
+        / max(1e-6, np.percentile(luminance, 99.95) - np.percentile(luminance, 96.5)),
+        0.0,
+        1.0,
+    )
+    reduction = np.clip((0.88 * sky_weight + 0.55) * (1.0 - star_weight * 0.70), 0.0, 0.95)
+    output[..., 1] = np.clip(output[..., 1] - excess * reduction, 0.0, 1.0)
+
+    red_signal = np.clip(
+        (output[..., 0] - np.percentile(output[..., 0], 55.0))
+        / max(1e-6, np.percentile(output[..., 0], 99.2) - np.percentile(output[..., 0], 55.0)),
+        0.0,
+        1.0,
+    )
+    emission_boost = np.clip(red_signal * (1.0 - star_weight) * 0.22, 0.0, 0.22)
+    output[..., 0] = np.clip(output[..., 0] * (1.0 + emission_boost), 0.0, 1.0)
+
+    if log:
+        after = np.median(output[sky_mask], axis=0)
+        log(
+            "Python duo-band green control: "
+            f"sky_before_RGB={sky[0]:.5f}, {sky[1]:.5f}, {sky[2]:.5f}, "
+            f"sky_after_RGB={after[0]:.5f}, {after[1]:.5f}, {after[2]:.5f}, "
+            f"mean_reduction={float(np.mean(reduction)):.5f}"
+        )
+    return np.clip(output, 0.0, 1.0)
+
+
 def _color_calibrate(rgb: np.ndarray, log: LogCallback | None) -> np.ndarray:
     star_mask = _detect_star_mask(rgb, log)
     gains = _estimate_star_white_balance(rgb, star_mask, log)
@@ -355,6 +404,9 @@ def python_fallback_color_calibration(
     rgb = _extract_background(rgb, log)
     rgb = _neutralize_background(rgb, log)
     rgb = _color_calibrate(rgb, log)
+    rgb = _duoband_emission_green_control(rgb, log)
     rgb = _second_mtf(rgb, midpoint=second_midpoint, log=log)
+    rgb = _duoband_emission_green_control(rgb, log)
     rgb = _neutralize_sky(rgb, log)
+    rgb = _duoband_emission_green_control(rgb, log)
     return _to_uint16(rgb)
