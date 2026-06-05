@@ -644,18 +644,26 @@ def _html() -> str:
       font-weight: 800;
     }
     .footer a:hover { text-decoration: underline; }
-    .log {
+    .processing-indicator {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
       margin-top: 18px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #05080d;
-      color: #93a9c9;
-      font: 12px Consolas, ui-monospace, monospace;
-      padding: 14px;
-      min-height: 90px;
-      max-height: 180px;
-      overflow: auto;
-      white-space: pre-wrap;
+      color: #9db9ec;
+      font-weight: 800;
+    }
+    .processing-indicator.active { display: flex; }
+    .spinner {
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      border: 3px solid #1e355a;
+      border-top-color: #6ea1ff;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
     @media (max-width: 780px) {
       main { width: min(100vw - 24px, 1180px); padding-top: 26px; }
@@ -730,7 +738,10 @@ def _html() -> str:
       </article>
     </section>
     <nav class="downloads" id="downloads"></nav>
-    <pre class="log" id="log">Processing log will appear here.</pre>
+    <div class="processing-indicator" id="processingIndicator">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Processing image...</span>
+    </div>
     <footer class="footer">
       DeepSky Built By
       <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a>
@@ -755,7 +766,7 @@ def _html() -> str:
     const previewProgressLabel = document.getElementById("previewProgressLabel");
     const previewProgressFill = document.getElementById("previewProgressFill");
     const previewProgressValue = document.getElementById("previewProgressValue");
-    const logEl = document.getElementById("log");
+    const processingIndicator = document.getElementById("processingIndicator");
     const beforeFrame = document.getElementById("beforeFrame");
     const afterFrame = document.getElementById("afterFrame");
     const downloads = document.getElementById("downloads");
@@ -848,6 +859,7 @@ def _html() -> str:
       beforeFrame.innerHTML = file ? '<span class="empty">Loading preview</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
+      processingIndicator.classList.remove("active");
       statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 50 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
       warningEl.style.display = "none";
       warningEl.textContent = "";
@@ -914,12 +926,11 @@ def _html() -> str:
       const res = await fetch(`/api/jobs/${jobId}`);
       const job = await res.json();
       statusEl.textContent = job.status === "running" ? "Processing..." : job.status;
+      processingIndicator.classList.toggle("active", job.status === "queued" || job.status === "running");
       if (job.warnings && job.warnings.length) {
         warningEl.style.display = "block";
         warningEl.textContent = job.warnings.join(" ");
       }
-      logEl.textContent = job.log?.length ? job.log.join("\\n") : "Processing...";
-      logEl.scrollTop = logEl.scrollHeight;
       if (job.before_preview && !beforeFrame.querySelector("img")) {
         beforeFrame.innerHTML = `<img src="${job.before_preview}&t=${Date.now()}" alt="Before preview">`;
       }
@@ -928,6 +939,7 @@ def _html() -> str:
       }
       if (job.status === "finished") {
         statusEl.textContent = "Processing complete.";
+        processingIndicator.classList.remove("active");
         downloads.innerHTML = `
           <a href="${job.final}" download>Download final TIFF</a>
           <a href="${job.log_file}" download>Download log</a>
@@ -937,6 +949,7 @@ def _html() -> str:
       }
       if (job.status === "failed") {
         statusEl.textContent = "Processing failed.";
+        processingIndicator.classList.remove("active");
         run.disabled = false;
         return;
       }
@@ -947,7 +960,7 @@ def _html() -> str:
       if (!selectedFile) return;
       run.disabled = true;
       statusEl.textContent = "Uploading...";
-      logEl.textContent = "Uploading file...";
+      processingIndicator.classList.add("active");
       downloads.innerHTML = "";
       afterFrame.innerHTML = '<span class="empty">Processing</span>';
       showUploadProgress("Uploading job");
