@@ -306,6 +306,22 @@ def _landing_html() -> str:
           </article>
           <article class="slider">
             <div class="compare" style="--pos: 50%">
+              <img src="/static/landing/spiral_before.png" alt="Before spiral galaxy processing">
+              <img class="after" src="/static/landing/spiral_after.png" alt="After spiral galaxy processing">
+              <div class="handle"></div>
+            </div>
+            <input type="range" min="0" max="100" value="50" aria-label="Compare spiral galaxy before and after">
+          </article>
+          <article class="slider">
+            <div class="compare" style="--pos: 50%">
+              <img src="/static/landing/galaxies_before.png" alt="Before galaxy pair processing">
+              <img class="after" src="/static/landing/galaxies_after.png" alt="After galaxy pair processing">
+              <div class="handle"></div>
+            </div>
+            <input type="range" min="0" max="100" value="50" aria-label="Compare galaxy pair before and after">
+          </article>
+          <article class="slider">
+            <div class="compare" style="--pos: 50%">
               <img src="/static/landing/cluster_before.png" alt="Before Orion Nebula processing">
               <img class="after" src="/static/landing/cluster_after.png" alt="After Orion Nebula processing">
               <div class="handle"></div>
