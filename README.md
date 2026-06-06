@@ -43,6 +43,34 @@ $env:SUPABASE_ANON_KEY="your-supabase-anon-key"
 
 Unsigned users can view the process page, but previews, processing jobs, job status, and downloads require a valid Supabase session.
 
+## Web Billing
+
+Run `deploy/supabase/billing.sql` in the Supabase SQL editor to create the billing profile table and free-credit function.
+
+Stripe billing uses one $15/month subscription Price. Set these server-side environment variables before starting the FastAPI server:
+
+```powershell
+$env:SUPABASE_SERVICE_ROLE_KEY="your-supabase-service-role-key"
+$env:STRIPE_SECRET_KEY="sk_live_or_test_..."
+$env:STRIPE_WEBHOOK_SECRET="whsec_..."
+$env:STRIPE_PRICE_ID="price_..."
+```
+
+Optional overrides:
+
+```powershell
+$env:STRIPE_SUCCESS_URL="https://app.deepskyprocessor.com/process?billing=success"
+$env:STRIPE_CANCEL_URL="https://app.deepskyprocessor.com/process?billing=cancel"
+```
+
+Configure the Stripe webhook endpoint as:
+
+```text
+https://app.deepskyprocessor.com/api/stripe/webhook
+```
+
+Each signed-in user starts with 3 free image credits. After those credits are used, `/api/jobs` requires an active Stripe subscription. Paid users have unlimited image processing.
+
 ## Desktop App
 
 ```powershell

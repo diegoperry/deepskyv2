@@ -4,6 +4,7 @@ import os
 import json
 import urllib.error
 import urllib.request
+import urllib.parse
 import shutil
 import tempfile
 import time
@@ -15,7 +16,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -34,6 +35,9 @@ TEMP_FILE_TTL_SECONDS = 6 * 60 * 60
 MAX_WORKERS = 1
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
+FREE_IMAGE_CREDITS = 3
+PAID_PLAN_LABEL = "$15/month"
+PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 
 
 @dataclass
@@ -128,8 +132,159 @@ def _supabase_anon_key() -> str:
     return os.getenv("SUPABASE_ANON_KEY", "").strip()
 
 
+def _supabase_service_role_key() -> str:
+    return os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+
 def _auth_configured() -> bool:
     return bool(_supabase_url() and _supabase_anon_key())
+
+
+def _stripe_secret_key() -> str:
+    return os.getenv("STRIPE_SECRET_KEY", "").strip()
+
+
+def _stripe_webhook_secret() -> str:
+    return os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
+
+
+def _stripe_price_id() -> str:
+    return os.getenv("STRIPE_PRICE_ID", "").strip()
+
+
+def _billing_configured() -> bool:
+    return bool(_supabase_url() and _supabase_service_role_key() and _stripe_secret_key() and _stripe_price_id())
+
+
+def _stripe_module():
+    try:
+        import stripe  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="Stripe dependency is not installed.") from exc
+    stripe.api_key = _stripe_secret_key()
+    return stripe
+
+
+def _supabase_rest_request(
+    path: str,
+    *,
+    method: str = "GET",
+    payload: Any | None = None,
+    prefer: str | None = None,
+) -> Any:
+    if not _supabase_url() or not _supabase_service_role_key():
+        raise HTTPException(status_code=503, detail="Supabase service role is not configured.")
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {
+        "apikey": _supabase_service_role_key(),
+        "Authorization": f"Bearer {_supabase_service_role_key()}",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    if prefer:
+        headers["Prefer"] = prefer
+    request = urllib.request.Request(
+        f"{_supabase_url()}/rest/v1/{path.lstrip('/')}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            content = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=502, detail=f"Supabase billing request failed: {detail or exc.reason}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail="Could not reach Supabase billing store.") from exc
+    if not content:
+        return None
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="Supabase billing response was not JSON.") from exc
+
+
+def _profile_select_filter(column: str, value: str) -> str:
+    return f"profiles?{column}=eq.{urllib.parse.quote(value, safe='')}&select=*"
+
+
+def _is_paid_profile(profile: dict[str, Any] | None) -> bool:
+    status = str((profile or {}).get("subscription_status") or "").lower()
+    return status in PAID_SUBSCRIPTION_STATUSES
+
+
+def _get_profile(user_id: str) -> dict[str, Any] | None:
+    rows = _supabase_rest_request(_profile_select_filter("user_id", user_id))
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    return None
+
+
+def _get_profile_by_customer(customer_id: str) -> dict[str, Any] | None:
+    rows = _supabase_rest_request(_profile_select_filter("stripe_customer_id", customer_id))
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    return None
+
+
+def _upsert_profile(user: AuthUser, **updates: Any) -> dict[str, Any]:
+    payload = {
+        "user_id": user.id,
+        "email": user.email,
+        **{key: value for key, value in updates.items() if value is not None},
+    }
+    rows = _supabase_rest_request(
+        "profiles?on_conflict=user_id",
+        method="POST",
+        payload=payload,
+        prefer="resolution=merge-duplicates,return=representation",
+    )
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    profile = _get_profile(user.id)
+    if not profile:
+        raise HTTPException(status_code=502, detail="Could not create billing profile.")
+    return profile
+
+
+def _update_profile(user_id: str, updates: dict[str, Any]) -> None:
+    _supabase_rest_request(
+        f"profiles?user_id=eq.{urllib.parse.quote(user_id, safe='')}",
+        method="PATCH",
+        payload=updates,
+        prefer="return=minimal",
+    )
+
+
+def _billing_profile_for(user: AuthUser) -> dict[str, Any]:
+    if not _billing_configured():
+        raise HTTPException(status_code=503, detail="Billing is not configured.")
+    return _upsert_profile(user)
+
+
+def _consume_credit_or_require_subscription(user: AuthUser) -> dict[str, Any]:
+    profile = _billing_profile_for(user)
+    if _is_paid_profile(profile):
+        return profile
+    remaining = int(profile.get("free_credits_remaining") or 0)
+    if remaining <= 0:
+        raise HTTPException(
+            status_code=402,
+            detail="Free image credits used. Upgrade to the $15/month plan for unlimited processing.",
+        )
+    consumed = _supabase_rest_request(
+        "rpc/consume_free_credit",
+        method="POST",
+        payload={"target_user_id": user.id},
+    )
+    if consumed is not True:
+        raise HTTPException(
+            status_code=402,
+            detail="Free image credits used. Upgrade to the $15/month plan for unlimited processing.",
+        )
+    return _get_profile(user.id) or profile
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -619,6 +774,7 @@ def _html() -> str:
       justify-content: flex-end;
       align-items: center;
       gap: 12px;
+      flex-wrap: wrap;
       color: #9fb5d7;
       font-size: 14px;
       font-weight: 700;
@@ -634,6 +790,13 @@ def _html() -> str:
       font-weight: 800;
       padding: 9px 13px;
       cursor: pointer;
+    }
+    .billing-status {
+      border: 1px solid #263957;
+      border-radius: 999px;
+      background: #0b1628;
+      color: #cfe0ff;
+      padding: 8px 12px;
     }
     .auth-panel {
       width: min(520px, 100%);
@@ -887,6 +1050,8 @@ def _html() -> str:
   <main>
     <div id="accountBar" class="account-bar" hidden>
       <span id="accountEmail"></span>
+      <span id="billingStatus" class="billing-status"></span>
+      <button id="upgradePlan" class="link-button" type="button" hidden>Upgrade $15/mo</button>
       <button id="signOut" class="link-button" type="button">Sign out</button>
     </div>
     <section id="authPanel" class="auth-panel" hidden>
@@ -1021,6 +1186,8 @@ def _html() -> str:
     const downloads = document.getElementById("downloads");
     const accountBar = document.getElementById("accountBar");
     const accountEmail = document.getElementById("accountEmail");
+    const billingStatus = document.getElementById("billingStatus");
+    const upgradePlan = document.getElementById("upgradePlan");
     const signOut = document.getElementById("signOut");
     const authPanel = document.getElementById("authPanel");
     const authIntroTitle = authPanel.querySelector("h2");
@@ -1157,6 +1324,12 @@ def _html() -> str:
       forgotPassword.hidden = false;
       authActions.hidden = false;
       accountEmail.textContent = user ? (user.email || "Signed in") : "";
+      if (user) {
+        void loadBillingStatus();
+      } else {
+        billingStatus.textContent = "";
+        upgradePlan.hidden = true;
+      }
       if (!user) {
         selectedFile = null;
         activeJob = null;
@@ -1230,6 +1403,44 @@ def _html() -> str:
       return fetch(url, { headers: await authHeaders() });
     }
 
+    async function postJsonAuthed(url, payload = {}) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          ...(await authHeaders()),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || "Request failed.");
+      }
+      return data;
+    }
+
+    async function loadBillingStatus() {
+      if (!session || !session.user) return;
+      try {
+        const response = await fetchAuthed("/api/billing/status");
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Billing status unavailable.");
+        }
+        if (data.is_paid) {
+          billingStatus.textContent = "Paid plan active";
+          upgradePlan.hidden = true;
+        } else {
+          const credits = Number(data.free_credits_remaining || 0);
+          billingStatus.textContent = `${credits} free image${credits === 1 ? "" : "s"} left`;
+          upgradePlan.hidden = false;
+        }
+      } catch (error) {
+        billingStatus.textContent = error.message || "Billing status unavailable.";
+        upgradePlan.hidden = true;
+      }
+    }
+
     async function loadImageIntoFrame(url, frame, alt) {
       const response = await fetchAuthed(url);
       if (!response.ok) throw new Error("Image is not available yet.");
@@ -1280,7 +1491,12 @@ def _html() -> str:
               reject(error);
             }
           } else {
-            reject(new Error(xhr.responseText || `Request failed with status ${xhr.status}`));
+            let message = xhr.responseText || `Request failed with status ${xhr.status}`;
+            try {
+              const parsed = JSON.parse(xhr.responseText);
+              message = parsed.detail || message;
+            } catch (_error) {}
+            reject(new Error(message));
           }
         };
         xhr.onerror = () => reject(new Error("Network error while uploading file."));
@@ -1451,6 +1667,18 @@ def _html() -> str:
       setSignedIn(null);
     });
 
+    upgradePlan.addEventListener("click", async () => {
+      try {
+        upgradePlan.disabled = true;
+        billingStatus.textContent = "Opening checkout...";
+        const checkout = await postJsonAuthed("/api/billing/checkout");
+        window.location.href = checkout.url;
+      } catch (error) {
+        billingStatus.textContent = error.message || String(error);
+        upgradePlan.disabled = false;
+      }
+    });
+
     downloads.addEventListener("click", async (event) => {
       const button = event.target.closest("button[data-download-url]");
       if (!button) return;
@@ -1550,6 +1778,7 @@ def _html() -> str:
       }
       progressPanel.hidden = true;
       activeJob = job.id;
+      void loadBillingStatus();
       showPipelineProgress("Starting Pipeline", 1);
       poll(activeJob);
     });
@@ -1666,6 +1895,35 @@ def _job_response(job: WebJob) -> dict[str, Any]:
     return payload
 
 
+def _subscription_payload(subscription: Any, *, status_override: str | None = None) -> dict[str, Any]:
+    status = status_override or getattr(subscription, "status", None) or subscription.get("status")
+    current_period_end = getattr(subscription, "current_period_end", None) or subscription.get("current_period_end")
+    return {
+        "subscription_status": status or "free",
+        "stripe_subscription_id": getattr(subscription, "id", None) or subscription.get("id"),
+        "current_period_end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(current_period_end))
+        if current_period_end
+        else None,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _apply_subscription_update(subscription: Any, *, status_override: str | None = None) -> None:
+    metadata = getattr(subscription, "metadata", None) or subscription.get("metadata") or {}
+    user_id = metadata.get("user_id")
+    customer_id = getattr(subscription, "customer", None) or subscription.get("customer")
+    updates = _subscription_payload(subscription, status_override=status_override)
+    if customer_id:
+        updates["stripe_customer_id"] = customer_id
+    if user_id:
+        _update_profile(user_id, updates)
+        return
+    if customer_id:
+        profile = _get_profile_by_customer(str(customer_id))
+        if profile:
+            _update_profile(profile["user_id"], updates)
+
+
 def _run_job(
     job_id: str,
     input_path: Path,
@@ -1754,6 +2012,77 @@ def auth_config() -> dict[str, str | bool]:
         "supabase_url": _supabase_url(),
         "supabase_anon_key": _supabase_anon_key(),
     }
+
+
+@app.get("/api/billing/status")
+def billing_status(user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    profile = _billing_profile_for(user)
+    is_paid = _is_paid_profile(profile)
+    return {
+        "configured": _billing_configured(),
+        "plan": PAID_PLAN_LABEL,
+        "is_paid": is_paid,
+        "subscription_status": profile.get("subscription_status") or "free",
+        "free_credits_remaining": int(profile.get("free_credits_remaining") or 0),
+    }
+
+
+@app.post("/api/billing/checkout")
+def create_billing_checkout(user: AuthUser = Depends(require_user)) -> dict[str, str]:
+    profile = _billing_profile_for(user)
+    stripe = _stripe_module()
+    customer_id = profile.get("stripe_customer_id")
+    if not customer_id:
+        customer = stripe.Customer.create(
+            email=user.email,
+            metadata={"user_id": user.id},
+        )
+        customer_id = customer.id
+        _update_profile(user.id, {"stripe_customer_id": customer_id, "email": user.email})
+
+    session = stripe.checkout.Session.create(
+        mode="subscription",
+        customer=customer_id,
+        client_reference_id=user.id,
+        line_items=[{"price": _stripe_price_id(), "quantity": 1}],
+        success_url=os.getenv("STRIPE_SUCCESS_URL", "https://app.deepskyprocessor.com/process?billing=success"),
+        cancel_url=os.getenv("STRIPE_CANCEL_URL", "https://app.deepskyprocessor.com/process?billing=cancel"),
+        metadata={"user_id": user.id},
+        subscription_data={"metadata": {"user_id": user.id}},
+    )
+    return {"url": session.url}
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request) -> dict[str, bool]:
+    webhook_secret = _stripe_webhook_secret()
+    if not webhook_secret:
+        raise HTTPException(status_code=503, detail="Stripe webhook secret is not configured.")
+    stripe = _stripe_module()
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature")
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, webhook_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook signature.") from exc
+
+    event_type = event["type"]
+    event_object = event["data"]["object"]
+    if event_type == "checkout.session.completed":
+        user_id = event_object.get("client_reference_id") or (event_object.get("metadata") or {}).get("user_id")
+        customer_id = event_object.get("customer")
+        subscription_id = event_object.get("subscription")
+        if user_id and customer_id:
+            updates: dict[str, Any] = {"stripe_customer_id": customer_id, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            if subscription_id:
+                subscription = stripe.Subscription.retrieve(subscription_id)
+                updates.update(_subscription_payload(subscription))
+            _update_profile(user_id, updates)
+    elif event_type in {"customer.subscription.created", "customer.subscription.updated"}:
+        _apply_subscription_update(event_object)
+    elif event_type == "customer.subscription.deleted":
+        _apply_subscription_update(event_object, status_override="canceled")
+    return {"received": True}
 
 
 @app.post("/api/preview")
@@ -1845,6 +2174,12 @@ async def create_job(
                 shutil.rmtree(upload_dir, ignore_errors=True)
                 raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
             handle.write(chunk)
+
+    try:
+        _consume_credit_or_require_subscription(user)
+    except HTTPException:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise
 
     with jobs_lock:
         jobs[job_id] = WebJob(id=job_id, user_id=user.id, user_email=user.email)
