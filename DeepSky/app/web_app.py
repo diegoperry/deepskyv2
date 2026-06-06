@@ -665,6 +665,21 @@ def _html() -> str:
     }
     .auth-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
     .auth-message { min-height: 22px; color: #9fb5d7; font-size: 14px; }
+    .forgot-button {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: #9cbcff;
+      font-weight: 800;
+      padding: 0;
+      width: fit-content;
+      cursor: pointer;
+    }
+    .reset-password-panel {
+      display: grid;
+      gap: 14px;
+    }
+    .reset-password-panel[hidden] { display: none; }
     .drop {
       width: min(720px, 100%);
       min-height: 184px;
@@ -885,11 +900,25 @@ def _html() -> str:
         Password
         <input id="authPassword" type="password" autocomplete="current-password" minlength="6" required />
       </label>
+      <button id="forgotPassword" class="forgot-button" type="button">Forgot password?</button>
       <div class="auth-actions">
         <button id="signIn" class="cta" type="button">Sign in</button>
         <button id="signUp" class="link-button" type="button">Create account</button>
       </div>
       <div id="authMessage" class="auth-message"></div>
+      <div id="resetPasswordPanel" class="reset-password-panel" hidden>
+        <h2>Reset password</h2>
+        <p>Enter a new password for your DeepSky account.</p>
+        <label class="auth-field">
+          New password
+          <input id="newPassword" type="password" autocomplete="new-password" minlength="8" />
+        </label>
+        <label class="auth-field">
+          Confirm new password
+          <input id="confirmPassword" type="password" autocomplete="new-password" minlength="8" />
+        </label>
+        <button id="updatePassword" class="cta" type="button">Update password</button>
+      </div>
     </section>
     <div id="appShell" class="app-shell" hidden>
     <section class="hero">
@@ -994,14 +1023,24 @@ def _html() -> str:
     const accountEmail = document.getElementById("accountEmail");
     const signOut = document.getElementById("signOut");
     const authPanel = document.getElementById("authPanel");
+    const authIntroTitle = authPanel.querySelector("h2");
+    const authIntroCopy = authPanel.querySelector("p");
     const appShell = document.getElementById("appShell");
     const authEmail = document.getElementById("authEmail");
     const authPassword = document.getElementById("authPassword");
     const signIn = document.getElementById("signIn");
     const signUp = document.getElementById("signUp");
+    const forgotPassword = document.getElementById("forgotPassword");
+    const authActions = authPanel.querySelector(".auth-actions");
     const authMessage = document.getElementById("authMessage");
+    const resetPasswordPanel = document.getElementById("resetPasswordPanel");
+    const newPassword = document.getElementById("newPassword");
+    const confirmPassword = document.getElementById("confirmPassword");
+    const updatePassword = document.getElementById("updatePassword");
+    const PASSWORD_RESET_REDIRECT = "https://app.deepskyprocessor.com/process";
     let authClient = null;
     let session = null;
+    let recoveryMode = false;
     let selectedFile = null;
     let activeJob = null;
     let previewRequest = 0;
@@ -1028,6 +1067,29 @@ def _html() -> str:
       return { email, password };
     }
 
+    function authEmailValue() {
+      const email = authEmail.value.trim();
+      if (!email) {
+        throw new Error("Enter your email address.");
+      }
+      if (!authEmail.checkValidity()) {
+        throw new Error("Enter a valid email address.");
+      }
+      return email;
+    }
+
+    function resetPasswordValues() {
+      const password = newPassword.value;
+      const confirmation = confirmPassword.value;
+      if (password.length < 8) {
+        throw new Error("Password must be at least 8 characters.");
+      }
+      if (password !== confirmation) {
+        throw new Error("New password and confirmation must match.");
+      }
+      return password;
+    }
+
     function authErrorMessage(error) {
       const message = error && error.message ? error.message : String(error || "Authentication failed.");
       const normalized = message.toLowerCase();
@@ -1049,14 +1111,45 @@ def _html() -> str:
     function setAuthBusy(isBusy) {
       signIn.disabled = isBusy;
       signUp.disabled = isBusy;
+      forgotPassword.disabled = isBusy;
+      updatePassword.disabled = isBusy;
+    }
+
+    function setRecoveryMode(isActive, nextSession = session) {
+      recoveryMode = isActive;
+      session = nextSession;
+      authPanel.hidden = false;
+      appShell.hidden = true;
+      accountBar.hidden = true;
+      resetPasswordPanel.hidden = !isActive;
+      authIntroTitle.hidden = isActive;
+      authIntroCopy.hidden = isActive;
+      authEmail.closest("label").hidden = isActive;
+      authPassword.closest("label").hidden = isActive;
+      forgotPassword.hidden = isActive;
+      authActions.hidden = isActive;
+      if (isActive) {
+        newPassword.focus();
+      }
     }
 
     function setSignedIn(nextSession) {
+      if (recoveryMode) {
+        setRecoveryMode(true, nextSession);
+        return;
+      }
       session = nextSession;
       const user = session && session.user;
       appShell.hidden = !user;
       accountBar.hidden = !user;
       authPanel.hidden = !!user;
+      resetPasswordPanel.hidden = true;
+      authIntroTitle.hidden = false;
+      authIntroCopy.hidden = false;
+      authEmail.closest("label").hidden = false;
+      authPassword.closest("label").hidden = false;
+      forgotPassword.hidden = false;
+      authActions.hidden = false;
       accountEmail.textContent = user ? (user.email || "Signed in") : "";
       if (!user) {
         selectedFile = null;
@@ -1293,8 +1386,55 @@ def _html() -> str:
       }
     });
 
+    forgotPassword.addEventListener("click", async () => {
+      if (!authClient) return;
+      try {
+        const email = authEmailValue();
+        setAuthBusy(true);
+        setAuthMessage("Sending password reset email...");
+        const { error } = await authClient.auth.resetPasswordForEmail(email, {
+          redirectTo: PASSWORD_RESET_REDIRECT,
+        });
+        if (error) {
+          setAuthMessage(authErrorMessage(error));
+          return;
+        }
+        setAuthMessage("Password reset email sent. Check your inbox.");
+      } catch (error) {
+        setAuthMessage(authErrorMessage(error));
+      } finally {
+        setAuthBusy(false);
+      }
+    });
+
+    updatePassword.addEventListener("click", async () => {
+      if (!authClient) return;
+      try {
+        const password = resetPasswordValues();
+        setAuthBusy(true);
+        setAuthMessage("Updating password...");
+        const { error } = await authClient.auth.updateUser({ password });
+        if (error) {
+          setAuthMessage(authErrorMessage(error));
+          return;
+        }
+        const { data } = await authClient.auth.getSession();
+        newPassword.value = "";
+        confirmPassword.value = "";
+        recoveryMode = false;
+        setAuthMessage("Password updated. You can now continue.");
+        statusEl.textContent = "Password updated. You can now continue.";
+        setSignedIn(data.session);
+      } catch (error) {
+        setAuthMessage(authErrorMessage(error));
+      } finally {
+        setAuthBusy(false);
+      }
+    });
+
     signOut.addEventListener("click", async () => {
       if (!authClient) return;
+      recoveryMode = false;
       await authClient.auth.signOut();
       setSignedIn(null);
     });
@@ -1423,9 +1563,24 @@ def _html() -> str:
         }
         authClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
         const { data } = await authClient.auth.getSession();
-        setSignedIn(data.session);
+        const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        const queryParams = new URLSearchParams(window.location.search);
+        const isRecoveryUrl = hashParams.get("type") === "recovery" || queryParams.get("type") === "recovery";
+        if (isRecoveryUrl && data.session) {
+          setRecoveryMode(true, data.session);
+          history.replaceState(null, "", "/process");
+        } else {
+          setSignedIn(data.session);
+        }
         authClient.auth.onAuthStateChange((_event, nextSession) => {
-          setSignedIn(nextSession);
+          if (_event === "PASSWORD_RECOVERY") {
+            setRecoveryMode(true, nextSession);
+            history.replaceState(null, "", "/process");
+            return;
+          }
+          if (!recoveryMode) {
+            setSignedIn(nextSession);
+          }
         });
       } catch (error) {
         setAuthMessage(error.message || String(error));
