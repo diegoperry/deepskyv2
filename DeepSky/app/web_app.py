@@ -879,11 +879,11 @@ def _html() -> str:
       <p>Create an account or sign in before running the DeepSky pipeline.</p>
       <label class="auth-field">
         Email
-        <input id="authEmail" type="email" autocomplete="email" />
+        <input id="authEmail" type="email" autocomplete="email" required />
       </label>
       <label class="auth-field">
         Password
-        <input id="authPassword" type="password" autocomplete="current-password" />
+        <input id="authPassword" type="password" autocomplete="current-password" minlength="6" required />
       </label>
       <div class="auth-actions">
         <button id="signIn" class="cta" type="button">Sign in</button>
@@ -1008,6 +1008,47 @@ def _html() -> str:
 
     function setAuthMessage(message) {
       authMessage.textContent = message || "";
+    }
+
+    function authCredentials() {
+      const email = authEmail.value.trim();
+      const password = authPassword.value;
+      if (!email) {
+        throw new Error("Enter your email address.");
+      }
+      if (!authEmail.checkValidity()) {
+        throw new Error("Enter a valid email address.");
+      }
+      if (!password) {
+        throw new Error("Enter your password.");
+      }
+      if (password.length < 6) {
+        throw new Error("Password must be at least 6 characters.");
+      }
+      return { email, password };
+    }
+
+    function authErrorMessage(error) {
+      const message = error && error.message ? error.message : String(error || "Authentication failed.");
+      const normalized = message.toLowerCase();
+      if (normalized.includes("invalid login credentials")) {
+        return "Invalid email or password.";
+      }
+      if (normalized.includes("email") && normalized.includes("invalid")) {
+        return "Enter a valid email address.";
+      }
+      if (normalized.includes("password")) {
+        return message;
+      }
+      if (normalized.includes("anonymous")) {
+        return "Email and password are required. Guest sign-in is not enabled.";
+      }
+      return message;
+    }
+
+    function setAuthBusy(isBusy) {
+      signIn.disabled = isBusy;
+      signUp.disabled = isBusy;
     }
 
     function setSignedIn(nextSession) {
@@ -1214,32 +1255,42 @@ def _html() -> str:
 
     signIn.addEventListener("click", async () => {
       if (!authClient) return;
-      setAuthMessage("Signing in...");
-      const { data, error } = await authClient.auth.signInWithPassword({
-        email: authEmail.value.trim(),
-        password: authPassword.value,
-      });
-      if (error) {
-        setAuthMessage(error.message);
-        return;
+      try {
+        const { email, password } = authCredentials();
+        setAuthBusy(true);
+        setAuthMessage("Signing in...");
+        const { data, error } = await authClient.auth.signInWithPassword({ email, password });
+        if (error) {
+          setAuthMessage(authErrorMessage(error));
+          return;
+        }
+        setAuthMessage("");
+        setSignedIn(data.session);
+      } catch (error) {
+        setAuthMessage(authErrorMessage(error));
+      } finally {
+        setAuthBusy(false);
       }
-      setAuthMessage("");
-      setSignedIn(data.session);
     });
 
     signUp.addEventListener("click", async () => {
       if (!authClient) return;
-      setAuthMessage("Creating account...");
-      const { data, error } = await authClient.auth.signUp({
-        email: authEmail.value.trim(),
-        password: authPassword.value,
-      });
-      if (error) {
-        setAuthMessage(error.message);
-        return;
+      try {
+        const { email, password } = authCredentials();
+        setAuthBusy(true);
+        setAuthMessage("Creating account...");
+        const { data, error } = await authClient.auth.signUp({ email, password });
+        if (error) {
+          setAuthMessage(authErrorMessage(error));
+          return;
+        }
+        setSignedIn(data.session);
+        setAuthMessage(data.session ? "" : "Check your email to confirm your account.");
+      } catch (error) {
+        setAuthMessage(authErrorMessage(error));
+      } finally {
+        setAuthBusy(false);
       }
-      setSignedIn(data.session);
-      setAuthMessage(data.session ? "" : "Check your email to confirm your account.");
     });
 
     signOut.addEventListener("click", async () => {
