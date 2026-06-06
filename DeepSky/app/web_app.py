@@ -1037,7 +1037,7 @@ def _html() -> str:
     const newPassword = document.getElementById("newPassword");
     const confirmPassword = document.getElementById("confirmPassword");
     const updatePassword = document.getElementById("updatePassword");
-    const PASSWORD_RESET_REDIRECT = "https://app.deepskyprocessor.com/process";
+    const AUTH_REDIRECT_URL = "https://app.deepskyprocessor.com/process";
     let authClient = null;
     let session = null;
     let recoveryMode = false;
@@ -1113,6 +1113,12 @@ def _html() -> str:
       signUp.disabled = isBusy;
       forgotPassword.disabled = isBusy;
       updatePassword.disabled = isBusy;
+    }
+
+    function cleanAuthUrl() {
+      if (window.location.pathname === "/process" && (window.location.hash || window.location.search)) {
+        window.history.replaceState({}, document.title, "/process");
+      }
     }
 
     function setRecoveryMode(isActive, nextSession = session) {
@@ -1372,7 +1378,13 @@ def _html() -> str:
         const { email, password } = authCredentials();
         setAuthBusy(true);
         setAuthMessage("Creating account...");
-        const { data, error } = await authClient.auth.signUp({ email, password });
+        const { data, error } = await authClient.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: AUTH_REDIRECT_URL,
+          },
+        });
         if (error) {
           setAuthMessage(authErrorMessage(error));
           return;
@@ -1393,7 +1405,7 @@ def _html() -> str:
         setAuthBusy(true);
         setAuthMessage("Sending password reset email...");
         const { error } = await authClient.auth.resetPasswordForEmail(email, {
-          redirectTo: PASSWORD_RESET_REDIRECT,
+          redirectTo: AUTH_REDIRECT_URL,
         });
         if (error) {
           setAuthMessage(authErrorMessage(error));
@@ -1562,26 +1574,63 @@ def _html() -> str:
           return;
         }
         authClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
-        const { data } = await authClient.auth.getSession();
         const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         const queryParams = new URLSearchParams(window.location.search);
         const isRecoveryUrl = hashParams.get("type") === "recovery" || queryParams.get("type") === "recovery";
-        if (isRecoveryUrl && data.session) {
-          setRecoveryMode(true, data.session);
-          history.replaceState(null, "", "/process");
-        } else {
-          setSignedIn(data.session);
-        }
-        authClient.auth.onAuthStateChange((_event, nextSession) => {
-          if (_event === "PASSWORD_RECOVERY") {
+        const isEmailConfirmationUrl =
+          ["signup", "email_change", "magiclink"].includes(hashParams.get("type")) ||
+          ["signup", "email_change", "magiclink"].includes(queryParams.get("type")) ||
+          hashParams.has("access_token") ||
+          queryParams.has("code");
+        let authCallbackHandled = false;
+        authClient.auth.onAuthStateChange((event, nextSession) => {
+          if (event === "PASSWORD_RECOVERY") {
+            authCallbackHandled = true;
             setRecoveryMode(true, nextSession);
-            history.replaceState(null, "", "/process");
+            cleanAuthUrl();
+            return;
+          }
+          if (nextSession) {
+            authCallbackHandled = true;
+            if (!recoveryMode) {
+              setSignedIn(nextSession);
+            }
+            if (isEmailConfirmationUrl) {
+              cleanAuthUrl();
+            }
             return;
           }
           if (!recoveryMode) {
             setSignedIn(nextSession);
           }
         });
+
+        const { data } = await authClient.auth.getSession();
+        if (isRecoveryUrl && data.session) {
+          setRecoveryMode(true, data.session);
+          cleanAuthUrl();
+        } else if (data.session) {
+          setSignedIn(data.session);
+          if (isEmailConfirmationUrl) {
+            cleanAuthUrl();
+          }
+        } else if (isEmailConfirmationUrl) {
+          setSignedIn(null);
+          window.setTimeout(async () => {
+            const { data: refreshed } = await authClient.auth.getSession();
+            if (refreshed.session) {
+              setSignedIn(refreshed.session);
+              cleanAuthUrl();
+              return;
+            }
+            if (!authCallbackHandled) {
+              setAuthMessage("Email confirmed. Please sign in to continue.");
+              cleanAuthUrl();
+            }
+          }, 800);
+        } else {
+          setSignedIn(data.session);
+        }
       } catch (error) {
         setAuthMessage(error.message || String(error));
         signIn.disabled = true;
