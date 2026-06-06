@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -17,13 +18,16 @@ from threading import Lock
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
 from .pipeline import PipelineMode, run_pipeline
 from .settings import APP_ROOT, PROJECT_ROOT, default_settings, load_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 WEB_WORK_ROOT = Path(tempfile.gettempdir()) / "deepsky_web"
@@ -1403,6 +1407,15 @@ def _html() -> str:
       return fetch(url, { headers: await authHeaders() });
     }
 
+    async function readJsonResponse(response, fallbackMessage) {
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.toLowerCase().includes("application/json")) {
+        await response.text().catch(() => "");
+        throw new Error(fallbackMessage);
+      }
+      return response.json();
+    }
+
     async function postJsonAuthed(url, payload = {}) {
       const response = await fetch(url, {
         method: "POST",
@@ -1412,7 +1425,7 @@ def _html() -> str:
         },
         body: JSON.stringify(payload),
       });
-      const data = await response.json().catch(() => ({}));
+      const data = await readJsonResponse(response, "Billing service temporarily unavailable. Please refresh.");
       if (!response.ok) {
         throw new Error(data.detail || "Request failed.");
       }
@@ -1423,9 +1436,9 @@ def _html() -> str:
       if (!session || !session.user) return;
       try {
         const response = await fetchAuthed("/api/billing/status");
-        const data = await response.json();
+        const data = await readJsonResponse(response, "Billing service temporarily unavailable. Please refresh.");
         if (!response.ok) {
-          throw new Error(data.detail || "Billing status unavailable.");
+          throw new Error(data.detail || data.error || "Billing status unavailable.");
         }
         if (data.is_paid) {
           billingStatus.textContent = "Paid plan active";
@@ -1492,10 +1505,15 @@ def _html() -> str:
             }
           } else {
             let message = xhr.responseText || `Request failed with status ${xhr.status}`;
-            try {
-              const parsed = JSON.parse(xhr.responseText);
-              message = parsed.detail || message;
-            } catch (_error) {}
+            const contentType = xhr.getResponseHeader("content-type") || "";
+            if (contentType.toLowerCase().includes("application/json")) {
+              try {
+                const parsed = JSON.parse(xhr.responseText);
+                message = parsed.detail || parsed.error || message;
+              } catch (_error) {}
+            } else {
+              message = "Processing service temporarily unavailable. Please refresh.";
+            }
             reject(new Error(message));
           }
         };
@@ -1699,14 +1717,23 @@ def _html() -> str:
     });
 
     async function poll(jobId) {
-      const res = await fetchAuthed(`/api/jobs/${jobId}`);
-      if (!res.ok) {
-        statusEl.textContent = "Sign in to continue.";
+      let job;
+      let res;
+      try {
+        res = await fetchAuthed(`/api/jobs/${jobId}`);
+        job = await readJsonResponse(res, "Processing service temporarily unavailable. Please refresh.");
+      } catch (error) {
+        statusEl.textContent = error.message || String(error);
         processingIndicator.classList.remove("active");
         run.disabled = false;
         return;
       }
-      const job = await res.json();
+      if (!res.ok) {
+        statusEl.textContent = job.detail || job.error || "Sign in to continue.";
+        processingIndicator.classList.remove("active");
+        run.disabled = false;
+        return;
+      }
       if (job.status === "queued" || job.status === "running") {
         showPipelineProgress(job.stage, job.progress);
         statusEl.textContent = `${job.stage || "Processing"} - ${Math.round(job.progress || 0)}%`;
@@ -1789,7 +1816,7 @@ def _html() -> str:
       accountBar.hidden = true;
       try {
         const response = await fetch("/api/auth/config");
-        const config = await response.json();
+        const config = await readJsonResponse(response, "Service temporarily unavailable. Please refresh.");
         if (!config.configured) {
           setAuthMessage("Supabase auth is not configured on this server.");
           signIn.disabled = true;
@@ -2014,17 +2041,21 @@ def auth_config() -> dict[str, str | bool]:
     }
 
 
-@app.get("/api/billing/status")
-def billing_status(user: AuthUser = Depends(require_user)) -> dict[str, Any]:
-    profile = _billing_profile_for(user)
-    is_paid = _is_paid_profile(profile)
-    return {
-        "configured": _billing_configured(),
-        "plan": PAID_PLAN_LABEL,
-        "is_paid": is_paid,
-        "subscription_status": profile.get("subscription_status") or "free",
-        "free_credits_remaining": int(profile.get("free_credits_remaining") or 0),
-    }
+@app.get("/api/billing/status", response_model=None)
+def billing_status(user: AuthUser = Depends(require_user)) -> Any:
+    try:
+        profile = _billing_profile_for(user)
+        is_paid = _is_paid_profile(profile)
+        return {
+            "configured": _billing_configured(),
+            "plan": PAID_PLAN_LABEL,
+            "is_paid": is_paid,
+            "subscription_status": profile.get("subscription_status") or "free",
+            "free_credits_remaining": int(profile.get("free_credits_remaining") or 0),
+        }
+    except Exception as exc:
+        logger.exception("Billing status lookup failed for user_id=%s", user.id)
+        return JSONResponse({"error": "Billing status unavailable"}, status_code=500)
 
 
 @app.post("/api/billing/checkout")
