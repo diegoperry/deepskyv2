@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import json
+import urllib.error
+import urllib.request
 import shutil
 import tempfile
 import time
@@ -11,7 +15,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -35,6 +39,8 @@ MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
 @dataclass
 class WebJob:
     id: str
+    user_id: str
+    user_email: str | None = None
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     log: list[str] = field(default_factory=list)
@@ -43,6 +49,12 @@ class WebJob:
     error: str | None = None
     stage: str = "Queued"
     progress: int = 0
+
+
+@dataclass(frozen=True)
+class AuthUser:
+    id: str
+    email: str | None = None
 
 
 PROGRESS_LINE_RE = re.compile(r"progress:\s*(?P<label>.*?),\s*(?P<percent>\d+(?:\.\d+)?)%")
@@ -103,8 +115,60 @@ def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
 app = FastAPI(title="DeepSky")
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 jobs: dict[str, WebJob] = {}
+previews: dict[str, str] = {}
 jobs_lock = Lock()
 app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
+
+
+def _supabase_url() -> str:
+    return os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+
+
+def _supabase_anon_key() -> str:
+    return os.getenv("SUPABASE_ANON_KEY", "").strip()
+
+
+def _auth_configured() -> bool:
+    return bool(_supabase_url() and _supabase_anon_key())
+
+
+def _extract_bearer_token(authorization: str | None) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Sign in to continue.")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Invalid authorization header.")
+    return token.strip()
+
+
+def require_user(authorization: str | None = Header(default=None)) -> AuthUser:
+    if not _auth_configured():
+        raise HTTPException(status_code=503, detail="Supabase auth is not configured.")
+
+    token = _extract_bearer_token(authorization)
+    request = urllib.request.Request(
+        f"{_supabase_url()}/auth/v1/user",
+        headers={
+            "apikey": _supabase_anon_key(),
+            "Authorization": f"Bearer {token}",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise HTTPException(status_code=401, detail="Sign in to continue.") from exc
+        raise HTTPException(status_code=502, detail="Could not verify Supabase session.") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="Could not verify Supabase session.") from exc
+
+    user_id = payload.get("id")
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=401, detail="Sign in to continue.")
+    email = payload.get("email") if isinstance(payload.get("email"), str) else None
+    return AuthUser(id=user_id, email=email)
 
 
 def _cleanup_old_temp_files() -> None:
@@ -117,6 +181,9 @@ def _cleanup_old_temp_files() -> None:
         for child in root.iterdir():
             try:
                 if child.stat().st_mtime < cutoff:
+                    if root == PREVIEW_ROOT:
+                        with jobs_lock:
+                            previews.pop(child.name, None)
                     if child.is_dir():
                         shutil.rmtree(child, ignore_errors=True)
                     else:
@@ -546,6 +613,58 @@ def _html() -> str:
       font-size: clamp(16px, 2vw, 22px);
       line-height: 1.55;
     }
+    .account-bar {
+      min-height: 38px;
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 12px;
+      color: #9fb5d7;
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 18px;
+    }
+    .account-bar[hidden], .auth-panel[hidden], .app-shell[hidden] { display: none; }
+    .link-button {
+      appearance: none;
+      border: 1px solid #2c4773;
+      border-radius: 8px;
+      background: #0b1628;
+      color: #cfe0ff;
+      font-weight: 800;
+      padding: 9px 13px;
+      cursor: pointer;
+    }
+    .auth-panel {
+      width: min(520px, 100%);
+      margin: 54px auto 72px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(13, 20, 32, .86);
+      padding: 24px;
+      display: grid;
+      gap: 14px;
+    }
+    .auth-panel h2 { margin: 0; font-size: 24px; letter-spacing: 0; }
+    .auth-panel p { margin: 0; color: var(--muted); line-height: 1.5; }
+    .auth-field {
+      display: grid;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .auth-field input {
+      min-height: 44px;
+      border: 1px solid #2c4773;
+      border-radius: 8px;
+      background: #070b12;
+      color: var(--text);
+      padding: 0 12px;
+      font-size: 15px;
+    }
+    .auth-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+    .auth-message { min-height: 22px; color: #9fb5d7; font-size: 14px; }
     .drop {
       width: min(720px, 100%);
       min-height: 184px;
@@ -751,6 +870,28 @@ def _html() -> str:
 </head>
 <body>
   <main>
+    <div id="accountBar" class="account-bar" hidden>
+      <span id="accountEmail"></span>
+      <button id="signOut" class="link-button" type="button">Sign out</button>
+    </div>
+    <section id="authPanel" class="auth-panel" hidden>
+      <h2>Sign in to process images</h2>
+      <p>Create an account or sign in before running the DeepSky pipeline.</p>
+      <label class="auth-field">
+        Email
+        <input id="authEmail" type="email" autocomplete="email" />
+      </label>
+      <label class="auth-field">
+        Password
+        <input id="authPassword" type="password" autocomplete="current-password" />
+      </label>
+      <div class="auth-actions">
+        <button id="signIn" class="cta" type="button">Sign in</button>
+        <button id="signUp" class="link-button" type="button">Create account</button>
+      </div>
+      <div id="authMessage" class="auth-message"></div>
+    </section>
+    <div id="appShell" class="app-shell" hidden>
     <section class="hero">
       <div class="pill">● DeepSky Astrophotography Pipeline v1.0</div>
       <h1>Process the <span class="cosmos">Cosmos</span></h1>
@@ -819,11 +960,13 @@ def _html() -> str:
       <span class="spinner" aria-hidden="true"></span>
       <span>Processing image...</span>
     </div>
+    </div>
     <footer class="footer">
       DeepSky Built By
       <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a>
     </footer>
   </main>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     const drop = document.getElementById("drop");
     const fileInput = document.getElementById("file");
@@ -847,9 +990,52 @@ def _html() -> str:
     const beforeFrame = document.getElementById("beforeFrame");
     const afterFrame = document.getElementById("afterFrame");
     const downloads = document.getElementById("downloads");
+    const accountBar = document.getElementById("accountBar");
+    const accountEmail = document.getElementById("accountEmail");
+    const signOut = document.getElementById("signOut");
+    const authPanel = document.getElementById("authPanel");
+    const appShell = document.getElementById("appShell");
+    const authEmail = document.getElementById("authEmail");
+    const authPassword = document.getElementById("authPassword");
+    const signIn = document.getElementById("signIn");
+    const signUp = document.getElementById("signUp");
+    const authMessage = document.getElementById("authMessage");
+    let authClient = null;
+    let session = null;
     let selectedFile = null;
     let activeJob = null;
     let previewRequest = 0;
+
+    function setAuthMessage(message) {
+      authMessage.textContent = message || "";
+    }
+
+    function setSignedIn(nextSession) {
+      session = nextSession;
+      const user = session && session.user;
+      appShell.hidden = !user;
+      accountBar.hidden = !user;
+      authPanel.hidden = !!user;
+      accountEmail.textContent = user ? (user.email || "Signed in") : "";
+      if (!user) {
+        selectedFile = null;
+        activeJob = null;
+        resetProgress();
+      }
+    }
+
+    async function getAccessToken() {
+      if (!authClient) return null;
+      const { data } = await authClient.auth.getSession();
+      session = data.session;
+      return session && session.access_token ? session.access_token : null;
+    }
+
+    async function authHeaders() {
+      const token = await getAccessToken();
+      if (!token) throw new Error("Sign in to continue.");
+      return { Authorization: `Bearer ${token}` };
+    }
 
     function setProgress(fill, value, percent) {
       fill.classList.remove("indeterminate");
@@ -900,11 +1086,39 @@ def _html() -> str:
       setProgress(previewProgressFill, previewProgressValue, percent || 0);
     }
 
-    function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
+    async function fetchAuthed(url) {
+      return fetch(url, { headers: await authHeaders() });
+    }
+
+    async function loadImageIntoFrame(url, frame, alt) {
+      const response = await fetchAuthed(url);
+      if (!response.ok) throw new Error("Image is not available yet.");
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      frame.innerHTML = `<img src="${objectUrl}" alt="${alt}">`;
+    }
+
+    async function downloadFile(url, filename) {
+      const response = await fetchAuthed(url);
+      if (!response.ok) throw new Error("Download is not available yet.");
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    }
+
+    async function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
+      const headers = await authHeaders();
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         let lastPercent = 0;
         xhr.open("POST", url);
+        Object.entries(headers).forEach(([key, value]) => xhr.setRequestHeader(key, value));
         xhr.upload.onprogress = (event) => {
           if (event.lengthComputable && onUploadProgress) {
             const percent = (event.loaded / event.total) * 100;
@@ -970,7 +1184,7 @@ def _html() -> str:
         if (requestId !== previewRequest) return;
         setProgress(uploadProgressFill, uploadProgressValue, 100);
         setProgress(previewProgressFill, previewProgressValue, 100);
-        beforeFrame.innerHTML = `<img src="${preview.preview_url}&t=${Date.now()}" alt="Before preview">`;
+        await loadImageIntoFrame(`${preview.preview_url}&t=${Date.now()}`, beforeFrame, "Before preview");
         statusEl.textContent = "Ready to run full pipeline.";
         setTimeout(() => {
           if (requestId === previewRequest) progressPanel.hidden = true;
@@ -998,6 +1212,52 @@ def _html() -> str:
       }
     });
 
+    signIn.addEventListener("click", async () => {
+      if (!authClient) return;
+      setAuthMessage("Signing in...");
+      const { data, error } = await authClient.auth.signInWithPassword({
+        email: authEmail.value.trim(),
+        password: authPassword.value,
+      });
+      if (error) {
+        setAuthMessage(error.message);
+        return;
+      }
+      setAuthMessage("");
+      setSignedIn(data.session);
+    });
+
+    signUp.addEventListener("click", async () => {
+      if (!authClient) return;
+      setAuthMessage("Creating account...");
+      const { data, error } = await authClient.auth.signUp({
+        email: authEmail.value.trim(),
+        password: authPassword.value,
+      });
+      if (error) {
+        setAuthMessage(error.message);
+        return;
+      }
+      setSignedIn(data.session);
+      setAuthMessage(data.session ? "" : "Check your email to confirm your account.");
+    });
+
+    signOut.addEventListener("click", async () => {
+      if (!authClient) return;
+      await authClient.auth.signOut();
+      setSignedIn(null);
+    });
+
+    downloads.addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-download-url]");
+      if (!button) return;
+      try {
+        await downloadFile(button.dataset.downloadUrl, button.dataset.downloadName);
+      } catch (error) {
+        statusEl.textContent = error.message || String(error);
+      }
+    });
+
     fileInput.addEventListener("change", () => { void setFile(fileInput.files[0]); });
     drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.classList.add("drag"); });
     drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
@@ -1008,7 +1268,13 @@ def _html() -> str:
     });
 
     async function poll(jobId) {
-      const res = await fetch(`/api/jobs/${jobId}`);
+      const res = await fetchAuthed(`/api/jobs/${jobId}`);
+      if (!res.ok) {
+        statusEl.textContent = "Sign in to continue.";
+        processingIndicator.classList.remove("active");
+        run.disabled = false;
+        return;
+      }
       const job = await res.json();
       if (job.status === "queued" || job.status === "running") {
         showPipelineProgress(job.stage, job.progress);
@@ -1022,18 +1288,18 @@ def _html() -> str:
         warningEl.textContent = job.warnings.join(" ");
       }
       if (job.before_preview && !beforeFrame.querySelector("img")) {
-        beforeFrame.innerHTML = `<img src="${job.before_preview}&t=${Date.now()}" alt="Before preview">`;
+        await loadImageIntoFrame(`${job.before_preview}&t=${Date.now()}`, beforeFrame, "Before preview");
       }
       if (job.after_preview) {
-        afterFrame.innerHTML = `<img src="${job.after_preview}&t=${Date.now()}" alt="After preview">`;
+        await loadImageIntoFrame(`${job.after_preview}&t=${Date.now()}`, afterFrame, "After preview");
       }
       if (job.status === "finished") {
         statusEl.textContent = "Processing complete.";
         showPipelineProgress("Complete", 100);
         processingIndicator.classList.remove("active");
         downloads.innerHTML = `
-          <a href="${job.final}" download>Download final TIFF</a>
-          <a href="${job.log_file}" download>Download log</a>
+          <button class="link-button" type="button" data-download-url="${job.final}" data-download-name="deepsky-final.tif">Download final TIFF</button>
+          <button class="link-button" type="button" data-download-url="${job.log_file}" data-download-name="processing-log.txt">Download log</button>
         `;
         run.disabled = false;
         return;
@@ -1084,6 +1350,40 @@ def _html() -> str:
       showPipelineProgress("Starting Pipeline", 1);
       poll(activeJob);
     });
+
+    async function initAuth() {
+      authPanel.hidden = false;
+      appShell.hidden = true;
+      accountBar.hidden = true;
+      try {
+        const response = await fetch("/api/auth/config");
+        const config = await response.json();
+        if (!config.configured) {
+          setAuthMessage("Supabase auth is not configured on this server.");
+          signIn.disabled = true;
+          signUp.disabled = true;
+          return;
+        }
+        if (!window.supabase) {
+          setAuthMessage("Supabase client could not be loaded.");
+          signIn.disabled = true;
+          signUp.disabled = true;
+          return;
+        }
+        authClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
+        const { data } = await authClient.auth.getSession();
+        setSignedIn(data.session);
+        authClient.auth.onAuthStateChange((_event, nextSession) => {
+          setSignedIn(nextSession);
+        });
+      } catch (error) {
+        setAuthMessage(error.message || String(error));
+        signIn.disabled = true;
+        signUp.disabled = true;
+      }
+    }
+
+    void initAuth();
   </script>
 </body>
 </html>"""
@@ -1192,8 +1492,20 @@ def process_page() -> str:
     return _html()
 
 
+@app.get("/api/auth/config")
+def auth_config() -> dict[str, str | bool]:
+    return {
+        "configured": _auth_configured(),
+        "supabase_url": _supabase_url(),
+        "supabase_anon_key": _supabase_anon_key(),
+    }
+
+
 @app.post("/api/preview")
-async def create_preview(file: UploadFile = File(...)) -> dict[str, str]:
+async def create_preview(
+    file: UploadFile = File(...),
+    user: AuthUser = Depends(require_user),
+) -> dict[str, str]:
     _cleanup_old_temp_files()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
@@ -1223,12 +1535,22 @@ async def create_preview(file: UploadFile = File(...)) -> dict[str, str]:
     except Exception as exc:
         shutil.rmtree(preview_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
+    with jobs_lock:
+        previews[preview_id] = user.id
     return {"preview_url": f"/api/previews/{preview_id}?inline=1"}
 
 
 @app.get("/api/previews/{preview_id}")
-def get_preview(preview_id: str, inline: int = 1) -> FileResponse:
+def get_preview(
+    preview_id: str,
+    inline: int = 1,
+    user: AuthUser = Depends(require_user),
+) -> FileResponse:
     if not preview_id or any(ch not in "0123456789abcdef" for ch in preview_id):
+        raise HTTPException(status_code=404, detail="Preview not found.")
+    with jobs_lock:
+        owner_id = previews.get(preview_id)
+    if owner_id != user.id:
         raise HTTPException(status_code=404, detail="Preview not found.")
     preview_path = PREVIEW_ROOT / preview_id / "before_preview.png"
     if not preview_path.exists():
@@ -1244,6 +1566,7 @@ async def create_job(
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
+    user: AuthUser = Depends(require_user),
 ) -> dict[str, str]:
     _cleanup_old_temp_files()
     suffix = Path(file.filename or "").suffix.lower()
@@ -1269,7 +1592,7 @@ async def create_job(
             handle.write(chunk)
 
     with jobs_lock:
-        jobs[job_id] = WebJob(id=job_id)
+        jobs[job_id] = WebJob(id=job_id, user_id=user.id, user_email=user.email)
         if pre_stretched:
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
@@ -1279,20 +1602,25 @@ async def create_job(
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str) -> dict[str, Any]:
+def get_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     _cleanup_old_temp_files()
     with jobs_lock:
         job = jobs.get(job_id)
-        if not job:
+        if not job or job.user_id != user.id:
             raise HTTPException(status_code=404, detail="Job not found.")
         return _job_response(job)
 
 
 @app.get("/api/jobs/{job_id}/file/{kind}")
-def get_job_file(job_id: str, kind: str, inline: bool = False):
+def get_job_file(
+    job_id: str,
+    kind: str,
+    inline: bool = False,
+    user: AuthUser = Depends(require_user),
+):
     with jobs_lock:
         job = jobs.get(job_id)
-        if not job or not job.result:
+        if not job or job.user_id != user.id or not job.result:
             raise HTTPException(status_code=404, detail="File not ready.")
         mapping = {
             "before_preview": job.result["before_preview"],
@@ -1309,5 +1637,5 @@ def get_job_file(job_id: str, kind: str, inline: bool = False):
 
 
 @app.get("/api/jobs/{job_id}/files", response_class=PlainTextResponse)
-def list_job_files(job_id: str) -> str:
+def list_job_files(job_id: str, user: AuthUser = Depends(require_user)) -> str:
     raise HTTPException(status_code=404, detail="Job file listing is disabled.")

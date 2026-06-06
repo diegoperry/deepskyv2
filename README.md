@@ -32,6 +32,17 @@ Then open:
 http://127.0.0.1:8000
 ```
 
+## Web Auth
+
+The web app uses Supabase Auth. Set these environment variables before starting the FastAPI server:
+
+```powershell
+$env:SUPABASE_URL="https://your-project.supabase.co"
+$env:SUPABASE_ANON_KEY="your-supabase-anon-key"
+```
+
+Unsigned users can view the process page, but previews, processing jobs, job status, and downloads require a valid Supabase session.
+
 ## Desktop App
 
 ```powershell
