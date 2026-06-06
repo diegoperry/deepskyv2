@@ -1212,6 +1212,7 @@ def _html() -> str:
     let authClient = null;
     let session = null;
     let recoveryMode = false;
+    let billingStatusPromise = null;
     let selectedFile = null;
     let activeJob = null;
     let previewRequest = 0;
@@ -1434,6 +1435,8 @@ def _html() -> str:
 
     async function loadBillingStatus() {
       if (!session || !session.user) return;
+      if (billingStatusPromise) return billingStatusPromise;
+      billingStatusPromise = (async () => {
       try {
         const response = await fetchAuthed("/api/billing/status");
         const data = await readJsonResponse(response, "Billing service temporarily unavailable. Please refresh.");
@@ -1451,7 +1454,11 @@ def _html() -> str:
       } catch (error) {
         billingStatus.textContent = error.message || "Billing status unavailable.";
         upgradePlan.hidden = true;
+      } finally {
+        billingStatusPromise = null;
       }
+      })();
+      return billingStatusPromise;
     }
 
     async function loadImageIntoFrame(url, frame, alt) {
@@ -2054,6 +2061,10 @@ def billing_status(user: AuthUser = Depends(require_user)) -> Any:
             "free_credits_remaining": int(profile.get("free_credits_remaining") or 0),
         }
     except Exception as exc:
+        if isinstance(exc, HTTPException):
+            logger.warning("Billing status unavailable for user_id=%s: %s", user.id, exc.detail)
+            detail = exc.detail if isinstance(exc.detail, str) else "Billing status unavailable"
+            return JSONResponse({"error": detail}, status_code=exc.status_code)
         logger.exception("Billing status lookup failed for user_id=%s", user.id)
         return JSONResponse({"error": "Billing status unavailable"}, status_code=500)
 
