@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import time
 import uuid
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,63 @@ class WebJob:
     warnings: list[str] = field(default_factory=list)
     result: dict[str, Path] | None = None
     error: str | None = None
+    stage: str = "Queued"
+    progress: int = 0
+
+
+PROGRESS_LINE_RE = re.compile(r"progress:\s*(?P<label>.*?),\s*(?P<percent>\d+(?:\.\d+)?)%")
+
+
+def _mapped_stage_progress(stage: str, stage_percent: float) -> int:
+    spans = {
+        "Siril Color Calibration": (22, 42),
+        "DeepSNR Denoising": (48, 68),
+        "StarNet Star Separation": (72, 90),
+    }
+    start, end = spans.get(stage, (0, 100))
+    return round(start + ((end - start) * max(0.0, min(100.0, stage_percent)) / 100.0))
+
+
+def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
+    stage = job.stage
+    progress = job.progress
+    progress_match = PROGRESS_LINE_RE.search(message)
+    if progress_match:
+        label = progress_match.group("label").strip() or stage
+        stage_percent = float(progress_match.group("percent"))
+        if "NL-Bayes" in label:
+            stage = "Siril Color Calibration"
+        progress = max(progress, _mapped_stage_progress(stage, stage_percent))
+        return stage, progress
+
+    markers: tuple[tuple[str, str, int], ...] = (
+        ("DeepSky job:", "Preparing Input", 3),
+        ("Copied original:", "Preparing Input", 5),
+        ("Input stretch analysis", "Analyzing Input", 8),
+        ("Creating 16-bit working TIFF.", "Creating Working TIFF", 12),
+        ("Pre-stretched input mode enabled", "Pre-Stretched Finish", 20),
+        ("Applying pre-stretched object finish", "Pre-Stretched Finish", 28),
+        ("Applying local astrophotography stretch", "Stretching Image", 24),
+        ("Applying gentle-stretch", "Applying Object Finish", 32),
+        ("Siril executable:", "Siril Color Calibration", 22),
+        ("Running Siril:", "Siril Color Calibration", 26),
+        ("Siril color calibration succeeded.", "Siril Color Calibration", 42),
+        ("DeepSNR executable:", "DeepSNR Denoising", 48),
+        ("DeepSNR background cleanup executable:", "DeepSNR Background Cleanup", 36),
+        ("denoised.tif:", "DeepSNR Denoising", 68),
+        ("StarNet executable:", "StarNet Star Separation", 72),
+        ("starless.tif:", "StarNet Star Separation", 90),
+        ("stars.tif:", "Recombining Stars", 93),
+        ("final.tif:", "Creating Final Image", 95),
+        ("Final image:", "Creating Preview", 98),
+        ("Done.", "Complete", 100),
+    )
+    for needle, next_stage, next_progress in markers:
+        if needle in message:
+            stage = next_stage
+            progress = max(progress, next_progress)
+            break
+    return stage, progress
 
 
 app = FastAPI(title="DeepSky")
@@ -585,7 +643,7 @@ def _html() -> str:
     .progress-panel[hidden] { display: none; }
     .progress-row {
       display: grid;
-      grid-template-columns: 132px minmax(0, 1fr) 48px;
+      grid-template-columns: minmax(160px, 220px) minmax(0, 1fr) 48px;
       align-items: center;
       gap: 12px;
       color: #8fb0df;
@@ -834,6 +892,14 @@ def _html() -> str:
       setIndeterminateProgress(previewProgressFill, previewProgressValue, "Working");
     }
 
+    function showPipelineProgress(stage, percent) {
+      progressPanel.hidden = false;
+      uploadProgressRow.hidden = true;
+      previewProgressRow.hidden = false;
+      previewProgressLabel.textContent = stage || "Processing";
+      setProgress(previewProgressFill, previewProgressValue, percent || 0);
+    }
+
     function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -944,7 +1010,12 @@ def _html() -> str:
     async function poll(jobId) {
       const res = await fetch(`/api/jobs/${jobId}`);
       const job = await res.json();
-      statusEl.textContent = job.status === "running" ? "Processing..." : job.status;
+      if (job.status === "queued" || job.status === "running") {
+        showPipelineProgress(job.stage, job.progress);
+        statusEl.textContent = `${job.stage || "Processing"} - ${Math.round(job.progress || 0)}%`;
+      } else {
+        statusEl.textContent = job.status;
+      }
       processingIndicator.classList.toggle("active", job.status === "queued" || job.status === "running");
       if (job.warnings && job.warnings.length) {
         warningEl.style.display = "block";
@@ -958,6 +1029,7 @@ def _html() -> str:
       }
       if (job.status === "finished") {
         statusEl.textContent = "Processing complete.";
+        showPipelineProgress("Complete", 100);
         processingIndicator.classList.remove("active");
         downloads.innerHTML = `
           <a href="${job.final}" download>Download final TIFF</a>
@@ -968,6 +1040,7 @@ def _html() -> str:
       }
       if (job.status === "failed") {
         statusEl.textContent = "Processing failed.";
+        progressPanel.hidden = true;
         processingIndicator.classList.remove("active");
         run.disabled = false;
         return;
@@ -1008,6 +1081,7 @@ def _html() -> str:
       }
       progressPanel.hidden = true;
       activeJob = job.id;
+      showPipelineProgress("Starting Pipeline", 1);
       poll(activeJob);
     });
   </script>
@@ -1022,6 +1096,8 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         "log": job.log[-300:],
         "warnings": job.warnings[-10:],
         "error": job.error,
+        "stage": job.stage,
+        "progress": job.progress,
     }
     if job.result:
         payload.update(
@@ -1046,10 +1122,14 @@ def _run_job(
     with jobs_lock:
         job = jobs[job_id]
         job.status = "running"
+        job.stage = "Starting Pipeline"
+        job.progress = 1
 
     def write_log(message: str) -> None:
         with jobs_lock:
-            jobs[job_id].log.append(message)
+            job = jobs[job_id]
+            job.log.append(message)
+            job.stage, job.progress = _progress_from_log_message(job, message)
 
     try:
         try:
@@ -1092,11 +1172,14 @@ def _run_job(
         with jobs_lock:
             jobs[job_id].status = "failed"
             jobs[job_id].error = str(exc)
+            jobs[job_id].stage = "Failed"
             jobs[job_id].log.append(f"ERROR: {exc}")
     else:
         with jobs_lock:
             jobs[job_id].status = "finished"
             jobs[job_id].result = result
+            jobs[job_id].stage = "Complete"
+            jobs[job_id].progress = 100
 
 
 @app.get("/", response_class=HTMLResponse)
