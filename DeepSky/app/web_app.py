@@ -13,6 +13,7 @@ import uuid
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -215,9 +216,27 @@ def _profile_select_filter(column: str, value: str) -> str:
     return f"profiles?{column}=eq.{urllib.parse.quote(value, safe='')}&select=*"
 
 
+def _profile_period_is_current(profile: dict[str, Any] | None) -> bool:
+    period_end = (profile or {}).get("current_period_end")
+    if not period_end:
+        return True
+    try:
+        if isinstance(period_end, str):
+            parsed = datetime.fromisoformat(period_end.replace("Z", "+00:00"))
+        elif isinstance(period_end, datetime):
+            parsed = period_end
+        else:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed > datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_paid_profile(profile: dict[str, Any] | None) -> bool:
     status = str((profile or {}).get("subscription_status") or "").lower()
-    return status in PAID_SUBSCRIPTION_STATUSES
+    return status in PAID_SUBSCRIPTION_STATUSES and _profile_period_is_current(profile)
 
 
 def _object_get(value: Any, key: str, default: Any = None) -> Any:
@@ -2005,7 +2024,9 @@ def _subscription_matches_price(subscription: Any) -> bool:
 
 def _reconcile_stripe_subscription(user: AuthUser, profile: dict[str, Any]) -> dict[str, Any]:
     customer_id = profile.get("stripe_customer_id")
-    if not customer_id or _is_paid_profile(profile):
+    if not customer_id:
+        return profile
+    if _is_paid_profile(profile):
         return profile
     stripe = _stripe_module()
     try:
@@ -2024,6 +2045,15 @@ def _reconcile_stripe_subscription(user: AuthUser, profile: dict[str, Any]) -> d
         None,
     )
     if not paid_subscription:
+        status = str(profile.get("subscription_status") or "").lower()
+        if status in PAID_SUBSCRIPTION_STATUSES and not _profile_period_is_current(profile):
+            updates = {
+                "subscription_status": "canceled",
+                "current_period_end": profile.get("current_period_end"),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            _update_profile(user.id, updates)
+            return {**profile, **updates}
         return profile
     updates = _subscription_payload(paid_subscription)
     updates["stripe_customer_id"] = customer_id
