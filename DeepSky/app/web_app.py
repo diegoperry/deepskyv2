@@ -1456,10 +1456,14 @@ def _html() -> str:
         }
         if (data.is_paid) {
           billingStatus.textContent = "Paid plan active";
-          upgradePlan.hidden = true;
+          upgradePlan.textContent = "Manage plan";
+          upgradePlan.dataset.billingAction = "portal";
+          upgradePlan.hidden = false;
         } else {
           const credits = Number(data.free_credits_remaining || 0);
           billingStatus.textContent = `${credits} free image${credits === 1 ? "" : "s"} left`;
+          upgradePlan.textContent = "Upgrade $15/mo";
+          upgradePlan.dataset.billingAction = "checkout";
           upgradePlan.hidden = false;
         }
       } catch (error) {
@@ -1715,9 +1719,10 @@ def _html() -> str:
     upgradePlan.addEventListener("click", async () => {
       try {
         upgradePlan.disabled = true;
-        billingStatus.textContent = "Opening checkout...";
-        const checkout = await postJsonAuthed("/api/billing/checkout");
-        window.location.href = checkout.url;
+        const action = upgradePlan.dataset.billingAction || "checkout";
+        billingStatus.textContent = action === "portal" ? "Opening billing portal..." : "Opening checkout...";
+        const response = await postJsonAuthed(action === "portal" ? "/api/billing/portal" : "/api/billing/checkout");
+        window.location.href = response.url;
       } catch (error) {
         billingStatus.textContent = error.message || String(error);
         upgradePlan.disabled = false;
@@ -2156,6 +2161,21 @@ def create_billing_checkout(user: AuthUser = Depends(require_user)) -> dict[str,
         cancel_url=os.getenv("STRIPE_CANCEL_URL", "https://app.deepskyprocessor.com/process?billing=cancel"),
         metadata={"user_id": user.id},
         subscription_data={"metadata": {"user_id": user.id}},
+    )
+    return {"url": session.url}
+
+
+@app.post("/api/billing/portal")
+def create_billing_portal(user: AuthUser = Depends(require_user)) -> dict[str, str]:
+    profile = _billing_profile_for(user)
+    profile = _reconcile_stripe_subscription(user, profile)
+    customer_id = profile.get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(status_code=404, detail="No paid plan found for this account.")
+    stripe = _stripe_module()
+    session = stripe.billing_portal.Session.create(
+        customer=customer_id,
+        return_url=os.getenv("STRIPE_PORTAL_RETURN_URL", "https://app.deepskyprocessor.com/process"),
     )
     return {"url": session.url}
 
