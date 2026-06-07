@@ -292,15 +292,6 @@ def _consume_credit_or_require_subscription(user: AuthUser) -> tuple[dict[str, A
     return _get_profile(user.id) or profile, True
 
 
-def _redeem_mars_code(user_id: str) -> bool:
-    redeemed = _supabase_rest_request(
-        "rpc/redeem_mars_code",
-        method="POST",
-        payload={"target_user_id": user_id},
-    )
-    return redeemed is True
-
-
 def _extract_bearer_token(authorization: str | None) -> str:
     if not authorization:
         raise HTTPException(status_code=401, detail="Sign in to continue.")
@@ -945,33 +936,6 @@ def _html() -> str:
       line-height: 1.45;
       text-align: left;
     }
-    .credit-code-panel {
-      display: grid;
-      gap: 10px;
-      width: min(520px, 100%);
-      margin: 14px auto 0;
-      border: 1px solid #2c4773;
-      border-radius: 10px;
-      background: rgba(11, 22, 40, .92);
-      padding: 14px;
-      text-align: left;
-    }
-    .credit-code-panel[hidden] { display: none; }
-    .credit-code-panel p { margin: 0; color: #cfe0ff; font-weight: 800; }
-    .credit-code-panel .credit-code-copy { color: var(--muted); font-weight: 700; line-height: 1.4; }
-    .credit-code-row { display: flex; gap: 10px; flex-wrap: wrap; }
-    .credit-code-row input {
-      flex: 1 1 180px;
-      min-height: 42px;
-      border: 1px solid #2c4773;
-      border-radius: 8px;
-      background: #070b12;
-      color: var(--text);
-      padding: 0 12px;
-      font-size: 15px;
-      text-transform: uppercase;
-    }
-    .credit-code-message { min-height: 20px; color: var(--muted); font-size: 14px; }
     .progress-panel {
       display: grid;
       gap: 10px;
@@ -1166,16 +1130,6 @@ def _html() -> str:
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div id="warning" class="warning"></div>
-      <div id="creditCodePanel" class="credit-code-panel" hidden>
-        <p>Need more test credits?</p>
-        <p class="credit-code-copy">Message us with what you want to test and we can send a credit code.</p>
-        <div class="credit-code-row">
-          <input id="creditCode" type="text" autocomplete="off" placeholder="Code" />
-          <button id="redeemCreditCode" class="link-button" type="button">Redeem</button>
-          <a class="link-button" href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noopener">Message us</a>
-        </div>
-        <div id="creditCodeMessage" class="credit-code-message"></div>
-      </div>
       <div id="progressPanel" class="progress-panel" hidden>
         <div class="progress-row" id="uploadProgressRow">
           <span id="uploadProgressLabel">Uploading file</span>
@@ -1223,10 +1177,6 @@ def _html() -> str:
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
-    const creditCodePanel = document.getElementById("creditCodePanel");
-    const creditCode = document.getElementById("creditCode");
-    const redeemCreditCode = document.getElementById("redeemCreditCode");
-    const creditCodeMessage = document.getElementById("creditCodeMessage");
     const uploadProgressRow = document.getElementById("uploadProgressRow");
     const uploadProgressLabel = document.getElementById("uploadProgressLabel");
     const uploadProgressFill = document.getElementById("uploadProgressFill");
@@ -1544,17 +1494,6 @@ def _html() -> str:
       `;
     }
 
-    function showCreditCodePanel(message = "") {
-      creditCodePanel.hidden = false;
-      creditCodeMessage.textContent = message;
-      creditCode.focus();
-    }
-
-    function hideCreditCodePanel() {
-      creditCodePanel.hidden = true;
-      creditCodeMessage.textContent = "";
-    }
-
     async function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
       const headers = await authHeaders();
       return new Promise((resolve, reject) => {
@@ -1613,7 +1552,6 @@ def _html() -> str:
       beforeFrame.innerHTML = file ? '<span class="empty">Loading preview</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
-      hideCreditCodePanel();
       processingIndicator.classList.remove("active");
       statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 50 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
       warningEl.style.display = "none";
@@ -1789,34 +1727,6 @@ def _html() -> str:
       }
     });
 
-    redeemCreditCode.addEventListener("click", async () => {
-      const code = creditCode.value.trim().toUpperCase();
-      if (!code) {
-        creditCodeMessage.textContent = "Enter a code.";
-        return;
-      }
-      try {
-        redeemCreditCode.disabled = true;
-        creditCodeMessage.textContent = "Checking code...";
-        const result = await postJsonAuthed("/api/billing/redeem-code", { code });
-        creditCode.value = "";
-        creditCodeMessage.textContent = result.message || "Code redeemed. You have 5 more credits.";
-        statusEl.textContent = "Code redeemed. You can process more images.";
-        await loadBillingStatus();
-      } catch (error) {
-        creditCodeMessage.textContent = error.message || String(error);
-      } finally {
-        redeemCreditCode.disabled = false;
-      }
-    });
-
-    creditCode.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        redeemCreditCode.click();
-      }
-    });
-
     fileInput.addEventListener("change", () => { void setFile(fileInput.files[0]); });
     drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.classList.add("drag"); });
     drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
@@ -1886,7 +1796,6 @@ def _html() -> str:
       statusEl.textContent = "Uploading...";
       processingIndicator.classList.add("active");
       downloads.innerHTML = "";
-      hideCreditCodePanel();
       afterFrame.innerHTML = '<span class="empty">Processing</span>';
       showUploadProgress("Uploading job");
       const data = new FormData();
@@ -1908,9 +1817,6 @@ def _html() -> str:
         });
       } catch (error) {
         statusEl.textContent = error.message || String(error);
-        if (error.status === 402) {
-          showCreditCodePanel("Message us to request more test credits.");
-        }
         progressPanel.hidden = true;
         run.disabled = false;
         return;
@@ -2170,7 +2076,6 @@ def billing_status(user: AuthUser = Depends(require_user)) -> Any:
             "is_paid": is_paid,
             "subscription_status": profile.get("subscription_status") or "free",
             "free_credits_remaining": int(profile.get("free_credits_remaining") or 0),
-            "mars_code_redeemed": bool(profile.get("mars_code_redeemed")),
         }
     except Exception as exc:
         if isinstance(exc, HTTPException):
@@ -2205,36 +2110,6 @@ def create_billing_checkout(user: AuthUser = Depends(require_user)) -> dict[str,
         subscription_data={"metadata": {"user_id": user.id}},
     )
     return {"url": session.url}
-
-
-@app.post("/api/billing/redeem-code", response_model=None)
-async def redeem_billing_code(request: Request, user: AuthUser = Depends(require_user)) -> Any:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        payload = {}
-    code = str(payload.get("code") or "").strip().upper()
-    if code != "MARS":
-        raise HTTPException(status_code=400, detail="Invalid code.")
-    profile = _billing_profile_for(user)
-    if _is_paid_profile(profile):
-        return {"redeemed": False, "message": "Paid plan is active. Credits are unlimited."}
-    if bool(profile.get("mars_code_redeemed")):
-        raise HTTPException(status_code=409, detail="Code already redeemed.")
-    try:
-        if not _redeem_mars_code(user.id):
-            raise HTTPException(status_code=409, detail="Code already redeemed.")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("MARS code redemption failed for user_id=%s", user.id)
-        raise HTTPException(status_code=502, detail="Could not redeem code.") from exc
-    updated = _get_profile(user.id) or profile
-    return {
-        "redeemed": True,
-        "message": "Code redeemed. You have 5 more credits.",
-        "free_credits_remaining": int(updated.get("free_credits_remaining") or 0),
-    }
 
 
 @app.post("/api/stripe/webhook")
