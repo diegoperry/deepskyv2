@@ -220,6 +220,12 @@ def _is_paid_profile(profile: dict[str, Any] | None) -> bool:
     return status in PAID_SUBSCRIPTION_STATUSES
 
 
+def _object_get(value: Any, key: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
 def _get_profile(user_id: str) -> dict[str, Any] | None:
     rows = _supabase_rest_request(_profile_select_filter("user_id", user_id))
     if isinstance(rows, list) and rows:
@@ -271,6 +277,7 @@ def _billing_profile_for(user: AuthUser) -> dict[str, Any]:
 
 def _consume_credit_or_require_subscription(user: AuthUser) -> tuple[dict[str, Any], bool]:
     profile = _billing_profile_for(user)
+    profile = _reconcile_stripe_subscription(user, profile)
     if _is_paid_profile(profile):
         return profile, False
     remaining = int(profile.get("free_credits_remaining") or 0)
@@ -1947,11 +1954,11 @@ def _job_response(job: WebJob) -> dict[str, Any]:
 
 
 def _subscription_payload(subscription: Any, *, status_override: str | None = None) -> dict[str, Any]:
-    status = status_override or getattr(subscription, "status", None) or subscription.get("status")
-    current_period_end = getattr(subscription, "current_period_end", None) or subscription.get("current_period_end")
+    status = status_override or _object_get(subscription, "status")
+    current_period_end = _object_get(subscription, "current_period_end")
     return {
         "subscription_status": status or "free",
-        "stripe_subscription_id": getattr(subscription, "id", None) or subscription.get("id"),
+        "stripe_subscription_id": _object_get(subscription, "id"),
         "current_period_end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(current_period_end))
         if current_period_end
         else None,
@@ -1960,9 +1967,9 @@ def _subscription_payload(subscription: Any, *, status_override: str | None = No
 
 
 def _apply_subscription_update(subscription: Any, *, status_override: str | None = None) -> None:
-    metadata = getattr(subscription, "metadata", None) or subscription.get("metadata") or {}
+    metadata = _object_get(subscription, "metadata") or {}
     user_id = metadata.get("user_id")
-    customer_id = getattr(subscription, "customer", None) or subscription.get("customer")
+    customer_id = _object_get(subscription, "customer")
     updates = _subscription_payload(subscription, status_override=status_override)
     if customer_id:
         updates["stripe_customer_id"] = customer_id
@@ -1973,6 +1980,46 @@ def _apply_subscription_update(subscription: Any, *, status_override: str | None
         profile = _get_profile_by_customer(str(customer_id))
         if profile:
             _update_profile(profile["user_id"], updates)
+
+
+def _subscription_matches_price(subscription: Any) -> bool:
+    expected_price_id = _stripe_price_id()
+    if not expected_price_id:
+        return True
+    items = _object_get(_object_get(subscription, "items") or {}, "data") or []
+    for item in items:
+        price = _object_get(item, "price") or {}
+        if _object_get(price, "id") == expected_price_id:
+            return True
+    return False
+
+
+def _reconcile_stripe_subscription(user: AuthUser, profile: dict[str, Any]) -> dict[str, Any]:
+    customer_id = profile.get("stripe_customer_id")
+    if not customer_id or _is_paid_profile(profile):
+        return profile
+    stripe = _stripe_module()
+    try:
+        subscriptions = stripe.Subscription.list(customer=customer_id, status="all", limit=10)
+    except Exception as exc:
+        logger.warning("Stripe subscription reconciliation failed for user_id=%s: %s", user.id, exc)
+        return profile
+    subscription_rows = _object_get(subscriptions, "data") or []
+    matching = [subscription for subscription in subscription_rows if _subscription_matches_price(subscription)]
+    paid_subscription = next(
+        (
+            subscription
+            for subscription in matching
+            if str(_object_get(subscription, "status") or "").lower() in PAID_SUBSCRIPTION_STATUSES
+        ),
+        None,
+    )
+    if not paid_subscription:
+        return profile
+    updates = _subscription_payload(paid_subscription)
+    updates["stripe_customer_id"] = customer_id
+    _update_profile(user.id, updates)
+    return _get_profile(user.id) or {**profile, **updates}
 
 
 def _run_job(
@@ -2069,6 +2116,7 @@ def auth_config() -> dict[str, str | bool]:
 def billing_status(user: AuthUser = Depends(require_user)) -> Any:
     try:
         profile = _billing_profile_for(user)
+        profile = _reconcile_stripe_subscription(user, profile)
         is_paid = _is_paid_profile(profile)
         return {
             "configured": _billing_configured(),
