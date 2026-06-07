@@ -1423,8 +1423,11 @@ def _html() -> str:
     async function readJsonResponse(response, fallbackMessage) {
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.toLowerCase().includes("application/json")) {
-        await response.text().catch(() => "");
-        throw new Error(fallbackMessage);
+        const text = await response.text().catch(() => "");
+        const snippet = text.replace(/\s+/g, " ").trim().slice(0, 120);
+        const status = response.status ? `HTTP ${response.status}` : "no HTTP status";
+        const type = contentType || "no content-type";
+        throw new Error(`${fallbackMessage} (${status}, ${type}${snippet ? `: ${snippet}` : ""})`);
       }
       return response.json();
     }
@@ -2340,7 +2343,7 @@ def accept_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str,
         return _job_response(job)
 
 
-@app.post("/api/jobs/{job_id}/refund")
+@app.post("/api/jobs/{job_id}/refund", response_model=None)
 def refund_job(job_id: str, user: AuthUser = Depends(require_user)) -> Any:
     try:
         with jobs_lock:
