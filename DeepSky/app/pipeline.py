@@ -24,6 +24,7 @@ from .image_io import (
     is_supported_input,
     load_image,
     make_preview,
+    save_png,
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
@@ -410,6 +411,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     starless = job_folder / "starless.tif"
     stars = job_folder / "stars.tif"
     final = job_folder / "final.tif"
+    final_png = job_folder / "final.png"
 
     write_log("Creating 16-bit working TIFF.")
     convert_to_working_tiff(original, working, write_log)
@@ -521,6 +523,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         shutil.copy2(current, final)
         _log_existing_image(final, write_log, "final.tif")
 
+    save_png(final_png, load_image(final, write_log), write_log)
     after_preview = job_folder / "after_preview.png"
     preview_source = calibrated if mode == PipelineMode.SIRIL else final
     make_preview(preview_source, after_preview, log=write_log, stretch_for_display=False)
@@ -534,5 +537,6 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         "before_preview": before_preview,
         "after_preview": after_preview,
         "final": final,
+        "png": final_png,
         "log": log_file,
     }

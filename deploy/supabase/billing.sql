@@ -52,3 +52,26 @@ begin
   return coalesce(did_consume, false);
 end;
 $$;
+
+create or replace function public.refund_free_credit(target_user_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  did_refund boolean;
+begin
+  update public.profiles
+  set
+    free_credits_remaining = least(free_credits_remaining + 1, 3),
+    updated_at = now()
+  where
+    user_id = target_user_id
+    and free_credits_remaining < 3
+    and coalesce(subscription_status, 'free') not in ('active', 'trialing')
+  returning true into did_refund;
+
+  return coalesce(did_refund, false);
+end;
+$$;

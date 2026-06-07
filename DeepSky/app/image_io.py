@@ -172,6 +172,27 @@ def save_tiff(path: Path, image: np.ndarray, log: LogCallback | None = None) -> 
         log(f"Wrote TIFF: {describe_array(path, arr, note)}")
 
 
+def save_png(path: Path, image: np.ndarray, log: LogCallback | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arr, note = _normalize_image_shape(np.asarray(image))
+    if arr.ndim == 3 and arr.shape[-1] == 3:
+        display = _rgb_for_tone_preserving_preview(arr)
+    else:
+        display = np.squeeze(arr).astype(np.float32)
+        display = np.nan_to_num(display, nan=0.0, posinf=0.0, neginf=0.0)
+        if np.issubdtype(arr.dtype, np.integer):
+            max_value = float(np.iinfo(arr.dtype).max)
+            display = display / max_value if max_value > 0 else display * 0.0
+        elif display.size and float(np.nanmax(display)) > 1.0:
+            display = display / 65535.0
+        display = np.clip(display, 0.0, 1.0)
+    arr8 = (display * 255).round().astype(np.uint8)
+    image_mode = "RGB" if arr8.ndim == 3 else "L"
+    Image.fromarray(arr8, mode=image_mode).save(path)
+    if log:
+        log(f"Wrote PNG: {describe_array(path, arr8, f'png from {note}')}")
+
+
 def _to_uint16_working(image: np.ndarray) -> np.ndarray:
     arr, _ = _normalize_image_shape(np.asarray(image))
     if arr.dtype == np.uint16:

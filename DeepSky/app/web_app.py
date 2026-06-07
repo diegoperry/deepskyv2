@@ -57,6 +57,9 @@ class WebJob:
     error: str | None = None
     stage: str = "Queued"
     progress: int = 0
+    credit_consumed: bool = False
+    accepted: bool = False
+    refunded: bool = False
 
 
 @dataclass(frozen=True)
@@ -268,10 +271,10 @@ def _billing_profile_for(user: AuthUser) -> dict[str, Any]:
     return _upsert_profile(user)
 
 
-def _consume_credit_or_require_subscription(user: AuthUser) -> dict[str, Any]:
+def _consume_credit_or_require_subscription(user: AuthUser) -> tuple[dict[str, Any], bool]:
     profile = _billing_profile_for(user)
     if _is_paid_profile(profile):
-        return profile
+        return profile, False
     remaining = int(profile.get("free_credits_remaining") or 0)
     if remaining <= 0:
         raise HTTPException(
@@ -288,7 +291,16 @@ def _consume_credit_or_require_subscription(user: AuthUser) -> dict[str, Any]:
             status_code=402,
             detail="Free image credits used. Upgrade to the $15/month plan for unlimited processing.",
         )
-    return _get_profile(user.id) or profile
+    return _get_profile(user.id) or profile, True
+
+
+def _refund_free_credit(user_id: str) -> bool:
+    refunded = _supabase_rest_request(
+        "rpc/refund_free_credit",
+        method="POST",
+        payload={"target_user_id": user_id},
+    )
+    return refunded is True
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -635,7 +647,7 @@ def _landing_html() -> str:
           <article class="feature"><h3>Pre-stretched friendly</h3><p>DeepSky can skip the heavy stretch when an image already has a visible histogram.</p></article>
           <article class="feature"><h3>Color preservation</h3><p>RGB files stay RGB through preview, processing, and output.</p></article>
           <article class="feature"><h3>FITS and TIFF support</h3><p>Upload common astronomy formats without converting files by hand first.</p></article>
-          <article class="feature"><h3>Downloadable results</h3><p>Save the final TIFF and processing log after each run.</p></article>
+          <article class="feature"><h3>Downloadable results</h3><p>Review the processed image, then save the final TIFF or PNG.</p></article>
         </div>
       </div>
     </section>
@@ -1417,7 +1429,7 @@ def _html() -> str:
       return response.json();
     }
 
-    async function postJsonAuthed(url, payload = {}) {
+    async function postJsonAuthed(url, payload = {}, fallbackMessage = "Service temporarily unavailable. Please refresh.") {
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -1426,9 +1438,9 @@ def _html() -> str:
         },
         body: JSON.stringify(payload),
       });
-      const data = await readJsonResponse(response, "Billing service temporarily unavailable. Please refresh.");
+      const data = await readJsonResponse(response, fallbackMessage);
       if (!response.ok) {
-        throw new Error(data.detail || "Request failed.");
+        throw new Error(data.detail || data.error || "Request failed.");
       }
       return data;
     }
@@ -1481,6 +1493,21 @@ def _html() -> str:
       anchor.click();
       anchor.remove();
       setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    }
+
+    function renderAcceptedDownloads(job) {
+      downloads.innerHTML = `
+        <button class="link-button" type="button" data-download-url="${job.final}" data-download-name="deepsky-final.tif">Download TIFF</button>
+        <button class="link-button" type="button" data-download-url="${job.png}" data-download-name="deepsky-final.png">Download PNG</button>
+      `;
+    }
+
+    function renderReviewActions(job) {
+      const refundLabel = job.credit_consumed ? "Refund Credit" : "Discard Image";
+      downloads.innerHTML = `
+        <button class="cta" type="button" data-job-action="accept" data-job-id="${job.id}">Accept Image</button>
+        <button class="link-button" type="button" data-job-action="refund" data-job-id="${job.id}">${refundLabel}</button>
+      `;
     }
 
     async function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
@@ -1705,6 +1732,32 @@ def _html() -> str:
     });
 
     downloads.addEventListener("click", async (event) => {
+      const actionButton = event.target.closest("button[data-job-action]");
+      if (actionButton) {
+        const action = actionButton.dataset.jobAction;
+        const jobId = actionButton.dataset.jobId;
+        try {
+          actionButton.disabled = true;
+          if (action === "accept") {
+            statusEl.textContent = "Accepting image...";
+            const job = await postJsonAuthed(`/api/jobs/${jobId}/accept`);
+            statusEl.textContent = "Image accepted. Downloads are ready.";
+            renderAcceptedDownloads(job);
+          } else if (action === "refund") {
+            statusEl.textContent = "Refunding credit...";
+            const job = await postJsonAuthed(`/api/jobs/${jobId}/refund`);
+            downloads.innerHTML = "";
+            afterFrame.innerHTML = '<span class="empty">Image refunded</span>';
+            statusEl.textContent = job.credit_consumed ? "Credit refunded. Result files removed." : "Image discarded. Result files removed.";
+            await loadBillingStatus();
+          }
+        } catch (error) {
+          statusEl.textContent = error.message || String(error);
+          actionButton.disabled = false;
+        }
+        return;
+      }
+
       const button = event.target.closest("button[data-download-url]");
       if (!button) return;
       try {
@@ -1759,14 +1812,26 @@ def _html() -> str:
         await loadImageIntoFrame(`${job.after_preview}&t=${Date.now()}`, afterFrame, "After preview");
       }
       if (job.status === "finished") {
-        statusEl.textContent = "Processing complete.";
         showPipelineProgress("Complete", 100);
         processingIndicator.classList.remove("active");
-        downloads.innerHTML = `
-          <button class="link-button" type="button" data-download-url="${job.final}" data-download-name="deepsky-final.tif">Download final TIFF</button>
-          <button class="link-button" type="button" data-download-url="${job.log_file}" data-download-name="processing-log.txt">Download log</button>
-        `;
+        if (job.can_download) {
+          statusEl.textContent = "Image accepted. Downloads are ready.";
+          renderAcceptedDownloads(job);
+        } else {
+          statusEl.textContent = "Review your processed image.";
+          renderReviewActions(job);
+        }
+        void loadBillingStatus();
         run.disabled = false;
+        return;
+      }
+      if (job.status === "refunded") {
+        statusEl.textContent = "Credit refunded. Result files removed.";
+        downloads.innerHTML = "";
+        afterFrame.innerHTML = '<span class="empty">Image refunded</span>';
+        processingIndicator.classList.remove("active");
+        run.disabled = false;
+        void loadBillingStatus();
         return;
       }
       if (job.status === "failed") {
@@ -1916,16 +1981,26 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         "error": job.error,
         "stage": job.stage,
         "progress": job.progress,
+        "credit_consumed": job.credit_consumed,
+        "accepted": job.accepted,
+        "refunded": job.refunded,
+        "can_download": job.accepted and not job.refunded,
+        "needs_review": job.status == "finished" and not job.accepted and not job.refunded,
     }
     if job.result:
         payload.update(
             {
                 "before_preview": f"/api/jobs/{job.id}/file/before_preview?inline=1",
                 "after_preview": f"/api/jobs/{job.id}/file/after_preview?inline=1",
-                "final": f"/api/jobs/{job.id}/file/final",
-                "log_file": f"/api/jobs/{job.id}/file/log",
             }
         )
+        if job.accepted and not job.refunded:
+            payload.update(
+                {
+                    "final": f"/api/jobs/{job.id}/file/final",
+                    "png": f"/api/jobs/{job.id}/file/png",
+                }
+            )
     return payload
 
 
@@ -2218,13 +2293,13 @@ async def create_job(
             handle.write(chunk)
 
     try:
-        _consume_credit_or_require_subscription(user)
+        _, credit_consumed = _consume_credit_or_require_subscription(user)
     except HTTPException:
         shutil.rmtree(upload_dir, ignore_errors=True)
         raise
 
     with jobs_lock:
-        jobs[job_id] = WebJob(id=job_id, user_id=user.id, user_email=user.email)
+        jobs[job_id] = WebJob(id=job_id, user_id=user.id, user_email=user.email, credit_consumed=credit_consumed)
         if pre_stretched:
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
@@ -2243,6 +2318,73 @@ def get_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, An
         return _job_response(job)
 
 
+@app.post("/api/jobs/{job_id}/accept")
+def accept_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if job.refunded:
+            raise HTTPException(status_code=409, detail="This image was refunded and is no longer available.")
+        if job.status != "finished" or not job.result:
+            raise HTTPException(status_code=409, detail="Image is not ready to accept.")
+        job.accepted = True
+        return _job_response(job)
+
+
+@app.post("/api/jobs/{job_id}/refund")
+def refund_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if job.accepted:
+            raise HTTPException(status_code=409, detail="Accepted images cannot be refunded.")
+        if job.refunded:
+            return _job_response(job)
+        if job.status != "finished" or not job.result:
+            raise HTTPException(status_code=409, detail="Image is not ready to refund.")
+        should_refund_credit = job.credit_consumed
+        job.refunded = True
+        job.status = "refunding"
+        job.stage = "Refunding Credit" if should_refund_credit else "Discarding Image"
+
+    if should_refund_credit:
+        try:
+            if not _refund_free_credit(user.id):
+                logger.warning("Credit refund returned false for user_id=%s job_id=%s", user.id, job_id)
+        except HTTPException:
+            with jobs_lock:
+                job = jobs.get(job_id)
+                if job and job.user_id == user.id:
+                    job.refunded = False
+                    job.status = "finished"
+                    job.stage = "Complete"
+            raise
+        except Exception as exc:
+            logger.exception("Credit refund failed for user_id=%s job_id=%s", user.id, job_id)
+            with jobs_lock:
+                job = jobs.get(job_id)
+                if job and job.user_id == user.id:
+                    job.refunded = False
+                    job.status = "finished"
+                    job.stage = "Complete"
+            raise HTTPException(status_code=502, detail="Could not refund credit.") from exc
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        _delete_job_files(job)
+        job.result = None
+        job.refunded = True
+        job.status = "refunded"
+        job.stage = "Refunded"
+        job.progress = 100
+        job.log.append("Image refunded and result files removed.")
+        return _job_response(job)
+
+
 @app.get("/api/jobs/{job_id}/file/{kind}")
 def get_job_file(
     job_id: str,
@@ -2257,9 +2399,11 @@ def get_job_file(
         mapping = {
             "before_preview": job.result["before_preview"],
             "after_preview": job.result["after_preview"],
+            "png": job.result.get("png", job.result["after_preview"]),
             "final": job.result["final"],
-            "log": job.result["log"],
         }
+        if kind in {"final", "png"} and (not job.accepted or job.refunded):
+            raise HTTPException(status_code=403, detail="Accept the image before downloading.")
         path = mapping.get(kind)
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="File not found.")
