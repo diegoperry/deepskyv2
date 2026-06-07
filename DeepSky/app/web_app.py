@@ -1740,12 +1740,20 @@ def _html() -> str:
           actionButton.disabled = true;
           if (action === "accept") {
             statusEl.textContent = "Accepting image...";
-            const job = await postJsonAuthed(`/api/jobs/${jobId}/accept`);
+            const job = await postJsonAuthed(
+              `/api/jobs/${jobId}/accept`,
+              {},
+              "Image accept service temporarily unavailable. Please refresh."
+            );
             statusEl.textContent = "Image accepted. Downloads are ready.";
             renderAcceptedDownloads(job);
           } else if (action === "refund") {
             statusEl.textContent = "Refunding credit...";
-            const job = await postJsonAuthed(`/api/jobs/${jobId}/refund`);
+            const job = await postJsonAuthed(
+              `/api/jobs/${jobId}/refund`,
+              {},
+              "Refund service temporarily unavailable. Please refresh."
+            );
             downloads.innerHTML = "";
             afterFrame.innerHTML = '<span class="empty">Image refunded</span>';
             statusEl.textContent = job.credit_consumed ? "Credit refunded. Result files removed." : "Image discarded. Result files removed.";
@@ -2333,56 +2341,68 @@ def accept_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str,
 
 
 @app.post("/api/jobs/{job_id}/refund")
-def refund_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if not job or job.user_id != user.id:
-            raise HTTPException(status_code=404, detail="Job not found.")
-        if job.accepted:
-            raise HTTPException(status_code=409, detail="Accepted images cannot be refunded.")
-        if job.refunded:
+def refund_job(job_id: str, user: AuthUser = Depends(require_user)) -> Any:
+    try:
+        with jobs_lock:
+            job = jobs.get(job_id)
+            if not job or job.user_id != user.id:
+                raise HTTPException(status_code=404, detail="Job not found.")
+            if job.accepted:
+                raise HTTPException(status_code=409, detail="Accepted images cannot be refunded.")
+            if job.refunded:
+                return _job_response(job)
+            if job.status != "finished" or not job.result:
+                raise HTTPException(status_code=409, detail="Image is not ready to refund.")
+            should_refund_credit = job.credit_consumed
+            job.refunded = True
+            job.status = "refunding"
+            job.stage = "Refunding Credit" if should_refund_credit else "Discarding Image"
+
+        if should_refund_credit:
+            try:
+                if not _refund_free_credit(user.id):
+                    logger.warning("Credit refund returned false for user_id=%s job_id=%s", user.id, job_id)
+            except HTTPException:
+                with jobs_lock:
+                    job = jobs.get(job_id)
+                    if job and job.user_id == user.id:
+                        job.refunded = False
+                        job.status = "finished"
+                        job.stage = "Complete"
+                raise
+            except Exception as exc:
+                logger.exception("Credit refund failed for user_id=%s job_id=%s", user.id, job_id)
+                with jobs_lock:
+                    job = jobs.get(job_id)
+                    if job and job.user_id == user.id:
+                        job.refunded = False
+                        job.status = "finished"
+                        job.stage = "Complete"
+                raise HTTPException(status_code=502, detail="Could not refund credit.") from exc
+
+        with jobs_lock:
+            job = jobs.get(job_id)
+            if not job or job.user_id != user.id:
+                raise HTTPException(status_code=404, detail="Job not found.")
+            _delete_job_files(job)
+            job.result = None
+            job.refunded = True
+            job.status = "refunded"
+            job.stage = "Refunded"
+            job.progress = 100
+            job.log.append("Image refunded and result files removed.")
             return _job_response(job)
-        if job.status != "finished" or not job.result:
-            raise HTTPException(status_code=409, detail="Image is not ready to refund.")
-        should_refund_credit = job.credit_consumed
-        job.refunded = True
-        job.status = "refunding"
-        job.stage = "Refunding Credit" if should_refund_credit else "Discarding Image"
-
-    if should_refund_credit:
-        try:
-            if not _refund_free_credit(user.id):
-                logger.warning("Credit refund returned false for user_id=%s job_id=%s", user.id, job_id)
-        except HTTPException:
-            with jobs_lock:
-                job = jobs.get(job_id)
-                if job and job.user_id == user.id:
-                    job.refunded = False
-                    job.status = "finished"
-                    job.stage = "Complete"
-            raise
-        except Exception as exc:
-            logger.exception("Credit refund failed for user_id=%s job_id=%s", user.id, job_id)
-            with jobs_lock:
-                job = jobs.get(job_id)
-                if job and job.user_id == user.id:
-                    job.refunded = False
-                    job.status = "finished"
-                    job.stage = "Complete"
-            raise HTTPException(status_code=502, detail="Could not refund credit.") from exc
-
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if not job or job.user_id != user.id:
-            raise HTTPException(status_code=404, detail="Job not found.")
-        _delete_job_files(job)
-        job.result = None
-        job.refunded = True
-        job.status = "refunded"
-        job.stage = "Refunded"
-        job.progress = 100
-        job.log.append("Image refunded and result files removed.")
-        return _job_response(job)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Unexpected refund failure for user_id=%s job_id=%s", user.id, job_id)
+        with jobs_lock:
+            job = jobs.get(job_id)
+            if job and job.user_id == user.id and job.status == "refunding":
+                job.refunded = False
+                job.status = "finished"
+                job.stage = "Complete"
+        return JSONResponse({"error": "Refund unavailable"}, status_code=500)
 
 
 @app.get("/api/jobs/{job_id}/file/{kind}")
