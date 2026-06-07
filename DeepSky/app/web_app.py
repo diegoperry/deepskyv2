@@ -530,6 +530,7 @@ def _landing_html() -> str:
     .final-cta { text-align: center; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(135deg, rgba(47,111,229,.20), rgba(255,128,109,.12)); padding: 46px 20px; }
     .final-cta p { margin: 12px auto 26px; max-width: 680px; }
     footer { border-top: 1px solid rgba(32,48,76,.65); color: #6f86aa; padding: 26px 0; text-align: center; }
+    footer p { margin: 0 0 10px; }
     footer a { color: #9cbcff; text-decoration: none; font-weight: 900; }
     @media (max-width: 900px) {
       .hero-grid, .comparison-grid, .features, .steps { grid-template-columns: 1fr; }
@@ -683,8 +684,9 @@ def _landing_html() -> str:
     </section>
   </main>
   <footer>
-    DeepSky Built By
-    <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a>
+    <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
+    <p>DeepSky Built By
+    <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a></p>
   </footer>
   <script>
     document.querySelectorAll(".slider").forEach((slider) => {
@@ -1024,6 +1026,7 @@ def _html() -> str:
       color: #6f86aa;
       font-size: 14px;
     }
+    .footer p { margin: 0 0 10px; }
     .footer a {
       color: #9cbcff;
       text-decoration: none;
@@ -1168,8 +1171,9 @@ def _html() -> str:
     </div>
     </div>
     <footer class="footer">
-      DeepSky Built By
-      <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a>
+      <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
+      <p>DeepSky Built By
+      <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a></p>
     </footer>
   </main>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
