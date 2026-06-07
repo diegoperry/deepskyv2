@@ -59,7 +59,6 @@ class WebJob:
     progress: int = 0
     credit_consumed: bool = False
     accepted: bool = False
-    refunded: bool = False
 
 
 @dataclass(frozen=True)
@@ -294,13 +293,13 @@ def _consume_credit_or_require_subscription(user: AuthUser) -> tuple[dict[str, A
     return _get_profile(user.id) or profile, True
 
 
-def _refund_free_credit(user_id: str) -> bool:
-    refunded = _supabase_rest_request(
-        "rpc/refund_free_credit",
+def _redeem_mars_code(user_id: str) -> bool:
+    redeemed = _supabase_rest_request(
+        "rpc/redeem_mars_code",
         method="POST",
         payload={"target_user_id": user_id},
     )
-    return refunded is True
+    return redeemed is True
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -947,6 +946,32 @@ def _html() -> str:
       line-height: 1.45;
       text-align: left;
     }
+    .credit-code-panel {
+      display: grid;
+      gap: 10px;
+      width: min(520px, 100%);
+      margin: 14px auto 0;
+      border: 1px solid #2c4773;
+      border-radius: 10px;
+      background: rgba(11, 22, 40, .92);
+      padding: 14px;
+      text-align: left;
+    }
+    .credit-code-panel[hidden] { display: none; }
+    .credit-code-panel p { margin: 0; color: #cfe0ff; font-weight: 800; }
+    .credit-code-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .credit-code-row input {
+      flex: 1 1 180px;
+      min-height: 42px;
+      border: 1px solid #2c4773;
+      border-radius: 8px;
+      background: #070b12;
+      color: var(--text);
+      padding: 0 12px;
+      font-size: 15px;
+      text-transform: uppercase;
+    }
+    .credit-code-message { min-height: 20px; color: var(--muted); font-size: 14px; }
     .progress-panel {
       display: grid;
       gap: 10px;
@@ -1141,6 +1166,14 @@ def _html() -> str:
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div id="warning" class="warning"></div>
+      <div id="creditCodePanel" class="credit-code-panel" hidden>
+        <p>Enter code for 5 more credits.</p>
+        <div class="credit-code-row">
+          <input id="creditCode" type="text" autocomplete="off" placeholder="Code" />
+          <button id="redeemCreditCode" class="link-button" type="button">Redeem</button>
+        </div>
+        <div id="creditCodeMessage" class="credit-code-message"></div>
+      </div>
       <div id="progressPanel" class="progress-panel" hidden>
         <div class="progress-row" id="uploadProgressRow">
           <span id="uploadProgressLabel">Uploading file</span>
@@ -1188,6 +1221,10 @@ def _html() -> str:
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
+    const creditCodePanel = document.getElementById("creditCodePanel");
+    const creditCode = document.getElementById("creditCode");
+    const redeemCreditCode = document.getElementById("redeemCreditCode");
+    const creditCodeMessage = document.getElementById("creditCodeMessage");
     const uploadProgressRow = document.getElementById("uploadProgressRow");
     const uploadProgressLabel = document.getElementById("uploadProgressLabel");
     const uploadProgressFill = document.getElementById("uploadProgressFill");
@@ -1506,11 +1543,20 @@ def _html() -> str:
     }
 
     function renderReviewActions(job) {
-      const refundLabel = job.credit_consumed ? "Refund Credit" : "Discard Image";
       downloads.innerHTML = `
         <button class="cta" type="button" data-job-action="accept" data-job-id="${job.id}">Accept Image</button>
-        <button class="link-button" type="button" data-job-action="refund" data-job-id="${job.id}">${refundLabel}</button>
       `;
+    }
+
+    function showCreditCodePanel(message = "") {
+      creditCodePanel.hidden = false;
+      creditCodeMessage.textContent = message;
+      creditCode.focus();
+    }
+
+    function hideCreditCodePanel() {
+      creditCodePanel.hidden = true;
+      creditCodeMessage.textContent = "";
     }
 
     async function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
@@ -1551,7 +1597,9 @@ def _html() -> str:
             } else {
               message = "Processing service temporarily unavailable. Please refresh.";
             }
-            reject(new Error(message));
+            const error = new Error(message);
+            error.status = xhr.status;
+            reject(error);
           }
         };
         xhr.onerror = () => reject(new Error("Network error while uploading file."));
@@ -1569,6 +1617,7 @@ def _html() -> str:
       beforeFrame.innerHTML = file ? '<span class="empty">Loading preview</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
+      hideCreditCodePanel();
       processingIndicator.classList.remove("active");
       statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 50 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
       warningEl.style.display = "none";
@@ -1750,17 +1799,6 @@ def _html() -> str:
             );
             statusEl.textContent = "Image accepted. Downloads are ready.";
             renderAcceptedDownloads(job);
-          } else if (action === "refund") {
-            statusEl.textContent = "Refunding credit...";
-            const job = await postJsonAuthed(
-              `/api/jobs/${jobId}/refund`,
-              {},
-              "Refund service temporarily unavailable. Please refresh."
-            );
-            downloads.innerHTML = "";
-            afterFrame.innerHTML = '<span class="empty">Image refunded</span>';
-            statusEl.textContent = job.credit_consumed ? "Credit refunded. Result files removed." : "Image discarded. Result files removed.";
-            await loadBillingStatus();
           }
         } catch (error) {
           statusEl.textContent = error.message || String(error);
@@ -1775,6 +1813,34 @@ def _html() -> str:
         await downloadFile(button.dataset.downloadUrl, button.dataset.downloadName);
       } catch (error) {
         statusEl.textContent = error.message || String(error);
+      }
+    });
+
+    redeemCreditCode.addEventListener("click", async () => {
+      const code = creditCode.value.trim().toUpperCase();
+      if (!code) {
+        creditCodeMessage.textContent = "Enter a code.";
+        return;
+      }
+      try {
+        redeemCreditCode.disabled = true;
+        creditCodeMessage.textContent = "Checking code...";
+        const result = await postJsonAuthed("/api/billing/redeem-code", { code });
+        creditCode.value = "";
+        creditCodeMessage.textContent = result.message || "Code redeemed. You have 5 more credits.";
+        statusEl.textContent = "Code redeemed. You can process more images.";
+        await loadBillingStatus();
+      } catch (error) {
+        creditCodeMessage.textContent = error.message || String(error);
+      } finally {
+        redeemCreditCode.disabled = false;
+      }
+    });
+
+    creditCode.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        redeemCreditCode.click();
       }
     });
 
@@ -1836,15 +1902,6 @@ def _html() -> str:
         run.disabled = false;
         return;
       }
-      if (job.status === "refunded") {
-        statusEl.textContent = "Credit refunded. Result files removed.";
-        downloads.innerHTML = "";
-        afterFrame.innerHTML = '<span class="empty">Image refunded</span>';
-        processingIndicator.classList.remove("active");
-        run.disabled = false;
-        void loadBillingStatus();
-        return;
-      }
       if (job.status === "failed") {
         statusEl.textContent = "Processing failed.";
         progressPanel.hidden = true;
@@ -1861,6 +1918,7 @@ def _html() -> str:
       statusEl.textContent = "Uploading...";
       processingIndicator.classList.add("active");
       downloads.innerHTML = "";
+      hideCreditCodePanel();
       afterFrame.innerHTML = '<span class="empty">Processing</span>';
       showUploadProgress("Uploading job");
       const data = new FormData();
@@ -1882,6 +1940,9 @@ def _html() -> str:
         });
       } catch (error) {
         statusEl.textContent = error.message || String(error);
+        if (error.status === 402) {
+          showCreditCodePanel("Enter code MARS for 5 more credits.");
+        }
         progressPanel.hidden = true;
         run.disabled = false;
         return;
@@ -1994,9 +2055,8 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         "progress": job.progress,
         "credit_consumed": job.credit_consumed,
         "accepted": job.accepted,
-        "refunded": job.refunded,
-        "can_download": job.accepted and not job.refunded,
-        "needs_review": job.status == "finished" and not job.accepted and not job.refunded,
+        "can_download": job.accepted,
+        "needs_review": job.status == "finished" and not job.accepted,
     }
     if job.result:
         payload.update(
@@ -2005,7 +2065,7 @@ def _job_response(job: WebJob) -> dict[str, Any]:
                 "after_preview": f"/api/jobs/{job.id}/file/after_preview?inline=1",
             }
         )
-        if job.accepted and not job.refunded:
+        if job.accepted:
             payload.update(
                 {
                     "final": f"/api/jobs/{job.id}/file/final",
@@ -2145,6 +2205,7 @@ def billing_status(user: AuthUser = Depends(require_user)) -> Any:
             "is_paid": is_paid,
             "subscription_status": profile.get("subscription_status") or "free",
             "free_credits_remaining": int(profile.get("free_credits_remaining") or 0),
+            "mars_code_redeemed": bool(profile.get("mars_code_redeemed")),
         }
     except Exception as exc:
         if isinstance(exc, HTTPException):
@@ -2179,6 +2240,36 @@ def create_billing_checkout(user: AuthUser = Depends(require_user)) -> dict[str,
         subscription_data={"metadata": {"user_id": user.id}},
     )
     return {"url": session.url}
+
+
+@app.post("/api/billing/redeem-code", response_model=None)
+async def redeem_billing_code(request: Request, user: AuthUser = Depends(require_user)) -> Any:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        payload = {}
+    code = str(payload.get("code") or "").strip().upper()
+    if code != "MARS":
+        raise HTTPException(status_code=400, detail="Invalid code.")
+    profile = _billing_profile_for(user)
+    if _is_paid_profile(profile):
+        return {"redeemed": False, "message": "Paid plan is active. Credits are unlimited."}
+    if bool(profile.get("mars_code_redeemed")):
+        raise HTTPException(status_code=409, detail="Code already redeemed.")
+    try:
+        if not _redeem_mars_code(user.id):
+            raise HTTPException(status_code=409, detail="Code already redeemed.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("MARS code redemption failed for user_id=%s", user.id)
+        raise HTTPException(status_code=502, detail="Could not redeem code.") from exc
+    updated = _get_profile(user.id) or profile
+    return {
+        "redeemed": True,
+        "message": "Code redeemed. You have 5 more credits.",
+        "free_credits_remaining": int(updated.get("free_credits_remaining") or 0),
+    }
 
 
 @app.post("/api/stripe/webhook")
@@ -2335,77 +2426,10 @@ def accept_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str,
         job = jobs.get(job_id)
         if not job or job.user_id != user.id:
             raise HTTPException(status_code=404, detail="Job not found.")
-        if job.refunded:
-            raise HTTPException(status_code=409, detail="This image was refunded and is no longer available.")
         if job.status != "finished" or not job.result:
             raise HTTPException(status_code=409, detail="Image is not ready to accept.")
         job.accepted = True
         return _job_response(job)
-
-
-@app.post("/api/jobs/{job_id}/refund", response_model=None)
-def refund_job(job_id: str, user: AuthUser = Depends(require_user)) -> Any:
-    try:
-        with jobs_lock:
-            job = jobs.get(job_id)
-            if not job or job.user_id != user.id:
-                raise HTTPException(status_code=404, detail="Job not found.")
-            if job.accepted:
-                raise HTTPException(status_code=409, detail="Accepted images cannot be refunded.")
-            if job.refunded:
-                return _job_response(job)
-            if job.status != "finished" or not job.result:
-                raise HTTPException(status_code=409, detail="Image is not ready to refund.")
-            should_refund_credit = job.credit_consumed
-            job.refunded = True
-            job.status = "refunding"
-            job.stage = "Refunding Credit" if should_refund_credit else "Discarding Image"
-
-        if should_refund_credit:
-            try:
-                if not _refund_free_credit(user.id):
-                    logger.warning("Credit refund returned false for user_id=%s job_id=%s", user.id, job_id)
-            except HTTPException:
-                with jobs_lock:
-                    job = jobs.get(job_id)
-                    if job and job.user_id == user.id:
-                        job.refunded = False
-                        job.status = "finished"
-                        job.stage = "Complete"
-                raise
-            except Exception as exc:
-                logger.exception("Credit refund failed for user_id=%s job_id=%s", user.id, job_id)
-                with jobs_lock:
-                    job = jobs.get(job_id)
-                    if job and job.user_id == user.id:
-                        job.refunded = False
-                        job.status = "finished"
-                        job.stage = "Complete"
-                raise HTTPException(status_code=502, detail="Could not refund credit.") from exc
-
-        with jobs_lock:
-            job = jobs.get(job_id)
-            if not job or job.user_id != user.id:
-                raise HTTPException(status_code=404, detail="Job not found.")
-            _delete_job_files(job)
-            job.result = None
-            job.refunded = True
-            job.status = "refunded"
-            job.stage = "Refunded"
-            job.progress = 100
-            job.log.append("Image refunded and result files removed.")
-            return _job_response(job)
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Unexpected refund failure for user_id=%s job_id=%s", user.id, job_id)
-        with jobs_lock:
-            job = jobs.get(job_id)
-            if job and job.user_id == user.id and job.status == "refunding":
-                job.refunded = False
-                job.status = "finished"
-                job.stage = "Complete"
-        return JSONResponse({"error": "Refund unavailable"}, status_code=500)
 
 
 @app.get("/api/jobs/{job_id}/file/{kind}")
@@ -2425,7 +2449,7 @@ def get_job_file(
             "png": job.result.get("png", job.result["after_preview"]),
             "final": job.result["final"],
         }
-        if kind in {"final", "png"} and (not job.accepted or job.refunded):
+        if kind in {"final", "png"} and not job.accepted:
             raise HTTPException(status_code=403, detail="Accept the image before downloading.")
         path = mapping.get(kind)
     if not path or not Path(path).exists():

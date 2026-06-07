@@ -2,6 +2,7 @@ create table if not exists public.profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   email text,
   free_credits_remaining integer not null default 3 check (free_credits_remaining >= 0),
+  mars_code_redeemed boolean not null default false,
   subscription_status text not null default 'free',
   stripe_customer_id text unique,
   stripe_subscription_id text,
@@ -11,6 +12,9 @@ create table if not exists public.profiles (
 );
 
 alter table public.profiles enable row level security;
+
+alter table public.profiles
+add column if not exists mars_code_redeemed boolean not null default false;
 
 do $$
 begin
@@ -53,25 +57,26 @@ begin
 end;
 $$;
 
-create or replace function public.refund_free_credit(target_user_id uuid)
+create or replace function public.redeem_mars_code(target_user_id uuid)
 returns boolean
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  did_refund boolean;
+  did_redeem boolean;
 begin
   update public.profiles
   set
-    free_credits_remaining = least(free_credits_remaining + 1, 3),
+    free_credits_remaining = free_credits_remaining + 5,
+    mars_code_redeemed = true,
     updated_at = now()
   where
     user_id = target_user_id
-    and free_credits_remaining < 3
+    and mars_code_redeemed = false
     and coalesce(subscription_status, 'free') not in ('active', 'trialing')
-  returning true into did_refund;
+  returning true into did_redeem;
 
-  return coalesce(did_refund, false);
+  return coalesce(did_redeem, false);
 end;
 $$;
