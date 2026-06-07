@@ -58,7 +58,6 @@ class WebJob:
     stage: str = "Queued"
     progress: int = 0
     credit_consumed: bool = False
-    accepted: bool = False
 
 
 @dataclass(frozen=True)
@@ -1542,12 +1541,6 @@ def _html() -> str:
       `;
     }
 
-    function renderReviewActions(job) {
-      downloads.innerHTML = `
-        <button class="cta" type="button" data-job-action="accept" data-job-id="${job.id}">Accept Image</button>
-      `;
-    }
-
     function showCreditCodePanel(message = "") {
       creditCodePanel.hidden = false;
       creditCodeMessage.textContent = message;
@@ -1784,29 +1777,6 @@ def _html() -> str:
     });
 
     downloads.addEventListener("click", async (event) => {
-      const actionButton = event.target.closest("button[data-job-action]");
-      if (actionButton) {
-        const action = actionButton.dataset.jobAction;
-        const jobId = actionButton.dataset.jobId;
-        try {
-          actionButton.disabled = true;
-          if (action === "accept") {
-            statusEl.textContent = "Accepting image...";
-            const job = await postJsonAuthed(
-              `/api/jobs/${jobId}/accept`,
-              {},
-              "Image accept service temporarily unavailable. Please refresh."
-            );
-            statusEl.textContent = "Image accepted. Downloads are ready.";
-            renderAcceptedDownloads(job);
-          }
-        } catch (error) {
-          statusEl.textContent = error.message || String(error);
-          actionButton.disabled = false;
-        }
-        return;
-      }
-
       const button = event.target.closest("button[data-download-url]");
       if (!button) return;
       try {
@@ -1891,13 +1861,8 @@ def _html() -> str:
       if (job.status === "finished") {
         showPipelineProgress("Complete", 100);
         processingIndicator.classList.remove("active");
-        if (job.can_download) {
-          statusEl.textContent = "Image accepted. Downloads are ready.";
-          renderAcceptedDownloads(job);
-        } else {
-          statusEl.textContent = "Review your processed image.";
-          renderReviewActions(job);
-        }
+        statusEl.textContent = "Processing complete. Downloads are ready.";
+        renderAcceptedDownloads(job);
         void loadBillingStatus();
         run.disabled = false;
         return;
@@ -2054,9 +2019,7 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         "stage": job.stage,
         "progress": job.progress,
         "credit_consumed": job.credit_consumed,
-        "accepted": job.accepted,
-        "can_download": job.accepted,
-        "needs_review": job.status == "finished" and not job.accepted,
+        "can_download": job.status == "finished" and bool(job.result),
     }
     if job.result:
         payload.update(
@@ -2065,13 +2028,12 @@ def _job_response(job: WebJob) -> dict[str, Any]:
                 "after_preview": f"/api/jobs/{job.id}/file/after_preview?inline=1",
             }
         )
-        if job.accepted:
-            payload.update(
-                {
-                    "final": f"/api/jobs/{job.id}/file/final",
-                    "png": f"/api/jobs/{job.id}/file/png",
-                }
-            )
+        payload.update(
+            {
+                "final": f"/api/jobs/{job.id}/file/final",
+                "png": f"/api/jobs/{job.id}/file/png",
+            }
+        )
     return payload
 
 
@@ -2420,18 +2382,6 @@ def get_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, An
         return _job_response(job)
 
 
-@app.post("/api/jobs/{job_id}/accept")
-def accept_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if not job or job.user_id != user.id:
-            raise HTTPException(status_code=404, detail="Job not found.")
-        if job.status != "finished" or not job.result:
-            raise HTTPException(status_code=409, detail="Image is not ready to accept.")
-        job.accepted = True
-        return _job_response(job)
-
-
 @app.get("/api/jobs/{job_id}/file/{kind}")
 def get_job_file(
     job_id: str,
@@ -2449,8 +2399,6 @@ def get_job_file(
             "png": job.result.get("png", job.result["after_preview"]),
             "final": job.result["final"],
         }
-        if kind in {"final", "png"} and not job.accepted:
-            raise HTTPException(status_code=403, detail="Accept the image before downloading.")
         path = mapping.get(kind)
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="File not found.")
