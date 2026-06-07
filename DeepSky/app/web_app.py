@@ -34,12 +34,14 @@ logger = logging.getLogger(__name__)
 WEB_WORK_ROOT = Path(tempfile.gettempdir()) / "deepsky_web"
 UPLOAD_ROOT = WEB_WORK_ROOT / "uploads"
 PREVIEW_ROOT = WEB_WORK_ROOT / "previews"
+STAGED_UPLOAD_ROOT = WEB_WORK_ROOT / "staged_uploads"
 JOB_OUTPUT_ROOT = WEB_WORK_ROOT / "jobs"
 LEGACY_WEB_UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "web_uploads"
 TEMP_FILE_TTL_SECONDS = 6 * 60 * 60
 MAX_WORKERS = 1
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_BYTES = 250 * 1024 * 1024
 MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
+CHUNK_UPLOAD_BYTES = 8 * 1024 * 1024
 FREE_IMAGE_CREDITS = 3
 PAID_PLAN_LABEL = "$15/month"
 PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
@@ -65,6 +67,16 @@ class WebJob:
 class AuthUser:
     id: str
     email: str | None = None
+
+
+@dataclass
+class StagedUpload:
+    id: str
+    user_id: str
+    filename: str
+    size: int
+    path: Path
+    created_at: float = field(default_factory=time.time)
 
 
 PROGRESS_LINE_RE = re.compile(r"progress:\s*(?P<label>.*?),\s*(?P<percent>\d+(?:\.\d+)?)%")
@@ -126,6 +138,7 @@ app = FastAPI(title="DeepSky")
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 jobs: dict[str, WebJob] = {}
 previews: dict[str, str] = {}
+staged_uploads: dict[str, StagedUpload] = {}
 jobs_lock = Lock()
 app.mount("/static", StaticFiles(directory=APP_ROOT / "app" / "static"), name="static")
 
@@ -361,7 +374,7 @@ def _cleanup_old_temp_files() -> None:
     cutoff = time.time() - TEMP_FILE_TTL_SECONDS
     if LEGACY_WEB_UPLOAD_ROOT.exists():
         shutil.rmtree(LEGACY_WEB_UPLOAD_ROOT, ignore_errors=True)
-    for root in (UPLOAD_ROOT, PREVIEW_ROOT, JOB_OUTPUT_ROOT):
+    for root in (UPLOAD_ROOT, PREVIEW_ROOT, STAGED_UPLOAD_ROOT, JOB_OUTPUT_ROOT):
         if not root.exists():
             continue
         for child in root.iterdir():
@@ -370,6 +383,9 @@ def _cleanup_old_temp_files() -> None:
                     if root == PREVIEW_ROOT:
                         with jobs_lock:
                             previews.pop(child.name, None)
+                    if root == STAGED_UPLOAD_ROOT:
+                        with jobs_lock:
+                            staged_uploads.pop(child.name, None)
                     if child.is_dir():
                         shutil.rmtree(child, ignore_errors=True)
                     else:
@@ -392,6 +408,34 @@ def _delete_job_files(job: WebJob) -> None:
                     path.unlink(missing_ok=True)
         except OSError:
             continue
+
+
+def _get_staged_upload(upload_id: str, user: AuthUser) -> StagedUpload:
+    if not upload_id or any(ch not in "0123456789abcdef" for ch in upload_id):
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    with jobs_lock:
+        staged = staged_uploads.get(upload_id)
+    if not staged or staged.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    if not staged.path.exists():
+        with jobs_lock:
+            staged_uploads.pop(upload_id, None)
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    return staged
+
+
+def _require_completed_staged_upload(upload_id: str, user: AuthUser) -> StagedUpload:
+    staged = _get_staged_upload(upload_id, user)
+    if staged.path.stat().st_size != staged.size:
+        raise HTTPException(status_code=409, detail="Upload is not complete.")
+    return staged
+
+
+def _discard_staged_upload(upload_id: str) -> None:
+    with jobs_lock:
+        staged = staged_uploads.pop(upload_id, None)
+    if staged:
+        shutil.rmtree(staged.path.parent, ignore_errors=True)
 
 
 def _landing_html() -> str:
@@ -583,7 +627,7 @@ def _landing_html() -> str:
             <a class="secondary" href="#results">See before and after</a>
           </div>
           <div class="trust">
-            <div><strong>50 MB</strong><span>FITS/TIFF uploads</span></div>
+            <div><strong>250 MB</strong><span>FITS/TIFF uploads</span></div>
             <div><strong>1 click</strong><span>full pipeline</span></div>
             <div><strong>RGB</strong><span>color-preserving output</span></div>
           </div>
@@ -686,7 +730,7 @@ def _landing_html() -> str:
           <h2>FAQ</h2>
         </div>
         <div class="faq">
-          <details open><summary>What files can I upload?</summary><p>DeepSky currently accepts FITS, FIT, FTS, TIF, and TIFF files up to 50 MB.</p></details>
+          <details open><summary>What files can I upload?</summary><p>DeepSky currently accepts FITS, FIT, FTS, TIF, and TIFF files up to 250 MB.</p></details>
           <details><summary>Does it work with SeeStar files?</summary><p>Yes. DeepSky is being tuned around real SeeStar-style FITS and TIFF uploads, including both linear and already-stretched files.</p></details>
           <details><summary>Is this catalog photometric color calibration?</summary><p>When Siril PCC is available and the file has enough metadata, catalog-based star color calibration can be used. Otherwise DeepSky uses pixel-based background and star balancing.</p></details>
           <details><summary>Will it replace manual processing?</summary><p>No. It is meant to produce a strong first processed result quickly, especially for users who do not want to spend hours tuning multiple astronomy tools.</p></details>
@@ -1128,7 +1172,7 @@ def _html() -> str:
         <input id="file" type="file" accept=".fits,.fit,.fts,.tif,.tiff" />
         <div>
           <strong>Drag & drop your astrophotography file</strong>
-          <span id="fileName">Supports FITS and TIFF formats up to 50 MB</span>
+          <span id="fileName">Supports FITS and TIFF formats up to 250 MB</span>
         </div>
       </label>
       <div class="actions">
@@ -1245,8 +1289,11 @@ def _html() -> str:
     let recoveryMode = false;
     let billingStatusPromise = null;
     let selectedFile = null;
+    let stagedUpload = null;
     let activeJob = null;
     let previewRequest = 0;
+    const MAX_UPLOAD_BYTES_CLIENT = 250 * 1024 * 1024;
+    const CHUNKED_UPLOAD_THRESHOLD = 45 * 1024 * 1024;
 
     function setAuthMessage(message) {
       authMessage.textContent = message || "";
@@ -1576,18 +1623,57 @@ def _html() -> str:
       });
     }
 
+    async function uploadFileInChunks(file, { onUploadProgress, onServerWait } = {}) {
+      const initResponse = await fetch("/api/uploads/init", {
+        method: "POST",
+        headers: {
+          ...(await authHeaders()),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ filename: file.name, size: file.size }),
+      });
+      const initData = await readJsonResponse(initResponse, "Upload service temporarily unavailable. Please refresh.");
+      if (!initResponse.ok) {
+        throw new Error(initData.detail || initData.error || "Could not start upload.");
+      }
+      const chunkSize = Number(initData.chunk_size || (8 * 1024 * 1024));
+      let offset = 0;
+      while (offset < file.size) {
+        const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
+        const chunkResponse = await fetch(`/api/uploads/${initData.upload_id}/chunk`, {
+          method: "POST",
+          headers: {
+            ...(await authHeaders()),
+            "Content-Type": "application/octet-stream",
+            "X-Upload-Offset": String(offset),
+          },
+          body: chunk,
+        });
+        const chunkData = await readJsonResponse(chunkResponse, "Upload service temporarily unavailable. Please refresh.");
+        if (!chunkResponse.ok) {
+          throw new Error(chunkData.detail || chunkData.error || "Could not upload file chunk.");
+        }
+        offset = Number(chunkData.offset || (offset + chunk.size));
+        if (onUploadProgress) onUploadProgress((offset / file.size) * 100);
+      }
+      if (onUploadProgress) onUploadProgress(100);
+      if (onServerWait) onServerWait();
+      return initData.upload_id;
+    }
+
     async function setFile(file) {
       selectedFile = file;
       const requestId = ++previewRequest;
       resetProgress();
-      fileName.textContent = file ? file.name : "Supports FITS and TIFF formats up to 50 MB";
-      const tooLarge = file && file.size > 50 * 1024 * 1024;
-      run.disabled = !file || tooLarge;
+      stagedUpload = null;
+      fileName.textContent = file ? file.name : "Supports FITS and TIFF formats up to 250 MB";
+      const tooLarge = file && file.size > MAX_UPLOAD_BYTES_CLIENT;
+      run.disabled = true;
       beforeFrame.innerHTML = file ? '<span class="empty">Loading preview</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
       processingIndicator.classList.remove("active");
-      statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 50 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
+      statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 250 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
       warningEl.style.display = "none";
       warningEl.textContent = "";
       if (inputMode.value === "Pre-stretched") {
@@ -1599,20 +1685,40 @@ def _html() -> str:
       }
       if (!file || tooLarge) return;
       try {
-        const data = new FormData();
-        data.append("file", file);
-        showUploadProgress("Uploading preview");
-        const preview = await postFormJson("/api/preview", data, {
-          onUploadProgress: (percent) => setProgress(uploadProgressFill, uploadProgressValue, percent),
-          onServerWait: () => {
-            uploadProgressValue.textContent = "Done";
-            showPreviewProgress();
-          },
-        });
+        let preview;
+        if (file.size > CHUNKED_UPLOAD_THRESHOLD) {
+          showUploadProgress("Uploading large file");
+          const uploadId = await uploadFileInChunks(file, {
+            onUploadProgress: (percent) => setProgress(uploadProgressFill, uploadProgressValue, percent),
+            onServerWait: () => {
+              uploadProgressValue.textContent = "Done";
+              showPreviewProgress();
+            },
+          });
+          if (requestId !== previewRequest) return;
+          stagedUpload = { id: uploadId, name: file.name, size: file.size, lastModified: file.lastModified };
+          preview = await postJsonAuthed(
+            `/api/uploads/${uploadId}/preview`,
+            {},
+            "Preview service temporarily unavailable. Please refresh."
+          );
+        } else {
+          const data = new FormData();
+          data.append("file", file);
+          showUploadProgress("Uploading preview");
+          preview = await postFormJson("/api/preview", data, {
+            onUploadProgress: (percent) => setProgress(uploadProgressFill, uploadProgressValue, percent),
+            onServerWait: () => {
+              uploadProgressValue.textContent = "Done";
+              showPreviewProgress();
+            },
+          });
+        }
         if (requestId !== previewRequest) return;
         setProgress(uploadProgressFill, uploadProgressValue, 100);
         setProgress(previewProgressFill, previewProgressValue, 100);
         await loadImageIntoFrame(`${preview.preview_url}&t=${Date.now()}`, beforeFrame, "Before preview");
+        run.disabled = false;
         statusEl.textContent = "Ready to run full pipeline.";
         setTimeout(() => {
           if (requestId === previewRequest) progressPanel.hidden = true;
@@ -1621,7 +1727,13 @@ def _html() -> str:
         if (requestId !== previewRequest) return;
         progressPanel.hidden = true;
         beforeFrame.innerHTML = '<span class="empty">Preview unavailable</span>';
-        statusEl.textContent = "Ready to run full pipeline.";
+        if (file.size > CHUNKED_UPLOAD_THRESHOLD && !stagedUpload) {
+          run.disabled = true;
+          statusEl.textContent = "Large file upload failed. Try selecting the file again.";
+        } else {
+          run.disabled = false;
+          statusEl.textContent = "Ready to run full pipeline.";
+        }
         warningEl.style.display = "block";
         warningEl.textContent = `Preview could not be generated yet. ${error.message || error}`;
       }
@@ -1834,7 +1946,20 @@ def _html() -> str:
       afterFrame.innerHTML = '<span class="empty">Processing</span>';
       showUploadProgress("Uploading job");
       const data = new FormData();
-      data.append("file", selectedFile);
+      const canUseStagedUpload =
+        stagedUpload &&
+        stagedUpload.name === selectedFile.name &&
+        stagedUpload.size === selectedFile.size &&
+        stagedUpload.lastModified === selectedFile.lastModified;
+      if (canUseStagedUpload) {
+        data.append("upload_id", stagedUpload.id);
+        setProgress(uploadProgressFill, uploadProgressValue, 100);
+        uploadProgressValue.textContent = "Done";
+        previewProgressRow.hidden = true;
+        statusEl.textContent = "Starting pipeline...";
+      } else {
+        data.append("file", selectedFile);
+      }
       data.append("object_type", objectType.value);
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
@@ -1842,8 +1967,11 @@ def _html() -> str:
       let job;
       try {
         job = await postFormJson("/api/jobs", data, {
-          onUploadProgress: (percent) => setProgress(uploadProgressFill, uploadProgressValue, percent),
+          onUploadProgress: (percent) => {
+            if (!canUseStagedUpload) setProgress(uploadProgressFill, uploadProgressValue, percent);
+          },
           onServerWait: () => {
+            if (canUseStagedUpload) return;
             setProgress(uploadProgressFill, uploadProgressValue, 100);
             uploadProgressValue.textContent = "Done";
             previewProgressRow.hidden = true;
@@ -1858,6 +1986,7 @@ def _html() -> str:
       }
       progressPanel.hidden = true;
       activeJob = job.id;
+      if (canUseStagedUpload) stagedUpload = null;
       void loadBillingStatus();
       showPipelineProgress("Starting Pipeline", 1);
       poll(activeJob);
@@ -2247,6 +2376,85 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
     return {"received": True}
 
 
+@app.post("/api/uploads/init")
+async def init_upload(request: Request, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    _cleanup_old_temp_files()
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        payload = {}
+    filename = Path(str(payload.get("filename") or "upload")).name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in SUPPORTED_INPUTS:
+        raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
+    try:
+        size = int(payload.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size <= 0:
+        raise HTTPException(status_code=400, detail="Upload is empty.")
+    if size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
+
+    STAGED_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+    upload_id = uuid.uuid4().hex
+    upload_dir = STAGED_UPLOAD_ROOT / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=False)
+    staged_path = upload_dir / filename
+    staged_path.touch()
+    with jobs_lock:
+        staged_uploads[upload_id] = StagedUpload(
+            id=upload_id,
+            user_id=user.id,
+            filename=filename,
+            size=size,
+            path=staged_path,
+        )
+    return {"upload_id": upload_id, "chunk_size": CHUNK_UPLOAD_BYTES}
+
+
+@app.post("/api/uploads/{upload_id}/chunk")
+async def upload_chunk(
+    upload_id: str,
+    request: Request,
+    x_upload_offset: int = Header(default=0, alias="X-Upload-Offset"),
+    user: AuthUser = Depends(require_user),
+) -> dict[str, int | bool]:
+    staged = _get_staged_upload(upload_id, user)
+    chunk = await request.body()
+    if not chunk:
+        raise HTTPException(status_code=400, detail="Chunk is empty.")
+    if len(chunk) > CHUNK_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Upload chunk is too large.")
+    current_size = staged.path.stat().st_size
+    if x_upload_offset != current_size:
+        raise HTTPException(status_code=409, detail="Upload offset mismatch. Please retry the upload.")
+    if current_size + len(chunk) > staged.size:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
+    with staged.path.open("ab") as handle:
+        handle.write(chunk)
+    next_offset = current_size + len(chunk)
+    return {"offset": next_offset, "complete": next_offset == staged.size}
+
+
+@app.post("/api/uploads/{upload_id}/preview")
+def create_staged_preview(upload_id: str, user: AuthUser = Depends(require_user)) -> dict[str, str]:
+    _cleanup_old_temp_files()
+    staged = _require_completed_staged_upload(upload_id, user)
+    preview_id = uuid.uuid4().hex
+    preview_dir = PREVIEW_ROOT / preview_id
+    preview_dir.mkdir(parents=True, exist_ok=False)
+    preview_path = preview_dir / "before_preview.png"
+    try:
+        make_preview(staged.path, preview_path)
+    except Exception as exc:
+        shutil.rmtree(preview_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
+    with jobs_lock:
+        previews[preview_id] = user.id
+    return {"preview_url": f"/api/previews/{preview_id}?inline=1"}
+
+
 @app.post("/api/preview")
 async def create_preview(
     file: UploadFile = File(...),
@@ -2307,7 +2515,8 @@ def get_preview(
 
 @app.post("/api/jobs")
 async def create_job(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    upload_id: str = Form(""),
     object_type: str = Form("Nebula"),
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
@@ -2315,33 +2524,48 @@ async def create_job(
     user: AuthUser = Depends(require_user),
 ) -> dict[str, str]:
     _cleanup_old_temp_files()
-    suffix = Path(file.filename or "").suffix.lower()
+    staged = _require_completed_staged_upload(upload_id, user) if upload_id else None
+    filename = staged.filename if staged else Path((file.filename if file else "") or "").name
+    suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
         raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
-    content_length = file.headers.get("content-length")
-    if content_length and int(content_length) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
+    if not staged:
+        if not file:
+            raise HTTPException(status_code=400, detail="Upload a FITS or TIFF file.")
+        content_length = file.headers.get("content-length")
+        if content_length and int(content_length) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
 
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4().hex
     upload_dir = UPLOAD_ROOT / job_id
     upload_dir.mkdir(parents=True, exist_ok=False)
-    input_path = upload_dir / Path(file.filename or f"upload{suffix}").name
-    total = 0
-    with input_path.open("wb") as handle:
-        while chunk := file.file.read(1024 * 1024):
-            total += len(chunk)
-            if total > MAX_UPLOAD_BYTES:
-                handle.close()
-                shutil.rmtree(upload_dir, ignore_errors=True)
-                raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
-            handle.write(chunk)
+    input_path = upload_dir / (filename or f"upload{suffix}")
+
+    if staged:
+        try:
+            shutil.copy2(staged.path, input_path)
+        except OSError as exc:
+            shutil.rmtree(upload_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail="Could not prepare uploaded file for processing.") from exc
+    else:
+        total = 0
+        with input_path.open("wb") as handle:
+            while chunk := file.file.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    handle.close()
+                    shutil.rmtree(upload_dir, ignore_errors=True)
+                    raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
+                handle.write(chunk)
 
     try:
         _, credit_consumed = _consume_credit_or_require_subscription(user)
     except HTTPException:
         shutil.rmtree(upload_dir, ignore_errors=True)
         raise
+    if staged:
+        _discard_staged_upload(staged.id)
 
     with jobs_lock:
         jobs[job_id] = WebJob(id=job_id, user_id=user.id, user_email=user.email, credit_consumed=credit_consumed)
