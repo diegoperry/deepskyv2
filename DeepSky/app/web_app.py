@@ -958,6 +958,7 @@ def _html() -> str:
     }
     .credit-code-panel[hidden] { display: none; }
     .credit-code-panel p { margin: 0; color: #cfe0ff; font-weight: 800; }
+    .credit-code-panel .credit-code-copy { color: var(--muted); font-weight: 700; line-height: 1.4; }
     .credit-code-row { display: flex; gap: 10px; flex-wrap: wrap; }
     .credit-code-row input {
       flex: 1 1 180px;
@@ -1166,10 +1167,12 @@ def _html() -> str:
       </div>
       <div id="warning" class="warning"></div>
       <div id="creditCodePanel" class="credit-code-panel" hidden>
-        <p>Enter code for 5 more credits.</p>
+        <p>Need more test credits?</p>
+        <p class="credit-code-copy">Message us with what you want to test and we can send a credit code.</p>
         <div class="credit-code-row">
           <input id="creditCode" type="text" autocomplete="off" placeholder="Code" />
           <button id="redeemCreditCode" class="link-button" type="button">Redeem</button>
+          <a class="link-button" href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noopener">Message us</a>
         </div>
         <div id="creditCodeMessage" class="credit-code-message"></div>
       </div>
@@ -1906,7 +1909,7 @@ def _html() -> str:
       } catch (error) {
         statusEl.textContent = error.message || String(error);
         if (error.status === 402) {
-          showCreditCodePanel("Enter code MARS for 5 more credits.");
+          showCreditCodePanel("Message us to request more test credits.");
         }
         progressPanel.hidden = true;
         run.disabled = false;
