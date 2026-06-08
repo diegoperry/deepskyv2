@@ -477,15 +477,49 @@ def apply_broadband_look(image: np.ndarray, log: LogCallback | None = None) -> n
     rgb = rgb * (1.0 - star[..., None] * 0.42) + neutral_star * (star[..., None] * 0.42)
 
     lum = _luminance(rgb)
-    final_black = float(np.percentile(lum, 22.0))
-    rgb = np.clip((rgb - final_black) / max(1e-6, 1.0 - final_black), 0.0, 1.0)
+    star_protect = np.clip(
+        (lum - np.percentile(lum, 94.5))
+        / max(1e-6, np.percentile(lum, 99.92) - np.percentile(lum, 94.5)),
+        0.0,
+        1.0,
+    ) ** 1.45
+    star_protect = cv2.GaussianBlur(star_protect.astype(np.float32), (0, 0), 1.1)
+    small_scale = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 2.8)
+    broad_scale = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 20.0)
+    reflection_detail = np.clip(small_scale - broad_scale * 0.84, 0.0, None)
+    detail_high = float(np.percentile(reflection_detail, 99.35))
+    if detail_high > 1e-6:
+        reflection_detail = np.clip(reflection_detail / detail_high, 0.0, 1.0)
+    broad_reflection = np.clip(
+        (broad_scale - np.percentile(broad_scale, 50.0))
+        / max(1e-6, np.percentile(broad_scale, 98.4) - np.percentile(broad_scale, 50.0)),
+        0.0,
+        1.0,
+    ) ** 0.86
+    reflection_mask = np.maximum(reflection_detail, broad_reflection * 0.40)
+    reflection_signal = np.clip(
+        (lum - np.percentile(lum, 22.0))
+        / max(1e-6, np.percentile(lum, 97.0) - np.percentile(lum, 22.0)),
+        0.0,
+        1.0,
+    ) ** 0.75
+    reflection_mask = np.clip((reflection_mask ** 0.62) * reflection_signal * (1.0 - star_protect * 0.92), 0.0, 1.0)
+    reflection_mask = cv2.GaussianBlur(reflection_mask.astype(np.float32), (0, 0), 1.7)
+    lifted = np.clip(rgb + (1.0 - rgb) * reflection_mask[..., None] * 0.16, 0.0, 1.0)
+    lifted_lum = _luminance(lifted)
+    rgb = np.clip(lifted_lum[..., None] + (lifted - lifted_lum[..., None]) * (1.0 + reflection_mask[..., None] * 0.14), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    final_black = float(np.percentile(lum, 14.0))
+    rgb = np.clip((rgb - final_black * 0.82) / max(1e-6, 1.0 - final_black * 0.82), 0.0, 1.0)
     if log:
         final_lum = _luminance(rgb)
         log(
             "Applied DeepSky broadband look: "
             f"black={black:.5f}, white={white:.5f}, final_black={final_black:.5f}, "
             f"sky_gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
-            f"median_luminance={np.median(final_lum):.5f}, chroma_p95={chroma_percentile(rgb, 95.0):.5f}"
+            f"median_luminance={np.median(final_lum):.5f}, chroma_p95={chroma_percentile(rgb, 95.0):.5f}, "
+            f"reflection_mask_mean={float(np.mean(reflection_mask)):.5f}"
         )
     return _to_uint16(rgb)
 
@@ -835,9 +869,47 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
     rgb[..., 2] += shadow * 0.012
 
     lum = _luminance(rgb)
-    final_black = float(np.percentile(lum, 5.0)) if stretch else 0.0
+    star_protect = np.clip(
+        (lum - np.percentile(lum, 94.8))
+        / max(1e-6, np.percentile(lum, 99.92) - np.percentile(lum, 94.8)),
+        0.0,
+        1.0,
+    ) ** 1.35
+    star_protect = cv2.GaussianBlur(star_protect.astype(np.float32), (0, 0), 1.1)
+    small_scale = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 2.6)
+    broad_scale = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 23.0)
+    diffuse_detail = np.clip(small_scale - broad_scale * 0.82, 0.0, None)
+    detail_high = float(np.percentile(diffuse_detail, 99.35))
+    if detail_high > 1e-6:
+        diffuse_detail = np.clip(diffuse_detail / detail_high, 0.0, 1.0)
+    broad_dust = np.clip(
+        (broad_scale - np.percentile(broad_scale, 52.0))
+        / max(1e-6, np.percentile(broad_scale, 98.6) - np.percentile(broad_scale, 52.0)),
+        0.0,
+        1.0,
+    ) ** 0.82
+    diffuse_detail = np.maximum(diffuse_detail, broad_dust * 0.46)
+    faint_signal = np.clip(
+        (lum - np.percentile(lum, 24.0))
+        / max(1e-6, np.percentile(lum, 97.2) - np.percentile(lum, 24.0)),
+        0.0,
+        1.0,
+    ) ** 0.72
+    faint_dust = np.clip((diffuse_detail ** 0.58) * faint_signal * (1.0 - star_protect * 0.94), 0.0, 1.0)
+    faint_dust = cv2.GaussianBlur(faint_dust.astype(np.float32), (0, 0), 1.8)
+    dust_strength = 0.32 if stretch else 0.22
+    lifted = np.clip(rgb + (1.0 - rgb) * faint_dust[..., None] * dust_strength, 0.0, 1.0)
+    dust_lum = _luminance(lifted)
+    dust_contrast = np.clip(dust_lum + (dust_lum - cv2.GaussianBlur(dust_lum, (0, 0), 8.0)) * 0.10, 0.0, 1.0)
+    lifted = np.clip(lifted * (dust_contrast / np.maximum(dust_lum, 1e-5))[..., None], 0.0, 1.0)
+    dust_chroma = 1.0 + faint_dust[..., None] * (0.34 if stretch else 0.22)
+    dust_lum = _luminance(lifted)
+    rgb = np.clip(dust_lum[..., None] + (lifted - dust_lum[..., None]) * dust_chroma, 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    final_black = float(np.percentile(lum, 2.0)) if stretch else 0.0
     if stretch:
-        rgb = np.clip((rgb - final_black) / max(1e-6, 1.0 - final_black), 0.0, 1.0)
+        rgb = np.clip((rgb - final_black * 0.72) / max(1e-6, 1.0 - final_black * 0.72), 0.0, 1.0)
 
     lum = _luminance(rgb)
     sky_mask = lum < np.percentile(lum, 52.0)
@@ -877,6 +949,7 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
         log(
             "Applied DeepSky target look: "
             f"stretch={stretch}, black={black:.5f}, white={white:.5f}, final_black={final_black:.5f}, "
-            f"median_luminance={np.median(final_lum):.5f}, chroma_p95={chroma_95:.5f}"
+            f"median_luminance={np.median(final_lum):.5f}, chroma_p95={chroma_95:.5f}, "
+            f"faint_dust_mean={float(np.mean(faint_dust)):.5f}"
         )
     return _to_uint16(rgb)
