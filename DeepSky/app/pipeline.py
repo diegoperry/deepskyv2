@@ -142,28 +142,27 @@ def _auto_baseline_stretch_strength(
     midtone_fraction = float(metrics.get("midtone_fraction", 0.0))
     recommended_mode = getattr(analysis, "recommended_mode", "")
 
-    if detected_telescope == "seestar":
-        if object_type == "galaxy":
-            if raw_p999 < 0.012:
-                return "seestar_aggressive", f"very faint SeeStar galaxy signal raw_p999={raw_p999:.5f}"
-            return "seestar", f"protected SeeStar galaxy baseline raw_p999={raw_p999:.5f}"
-        if raw_p999 < 0.012:
-            return "seestar_extra_aggressive", f"very faint SeeStar signal raw_p999={raw_p999:.5f}"
-        if raw_p999 < 0.032:
-            return "seestar_aggressive", f"faint SeeStar signal raw_p999={raw_p999:.5f}"
-        return "seestar", f"moderate SeeStar signal raw_p999={raw_p999:.5f}"
-
     if recommended_mode == "pre_stretched":
         return "gentle", "histogram already looks stretched"
+    if object_type == "galaxy":
+        if raw_p999 < 0.012:
+            return "seestar_aggressive", f"very faint protected raw galaxy signal raw_p999={raw_p999:.5f}"
+        return "seestar", f"protected raw galaxy baseline raw_p999={raw_p999:.5f}"
+    if raw_p999 < 0.012:
+        return "seestar_extra_aggressive", f"very faint protected raw signal raw_p999={raw_p999:.5f}"
+    if raw_p999 < 0.032:
+        return "seestar_aggressive", f"faint protected raw signal raw_p999={raw_p999:.5f}"
+    if detected_telescope == "seestar":
+        return "seestar", f"moderate SeeStar signal raw_p999={raw_p999:.5f}"
     if gentle_recommended:
-        return "gentle", "soft-stretched histogram"
+        return "seestar_slight", "soft-stretched protected raw histogram"
     if shadow_fraction > 0.98 and midtone_fraction < 0.003:
-        return "aggressive", f"very dark linear histogram shadow_fraction={shadow_fraction:.5f}"
+        return "seestar_aggressive", f"very dark protected raw histogram shadow_fraction={shadow_fraction:.5f}"
     if raw_p99 > 0.085 and raw_p999 < 0.14:
-        return "normal", f"bright low-dynamic-range linear signal raw_p99={raw_p99:.5f}"
+        return "seestar_slight", f"bright low-dynamic-range protected raw signal raw_p99={raw_p99:.5f}"
     if raw_p999 < 0.08:
-        return "aggressive", f"faint linear signal raw_p999={raw_p999:.5f}"
-    return "normal", "normal linear histogram"
+        return "seestar_aggressive", f"faint protected raw signal raw_p999={raw_p999:.5f}"
+    return "seestar", "normal protected raw histogram"
 
 
 def _run_local_stretch_calibration(
@@ -421,12 +420,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     stretch_level = _normalized_stretch_level(settings)
     object_type = _normalized_object_type(settings)
     write_log(f"Selected stretch level: {stretch_level}.")
-    use_seestar_path = detected_telescope == "seestar"
     use_prestretched = bool(getattr(settings, "prestretched_input", False)) or input_mode == "pre_stretched"
-    use_gentle_stretch = False
+    use_protected_raw_finish = False
     if input_mode == "auto" and analysis is not None:
         use_prestretched = analysis.recommended_mode == "pre_stretched"
-        use_gentle_stretch = analysis.recommended_mode == "gentle_stretch"
+        use_protected_raw_finish = analysis.recommended_mode == "gentle_stretch"
         write_log(f"Auto input mode selected: {analysis.recommended_mode}.")
     elif input_mode == "linear":
         use_prestretched = False
@@ -434,9 +432,13 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     elif use_prestretched:
         write_log("Manual input mode selected: pre-stretched.")
 
-    if use_seestar_path and not use_prestretched:
-        use_gentle_stretch = True
-        write_log("SeeStar metadata detected; using smart-telescope baseline stretch path.")
+    use_protected_raw_path = not use_prestretched
+    if use_protected_raw_path:
+        use_protected_raw_finish = True
+        if detected_telescope == "seestar":
+            write_log("SeeStar metadata detected; using protected raw baseline stretch path.")
+        else:
+            write_log("Raw input detected; using protected SeeStar-style baseline stretch path.")
 
     if use_prestretched:
         write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril initial stretch.")
@@ -455,12 +457,12 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         shutil.copy2(calibrated, stretched)
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")
-    elif use_gentle_stretch:
+    elif use_protected_raw_finish:
         base_strength, baseline_reason = _auto_baseline_stretch_strength(
             analysis,
             detected_telescope,
             object_type,
-            gentle_recommended=not use_seestar_path,
+            gentle_recommended=False,
         )
         stretch_strength = _adjust_stretch_strength(base_strength, stretch_level)
         write_log(f"Auto stretch baseline: {base_strength} ({baseline_reason}).")
@@ -469,11 +471,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         save_tiff(stretched, stretched_image, write_log)
         _log_existing_image(stretched, write_log, "stretched.tif")
         if object_type in {"galaxy", "star cluster"}:
-            write_log(f"Applying gentle-stretch broadband finish for: {object_type}.")
+            write_log(f"Applying protected raw broadband finish for: {object_type}.")
             calibrated_image = apply_prestretched_broadband_look(stretched_image, write_log)
             save_tiff(calibrated, calibrated_image, write_log)
         else:
-            write_log("Applying gentle-stretch nebula finish.")
+            write_log("Applying protected raw nebula finish.")
             calibrated_image = apply_goal_look(stretched_image, write_log, stretch=False)
             save_tiff(calibrated, calibrated_image, write_log)
         _log_existing_image(calibrated, write_log, "calibrated.tif")
