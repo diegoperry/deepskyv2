@@ -14,6 +14,7 @@ from .goal_look import (
     apply_goal_look,
     apply_prestretched_broadband_look,
     apply_prestretched_nebula_rgb_reveal,
+    apply_small_galaxy_darkroom_look,
     apply_starless_nebula_detail,
     blend_broadband_background_denoise,
     chroma_percentile,
@@ -298,6 +299,8 @@ def _run_siril_calibration(
     job_folder: Path,
     settings: AppSettings,
     write_log: LogCallback,
+    *,
+    darkroom_small_galaxy: bool = False,
 ) -> Path:
     mode = settings.color_calibration_mode
     if mode == "Off":
@@ -387,8 +390,12 @@ def _run_siril_calibration(
             f"chroma p95={chroma_95:.5f}; red_emission_dominance={emission_score:.3f}"
         )
         if object_type == "galaxy":
-            write_log("Object type is Galaxy; using neutral broadband finish with protected background cleanup.")
-            finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "galaxy")
+            if darkroom_small_galaxy:
+                write_log("Object type is Galaxy; applying raw Siril small-galaxy darkroom finish.")
+                finished_image = apply_small_galaxy_darkroom_look(siril_image, write_log)
+            else:
+                write_log("Object type is Galaxy; using neutral broadband finish with protected background cleanup.")
+                finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "galaxy")
         elif object_type == "star cluster":
             write_log("Object type is Star Cluster; using neutral star-preserving broadband finish.")
             finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "star_cluster")
@@ -531,7 +538,16 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     green_duoband_raw = False
     if should_use_siril_calibration:
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
-        _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
+        _run_siril_calibration(
+            original,
+            working,
+            stretched,
+            calibrated,
+            job_folder,
+            settings,
+            write_log,
+            darkroom_small_galaxy=gradient_galaxy_siril,
+        )
     elif use_prestretched:
         write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril initial stretch.")
         write_log(f"Applying pre-stretched object finish for: {object_type}")
@@ -597,7 +613,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
 
     current = calibrated
 
-    if mode in {PipelineMode.FULL, PipelineMode.DEEPSNR}:
+    if mode in {PipelineMode.FULL, PipelineMode.DEEPSNR} and not gradient_galaxy_siril:
         deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
         if not deepsnr_exe:
             raise FileNotFoundError("DeepSNR executable not found. Update the DeepSNR path in settings.")
@@ -605,8 +621,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         run_deepsnr(current, denoised, deepsnr_exe, write_log)
         _log_existing_image(denoised, write_log, "denoised.tif")
         current = denoised
+    elif gradient_galaxy_siril and mode == PipelineMode.FULL:
+        write_log("Skipping generic DeepSNR stage; gradient-heavy galaxy cleanup already applied.")
 
-    if mode in {PipelineMode.FULL, PipelineMode.STARNET}:
+    if mode in {PipelineMode.FULL, PipelineMode.STARNET} and not gradient_galaxy_siril:
         if mode == PipelineMode.STARNET and not denoised.exists():
             shutil.copy2(current, denoised)
             _log_existing_image(denoised, write_log, "denoised.tif")
@@ -629,8 +647,12 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         add_images(starless, stars, final)
         _log_existing_image(final, write_log, "final.tif")
         current = final
+    elif gradient_galaxy_siril and mode == PipelineMode.FULL:
+        write_log("Skipping StarNet stage for gradient-heavy small-galaxy darkroom finish.")
 
-    if mode in {PipelineMode.STRETCH, PipelineMode.DEEPSNR, PipelineMode.SIRIL}:
+    if mode in {PipelineMode.STRETCH, PipelineMode.DEEPSNR, PipelineMode.SIRIL} or (
+        gradient_galaxy_siril and mode == PipelineMode.FULL
+    ):
         shutil.copy2(current, final)
         _log_existing_image(final, write_log, "final.tif")
 
