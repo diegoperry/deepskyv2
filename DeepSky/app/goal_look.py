@@ -926,6 +926,53 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
     dust_chroma = 1.0 + faint_dust[..., None] * ((0.36 if stretch else 0.30) + reflection_bias * 0.16)
     rgb = np.clip(dust_lum[..., None] + (lifted - dust_lum[..., None]) * dust_chroma, 0.0, 1.0)
 
+    emission_score = red_emission_dominance(rgb)
+    if emission_score >= 3.0:
+        lum = _luminance(rgb)
+        emission_grade = cv2.GaussianBlur((red_mask * signal * (1.0 - star_core)).astype(np.float32), (0, 0), 3.2)
+        emission_grade = np.clip(emission_grade, 0.0, 1.0) ** (0.58 if stretch else 0.48)
+        nebula_body = np.maximum(emission_grade, np.clip(faint_dust * 1.15, 0.0, 1.0))
+        nebula_body = np.maximum(nebula_body, np.clip(broad_dust * faint_signal * (1.0 - star_protect * 0.90), 0.0, 1.0))
+        nebula_body = cv2.GaussianBlur(nebula_body.astype(np.float32), (0, 0), 1.1)
+        nebula_body = np.clip(nebula_body, 0.0, 1.0) ** (0.72 if stretch else 0.58)
+        nebula_body = np.clip(nebula_body * (1.0 - star_protect * 0.82), 0.0, 1.0)
+        orange_target = lum[..., None] * np.array([1.58, 0.66, 0.28], dtype=np.float32).reshape(1, 1, 3)
+        color_mix = np.clip(nebula_body[..., None] * (0.28 if stretch else 0.74), 0.0, 0.74)
+        rgb = np.clip(rgb * (1.0 - color_mix) + orange_target * color_mix, 0.0, 1.0)
+        rgb[..., 0] = np.clip(rgb[..., 0] + nebula_body * (0.05 if stretch else 0.17), 0.0, 1.0)
+        rgb[..., 1] = np.clip(rgb[..., 1] + nebula_body * (0.012 if stretch else 0.026), 0.0, 1.0)
+        rgb[..., 2] = np.clip(rgb[..., 2] - nebula_body * (0.010 if stretch else 0.050), 0.0, 1.0)
+
+        lum = _luminance(rgb)
+        bright_emission = np.clip(
+            (lum - np.percentile(lum, 60.0))
+            / max(1e-6, np.percentile(lum, 99.35) - np.percentile(lum, 60.0)),
+            0.0,
+            1.0,
+        ) ** 0.72
+        peach_target = lum[..., None] * np.array([1.12, 0.96, 0.76], dtype=np.float32).reshape(1, 1, 3)
+        peach_mix = np.clip(bright_emission[..., None] * nebula_body[..., None] * (0.28 if stretch else 0.44), 0.0, 0.48)
+        rgb = np.clip(rgb * (1.0 - peach_mix) + peach_target * peach_mix, 0.0, 1.0)
+        lum = _luminance(rgb)
+        post_star = np.clip(
+            (lum - np.percentile(lum, 96.8))
+            / max(1e-6, np.percentile(lum, 99.98) - np.percentile(lum, 96.8)),
+            0.0,
+            1.0,
+        ) ** 1.5
+        post_neutral = lum[..., None] + np.clip(rgb - lum[..., None], -0.055, 0.055)
+        rgb = np.clip(rgb * (1.0 - post_star[..., None] * 0.34) + post_neutral * (post_star[..., None] * 0.34), 0.0, 1.0)
+        lum = _luminance(rgb)
+        texture_mask = np.clip(nebula_body * (1.0 - post_star * 0.88), 0.0, 1.0)
+        fine_detail = lum - cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 2.4)
+        broad_detail = lum - cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 10.0)
+        textured_lum = np.clip(
+            lum + fine_detail * texture_mask * (0.20 if stretch else 0.36) + broad_detail * texture_mask * (0.08 if stretch else 0.16),
+            0.0,
+            1.0,
+        )
+        rgb = np.clip(rgb * (textured_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
+
     lum = _luminance(rgb)
     final_black = float(np.percentile(lum, 2.0 if stretch else 4.0))
     black_scale = 0.72 if stretch else (0.46 + 0.20 * reflection_bias)
@@ -980,7 +1027,8 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
             "Applied DeepSky target look: "
             f"stretch={stretch}, black={black:.5f}, white={white:.5f}, final_black={final_black:.5f}, "
             f"median_luminance={np.median(final_lum):.5f}, chroma_p95={chroma_95:.5f}, "
-            f"faint_dust_mean={float(np.mean(faint_dust)):.5f}, reflection_bias={float(reflection_bias):.3f}"
+            f"faint_dust_mean={float(np.mean(faint_dust)):.5f}, reflection_bias={float(reflection_bias):.3f}, "
+            f"emission_score={float(emission_score):.3f}"
         )
     return _to_uint16(rgb)
 

@@ -311,15 +311,7 @@ def _run_siril_calibration(
             f"Siril Basic object type: {object_type}; "
             f"chroma p95={chroma_95:.5f}; red_emission_dominance={emission_score:.3f}"
         )
-        if object_type == "nebula" and chroma_95 < 0.18 and emission_score >= 3.0:
-            write_log("Siril Basic output is low-chroma with strong red emission; using Python star-photometry color as nebula source.")
-            source = load_image(working, write_log)
-            python_color = python_fallback_color_calibration(source, write_log)
-            python_reference = job_folder / "python_color_reference.tif"
-            save_tiff(python_reference, python_color, write_log)
-            _log_existing_image(python_reference, write_log, "python_color_reference.tif")
-            finished_image = apply_goal_look(python_color, write_log, stretch=False)
-        elif object_type == "galaxy":
+        if object_type == "galaxy":
             write_log("Object type is Galaxy; using neutral broadband finish with protected background cleanup.")
             finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "galaxy")
         elif object_type == "star cluster":
@@ -441,7 +433,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         else:
             write_log("Raw input detected; using protected SeeStar-style baseline stretch path.")
 
-    if use_prestretched:
+    should_use_siril_calibration = mode in {PipelineMode.FULL, PipelineMode.SIRIL} and settings.color_calibration_mode != "Off"
+    if should_use_siril_calibration:
+        write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
+        _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
+    elif use_prestretched:
         write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril initial stretch.")
         write_log(f"Applying pre-stretched object finish for: {object_type}")
         source = load_image(working, write_log)
