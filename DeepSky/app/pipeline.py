@@ -156,6 +156,54 @@ def _looks_like_green_duoband_raw(image: np.ndarray, analysis: object | None) ->
     return bool(compressed_raw and green_median and green_high)
 
 
+def _working_background_spread(image: np.ndarray) -> float:
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return 0.0
+    rgb = arr[..., :3].astype(np.float32)
+    if np.issubdtype(arr.dtype, np.integer):
+        max_value = float(np.iinfo(arr.dtype).max)
+        if max_value > 0:
+            rgb /= max_value
+    elif rgb.size and float(np.nanmax(rgb)) > 1.0:
+        rgb /= 65535.0
+    rgb = np.nan_to_num(rgb, nan=0.0, posinf=0.0, neginf=0.0)
+    lum = rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
+    height, width = lum.shape
+    tile_values: list[float] = []
+    rows = cols = 6
+    for row in range(rows):
+        y0 = row * height // rows
+        y1 = (row + 1) * height // rows
+        for col in range(cols):
+            x0 = col * width // cols
+            x1 = (col + 1) * width // cols
+            tile = lum[y0:y1, x0:x1]
+            if tile.size:
+                tile_values.append(float(np.percentile(tile, 50.0)))
+    if len(tile_values) < 4:
+        return 0.0
+    values = np.asarray(tile_values, dtype=np.float32)
+    median = float(np.percentile(values, 50.0))
+    return float((np.percentile(values, 90.0) - np.percentile(values, 10.0)) / max(median, 1e-6))
+
+
+def _needs_siril_for_gradient_galaxy(
+    image: np.ndarray,
+    analysis: object | None,
+    detected_telescope: str,
+    object_type: str,
+) -> tuple[bool, float]:
+    if object_type != "galaxy" or detected_telescope != "seestar":
+        return False, 0.0
+    metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
+    raw_p999 = float(metrics.get("raw_p999", 1.0))
+    bright_fraction = float(metrics.get("bright_fraction", 1.0))
+    spread = _working_background_spread(image)
+    small_faint_galaxy = raw_p999 < 0.012 and bright_fraction < 0.00025
+    return bool(small_faint_galaxy and spread > 0.25), spread
+
+
 def _auto_baseline_stretch_strength(
     analysis: object | None,
     detected_telescope: str,
@@ -460,9 +508,25 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         else:
             write_log("Raw input detected; using protected SeeStar-style baseline stretch path.")
 
+    gradient_galaxy_siril = False
+    gradient_galaxy_spread = 0.0
+    if mode == PipelineMode.FULL and settings.color_calibration_mode != "Off":
+        gradient_galaxy_siril, gradient_galaxy_spread = _needs_siril_for_gradient_galaxy(
+            load_image(working, write_log),
+            analysis,
+            detected_telescope,
+            object_type,
+        )
+        if gradient_galaxy_siril:
+            write_log(
+                "Small faint SeeStar galaxy with strong working-background spread detected; "
+                f"using Siril galaxy cleanup path. spread={gradient_galaxy_spread:.3f}"
+            )
+
     should_use_siril_calibration = settings.color_calibration_mode != "Off" and (
         mode == PipelineMode.SIRIL
         or (mode == PipelineMode.FULL and use_prestretched)
+        or gradient_galaxy_siril
     )
     green_duoband_raw = False
     if should_use_siril_calibration:
