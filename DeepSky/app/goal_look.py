@@ -801,6 +801,7 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
 
     lum = _luminance(rgb)
     rgb = np.clip(lum[..., None] + (rgb - lum[..., None]) * (1.9 if stretch else 1.25), 0.0, 1.0)
+    reflection_bias = np.clip((1.55 - red_emission_dominance(rgb)) / 0.85, 0.0, 1.0)
 
     lum = _luminance(rgb)
     red_excess = np.clip(rgb[..., 0] - 0.52 * rgb[..., 1] - 0.48 * rgb[..., 2], 0.0, 1.0)
@@ -888,28 +889,57 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
         0.0,
         1.0,
     ) ** 0.82
-    diffuse_detail = np.maximum(diffuse_detail, broad_dust * 0.46)
+    diffuse_detail = np.maximum(diffuse_detail, broad_dust * (0.46 + 0.18 * reflection_bias))
     faint_signal = np.clip(
-        (lum - np.percentile(lum, 24.0))
-        / max(1e-6, np.percentile(lum, 97.2) - np.percentile(lum, 24.0)),
+        (lum - np.percentile(lum, 18.0 if reflection_bias > 0.35 else 24.0))
+        / max(1e-6, np.percentile(lum, 97.5) - np.percentile(lum, 18.0 if reflection_bias > 0.35 else 24.0)),
         0.0,
         1.0,
-    ) ** 0.72
-    faint_dust = np.clip((diffuse_detail ** 0.58) * faint_signal * (1.0 - star_protect * 0.94), 0.0, 1.0)
-    faint_dust = cv2.GaussianBlur(faint_dust.astype(np.float32), (0, 0), 1.8)
-    dust_strength = 0.32 if stretch else 0.22
+    ) ** (0.60 if reflection_bias > 0.35 else 0.72)
+    faint_dust = np.clip(
+        (diffuse_detail ** (0.50 if reflection_bias > 0.35 else 0.58))
+        * faint_signal
+        * (1.0 - star_protect * (0.90 if reflection_bias > 0.35 else 0.94)),
+        0.0,
+        1.0,
+    )
+    faint_dust = cv2.GaussianBlur(faint_dust.astype(np.float32), (0, 0), 1.35 if reflection_bias > 0.35 else 1.8)
+    dust_strength = (0.34 if stretch else 0.42) + reflection_bias * (0.13 if stretch else 0.19)
     lifted = np.clip(rgb + (1.0 - rgb) * faint_dust[..., None] * dust_strength, 0.0, 1.0)
     dust_lum = _luminance(lifted)
-    dust_contrast = np.clip(dust_lum + (dust_lum - cv2.GaussianBlur(dust_lum, (0, 0), 8.0)) * 0.10, 0.0, 1.0)
+    dust_contrast = np.clip(
+        dust_lum
+        + (dust_lum - cv2.GaussianBlur(dust_lum, (0, 0), 7.0)) * (0.14 + 0.18 * reflection_bias),
+        0.0,
+        1.0,
+    )
     lifted = np.clip(lifted * (dust_contrast / np.maximum(dust_lum, 1e-5))[..., None], 0.0, 1.0)
-    dust_chroma = 1.0 + faint_dust[..., None] * (0.34 if stretch else 0.22)
     dust_lum = _luminance(lifted)
+    if reflection_bias > 0.05:
+        cool_filament = np.clip((diffuse_detail ** 0.72) * faint_signal * reflection_bias * (1.0 - broad_dust * 0.35), 0.0, 1.0)
+        warm_dust = np.clip((broad_dust ** 0.82) * faint_signal * reflection_bias * (1.0 - star_protect * 0.95), 0.0, 1.0)
+        cool_target = dust_lum[..., None] * np.array([0.90, 0.98, 1.13], dtype=np.float32).reshape(1, 1, 3)
+        warm_target = dust_lum[..., None] * np.array([1.16, 1.05, 0.86], dtype=np.float32).reshape(1, 1, 3)
+        lifted = np.clip(lifted * (1.0 - cool_filament[..., None] * 0.22) + cool_target * (cool_filament[..., None] * 0.22), 0.0, 1.0)
+        lifted = np.clip(lifted * (1.0 - warm_dust[..., None] * 0.18) + warm_target * (warm_dust[..., None] * 0.18), 0.0, 1.0)
+        dust_lum = _luminance(lifted)
+    dust_chroma = 1.0 + faint_dust[..., None] * ((0.36 if stretch else 0.30) + reflection_bias * 0.16)
     rgb = np.clip(dust_lum[..., None] + (lifted - dust_lum[..., None]) * dust_chroma, 0.0, 1.0)
 
     lum = _luminance(rgb)
-    final_black = float(np.percentile(lum, 2.0)) if stretch else 0.0
-    if stretch:
-        rgb = np.clip((rgb - final_black * 0.72) / max(1e-6, 1.0 - final_black * 0.72), 0.0, 1.0)
+    final_black = float(np.percentile(lum, 2.0 if stretch else 4.0))
+    black_scale = 0.72 if stretch else (0.46 + 0.20 * reflection_bias)
+    rgb = np.clip((rgb - final_black * black_scale) / max(1e-6, 1.0 - final_black * black_scale), 0.0, 1.0)
+    if reflection_bias > 0.05:
+        lum = _luminance(rgb)
+        empty_sky = np.clip(
+            (np.percentile(lum, 48.0) - lum)
+            / max(1e-6, np.percentile(lum, 48.0) - np.percentile(lum, 2.0)),
+            0.0,
+            1.0,
+        )
+        empty_sky *= np.clip(1.0 - faint_dust * 1.35, 0.0, 1.0)
+        rgb = np.clip(rgb * (1.0 - empty_sky[..., None] * (0.24 + 0.12 * reflection_bias)), 0.0, 1.0)
 
     lum = _luminance(rgb)
     sky_mask = lum < np.percentile(lum, 52.0)
@@ -950,6 +980,75 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
             "Applied DeepSky target look: "
             f"stretch={stretch}, black={black:.5f}, white={white:.5f}, final_black={final_black:.5f}, "
             f"median_luminance={np.median(final_lum):.5f}, chroma_p95={chroma_95:.5f}, "
-            f"faint_dust_mean={float(np.mean(faint_dust)):.5f}"
+            f"faint_dust_mean={float(np.mean(faint_dust)):.5f}, reflection_bias={float(reflection_bias):.3f}"
         )
     return _to_uint16(rgb)
+
+
+def apply_starless_nebula_detail(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+
+    rgb = _to_float01(arr)
+    lum = _luminance(rgb)
+    reflection_bias = np.clip((1.55 - red_emission_dominance(rgb)) / 0.85, 0.0, 1.0)
+
+    broad = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 22.0)
+    broad_low = float(np.percentile(broad, 34.0))
+    broad_high = float(np.percentile(broad, 99.0))
+    dust_field = np.clip((broad - broad_low) / max(1e-6, broad_high - broad_low), 0.0, 1.0)
+    dust_field = dust_field ** (0.50 if reflection_bias > 0.35 else 0.68)
+    dust_field = cv2.GaussianBlur(dust_field.astype(np.float32), (0, 0), 2.4)
+
+    fine = np.clip(lum - cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 7.0) * 0.90, 0.0, None)
+    fine_high = float(np.percentile(fine, 99.25))
+    if fine_high > 1e-6:
+        fine = np.clip(fine / fine_high, 0.0, 1.0)
+    filament = np.clip(fine * dust_field, 0.0, 1.0)
+    filament = cv2.GaussianBlur(filament.astype(np.float32), (0, 0), 1.0)
+
+    lift_strength = 0.24 + 0.58 * reflection_bias
+    lifted = np.clip(rgb + (1.0 - rgb) * dust_field[..., None] * lift_strength, 0.0, 1.0)
+
+    lifted_lum = _luminance(lifted)
+    contrast = np.clip(
+        lifted_lum
+        + (lifted_lum - cv2.GaussianBlur(lifted_lum.astype(np.float32), (0, 0), 9.0))
+        * (0.12 + 0.32 * reflection_bias)
+        * np.clip(dust_field + filament, 0.0, 1.0),
+        0.0,
+        1.0,
+    )
+    lifted = np.clip(lifted * (contrast / np.maximum(lifted_lum, 1e-5))[..., None], 0.0, 1.0)
+
+    lifted_lum = _luminance(lifted)
+    if reflection_bias > 0.05:
+        cool_target = lifted_lum[..., None] * np.array([0.90, 0.99, 1.12], dtype=np.float32).reshape(1, 1, 3)
+        warm_target = lifted_lum[..., None] * np.array([1.16, 1.05, 0.86], dtype=np.float32).reshape(1, 1, 3)
+        cool_mix = np.clip(filament[..., None] * 0.24 * reflection_bias, 0.0, 0.26)
+        warm_mix = np.clip(dust_field[..., None] * 0.16 * reflection_bias, 0.0, 0.18)
+        lifted = np.clip(lifted * (1.0 - cool_mix) + cool_target * cool_mix, 0.0, 1.0)
+        lifted = np.clip(lifted * (1.0 - warm_mix) + warm_target * warm_mix, 0.0, 1.0)
+
+    lifted_lum = _luminance(lifted)
+    chroma_boost = 1.0 + dust_field[..., None] * (0.08 + 0.26 * reflection_bias)
+    lifted = np.clip(lifted_lum[..., None] + (lifted - lifted_lum[..., None]) * chroma_boost, 0.0, 1.0)
+
+    lifted_lum = _luminance(lifted)
+    sky = np.clip(
+        (np.percentile(lifted_lum, 46.0) - lifted_lum)
+        / max(1e-6, np.percentile(lifted_lum, 46.0) - np.percentile(lifted_lum, 2.0)),
+        0.0,
+        1.0,
+    )
+    sky *= np.clip(1.0 - dust_field * 1.10, 0.0, 1.0)
+    lifted = np.clip(lifted * (1.0 - sky[..., None] * (0.16 + 0.20 * reflection_bias)), 0.0, 1.0)
+
+    if log:
+        log(
+            "Enhanced starless nebula detail: "
+            f"dust_field_mean={float(np.mean(dust_field)):.5f}, "
+            f"filament_mean={float(np.mean(filament)):.5f}, reflection_bias={float(reflection_bias):.3f}"
+        )
+    return _to_uint16(lifted)

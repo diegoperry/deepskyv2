@@ -14,6 +14,7 @@ from .goal_look import (
     apply_goal_look,
     apply_prestretched_broadband_look,
     apply_prestretched_nebula_rgb_reveal,
+    apply_starless_nebula_detail,
     blend_broadband_background_denoise,
     chroma_percentile,
     red_emission_dominance,
@@ -517,6 +518,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless, write_log, "starless.tif")
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
+        if object_type == "nebula":
+            write_log("Enhancing starless nebula dust/detail before star recombination.")
+            enhanced_starless = apply_starless_nebula_detail(load_image(starless, write_log), write_log)
+            save_tiff(starless, enhanced_starless, write_log)
+            _log_existing_image(starless, write_log, "enhanced starless.tif")
         add_images(starless, stars, final)
         _log_existing_image(final, write_log, "final.tif")
         current = final
