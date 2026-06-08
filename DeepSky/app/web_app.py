@@ -39,7 +39,7 @@ JOB_OUTPUT_ROOT = WEB_WORK_ROOT / "jobs"
 LEGACY_WEB_UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "web_uploads"
 TEMP_FILE_TTL_SECONDS = 6 * 60 * 60
 MAX_WORKERS = 1
-MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+MAX_UPLOAD_BYTES = 300 * 1024 * 1024
 MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
 CHUNK_UPLOAD_BYTES = 8 * 1024 * 1024
 FREE_IMAGE_CREDITS = 3
@@ -627,7 +627,7 @@ def _landing_html() -> str:
             <a class="secondary" href="#results">See before and after</a>
           </div>
           <div class="trust">
-            <div><strong>250 MB</strong><span>FITS/TIFF uploads</span></div>
+            <div><strong>300 MB</strong><span>FITS/TIFF uploads</span></div>
             <div><strong>1 click</strong><span>full pipeline</span></div>
             <div><strong>RGB</strong><span>color-preserving output</span></div>
           </div>
@@ -730,7 +730,7 @@ def _landing_html() -> str:
           <h2>FAQ</h2>
         </div>
         <div class="faq">
-          <details open><summary>What files can I upload?</summary><p>DeepSky currently accepts FITS, FIT, FTS, TIF, and TIFF files up to 250 MB.</p></details>
+          <details open><summary>What files can I upload?</summary><p>DeepSky currently accepts FITS, FIT, FTS, TIF, and TIFF files up to 300 MB.</p></details>
           <details><summary>Does it work with SeeStar files?</summary><p>Yes. DeepSky is being tuned around real SeeStar-style FITS and TIFF uploads, including both linear and already-stretched files.</p></details>
           <details><summary>Is this catalog photometric color calibration?</summary><p>When Siril PCC is available and the file has enough metadata, catalog-based star color calibration can be used. Otherwise DeepSky uses pixel-based background and star balancing.</p></details>
           <details><summary>Will it replace manual processing?</summary><p>No. It is meant to produce a strong first processed result quickly, especially for users who do not want to spend hours tuning multiple astronomy tools.</p></details>
@@ -1172,7 +1172,7 @@ def _html() -> str:
         <input id="file" type="file" accept=".fits,.fit,.fts,.tif,.tiff" />
         <div>
           <strong>Drag & drop your astrophotography file</strong>
-          <span id="fileName">Supports FITS and TIFF formats up to 250 MB</span>
+          <span id="fileName">Supports FITS and TIFF formats up to 300 MB</span>
         </div>
       </label>
       <div class="actions">
@@ -1292,7 +1292,7 @@ def _html() -> str:
     let stagedUpload = null;
     let activeJob = null;
     let previewRequest = 0;
-    const MAX_UPLOAD_BYTES_CLIENT = 250 * 1024 * 1024;
+    const MAX_UPLOAD_BYTES_CLIENT = 300 * 1024 * 1024;
     const CHUNKED_UPLOAD_THRESHOLD = 45 * 1024 * 1024;
 
     function setAuthMessage(message) {
@@ -1666,14 +1666,14 @@ def _html() -> str:
       const requestId = ++previewRequest;
       resetProgress();
       stagedUpload = null;
-      fileName.textContent = file ? file.name : "Supports FITS and TIFF formats up to 250 MB";
+      fileName.textContent = file ? file.name : "Supports FITS and TIFF formats up to 300 MB";
       const tooLarge = file && file.size > MAX_UPLOAD_BYTES_CLIENT;
       run.disabled = true;
       beforeFrame.innerHTML = file ? '<span class="empty">Loading preview</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
       processingIndicator.classList.remove("active");
-      statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 250 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
+      statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 300 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
       warningEl.style.display = "none";
       warningEl.textContent = "";
       if (inputMode.value === "Pre-stretched") {
