@@ -36,7 +36,6 @@ from .settings import AppSettings
 from .siril_cli import (
     build_siril_pcc_command,
     create_basic_color_script,
-    create_deconvolution_script,
     create_photometric_color_script,
     find_siril_executable,
     run_siril_script,
@@ -304,6 +303,8 @@ def _run_siril_calibration(
     darkroom_small_galaxy: bool = False,
 ) -> Path:
     mode = settings.color_calibration_mode
+    object_type = _normalized_object_type(settings)
+    use_inline_deconvolution = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy" and mode == "Basic"
     if mode == "Off":
         write_log("Color calibration is off; applying local stretch only.")
         return _run_local_stretch_calibration(working, stretched, calibrated, write_log)
@@ -338,6 +339,7 @@ def _run_siril_calibration(
         f"apply_scnr={settings.siril_apply_scnr}; "
         f"color_saturation={settings.siril_color_saturation}; "
         f"deconvolution_enabled={getattr(settings, 'siril_deconvolution_enabled', False)}; "
+        f"inline_deconvolution={use_inline_deconvolution}; "
         f"debug_mode={settings.siril_debug_mode}"
     )
     _log_existing_image(siril_input, write_log, "siril_input.tif")
@@ -361,7 +363,12 @@ def _run_siril_calibration(
             job_folder,
             apply_scnr=settings.siril_apply_scnr,
             color_saturation=settings.siril_color_saturation,
+            enable_deconvolution=use_inline_deconvolution,
+            deconvolution_iterations=14,
+            deconvolution_alpha=1800,
         )
+        if use_inline_deconvolution:
+            write_log("Siril Richardson-Lucy deconvolution test enabled inside the linear Basic script.")
 
     write_log(f"Siril script: {script_path}")
     try:
@@ -375,31 +382,6 @@ def _run_siril_calibration(
         raise RuntimeError(f"Siril completed but did not create {siril_output_fit}")
     write_log("Siril color calibration succeeded.")
     _log_existing_image(siril_output_fit, write_log, "siril_output.fit")
-
-    object_type = _normalized_object_type(settings)
-    deconvolved_output_fit = job_folder / "siril_deconvolved.fit"
-    use_deconvolution = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy"
-    if use_deconvolution:
-        write_log("Siril Richardson-Lucy deconvolution test enabled for galaxy data.")
-        deconvolution_script = create_deconvolution_script(
-            siril_output_fit,
-            deconvolved_output_fit,
-            job_folder,
-            iterations=8,
-            alpha=3000,
-        )
-        write_log(f"Siril deconvolution script: {deconvolution_script}")
-        try:
-            run_siril_script(siril_exe, deconvolution_script, job_folder, write_log)
-        except Exception as exc:
-            write_log(f"Siril deconvolution failed; continuing with non-deconvolved Siril output. Error: {exc}")
-        else:
-            if deconvolved_output_fit.exists():
-                siril_output_fit = deconvolved_output_fit
-                write_log("Siril Richardson-Lucy deconvolution succeeded.")
-                _log_existing_image(siril_output_fit, write_log, "siril_deconvolved.fit")
-            else:
-                write_log("Siril deconvolution completed but did not create output; continuing without it.")
 
     siril_image = load_image(siril_output_fit, write_log)
     siril_image = np.flipud(siril_image)
@@ -520,6 +502,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     input_mode = _normalized_input_mode(settings)
     stretch_level = _normalized_stretch_level(settings)
     object_type = _normalized_object_type(settings)
+    siril_deconvolution_requested = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy"
     write_log(f"Selected stretch level: {stretch_level}.")
     use_prestretched = bool(getattr(settings, "prestretched_input", False)) or input_mode == "pre_stretched"
     use_protected_raw_finish = False
@@ -560,9 +543,12 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         mode == PipelineMode.SIRIL
         or (mode == PipelineMode.FULL and use_prestretched)
         or gradient_galaxy_siril
+        or (mode == PipelineMode.FULL and siril_deconvolution_requested)
     )
     green_duoband_raw = False
     if should_use_siril_calibration:
+        if siril_deconvolution_requested and not gradient_galaxy_siril and not use_prestretched and mode == PipelineMode.FULL:
+            write_log("Siril deconvolution requested; routing galaxy run through Siril calibration path.")
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
         _run_siril_calibration(
             original,

@@ -170,16 +170,37 @@ def create_basic_color_script(
     work_dir: Path,
     apply_scnr: bool = False,
     color_saturation: int = 35,
+    enable_deconvolution: bool = False,
+    deconvolution_iterations: int = 14,
+    deconvolution_alpha: int = 1800,
 ) -> Path:
     script_path = Path(work_dir) / "siril_basic_color.ssf"
     input_name = _relative_or_name(Path(input_path), Path(work_dir))
     output_stem = Path(output_path).with_suffix("").name
+    safe_iterations = max(1, min(30, int(deconvolution_iterations)))
+    safe_alpha = max(500, min(10000, int(deconvolution_alpha)))
     lines = [
         SIRIL_REQUIRES_COMMAND,
         "# DeepSky Siril linear processing path",
         f'load "{input_name}"',
     ]
-    lines.extend(SIRIL_BASIC_LINEAR_COMMANDS)
+    if enable_deconvolution:
+        lines.extend(
+            [
+                "subsky 2",
+                "denoise -vst",
+                "denoise -mod=0.5",
+                "makepsf stars -sym -ks=27 -savepsf=deepsky_deconvolution_psf.fit",
+                f"rl -loadpsf=deepsky_deconvolution_psf.fit -iters={safe_iterations} -fh -alpha={safe_alpha}",
+                "wavelet 4 1",
+                "wrecons 0.1 0.4 1.0 1.0",
+                "autostretch -linked -2.8 0.10",
+                "ght -D=0.85 -B=0.04 -SP=0.18",
+                "linstretch -BP=0.05",
+            ]
+        )
+    else:
+        lines.extend(SIRIL_BASIC_LINEAR_COMMANDS)
     if apply_scnr:
         lines.append(SCNR_COMMAND)
     lines.extend([SAVE_FITS_COMMAND.format(output_stem=output_stem), "close"])
