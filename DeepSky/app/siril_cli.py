@@ -187,6 +187,32 @@ def create_basic_color_script(
     return script_path
 
 
+def create_deconvolution_script(
+    input_path: Path,
+    output_path: Path,
+    work_dir: Path,
+    iterations: int = 8,
+    alpha: int = 3000,
+) -> Path:
+    script_path = Path(work_dir) / "siril_deconvolution.ssf"
+    input_name = _relative_or_name(Path(input_path), Path(work_dir))
+    output_stem = Path(output_path).with_suffix("").name
+    psf_name = "deepsky_deconvolution_psf.fit"
+    safe_iterations = max(1, min(20, int(iterations)))
+    safe_alpha = max(500, min(10000, int(alpha)))
+    lines = [
+        SIRIL_REQUIRES_COMMAND,
+        "# Optional DeepSky Richardson-Lucy deconvolution test",
+        f'load "{input_name}"',
+        f"makepsf stars -sym -ks=17 -savepsf={psf_name}",
+        f"rl -loadpsf={psf_name} -iters={safe_iterations} -fh -alpha={safe_alpha}",
+        SAVE_FITS_COMMAND.format(output_stem=output_stem),
+        "close",
+    ]
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return script_path
+
+
 def create_photometric_color_script(
     input_path: Path,
     output_path: Path,

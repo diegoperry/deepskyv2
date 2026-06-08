@@ -36,6 +36,7 @@ from .settings import AppSettings
 from .siril_cli import (
     build_siril_pcc_command,
     create_basic_color_script,
+    create_deconvolution_script,
     create_photometric_color_script,
     find_siril_executable,
     run_siril_script,
@@ -336,6 +337,7 @@ def _run_siril_calibration(
         f"pixel_size={settings.siril_pixel_size or '<empty>'}; "
         f"apply_scnr={settings.siril_apply_scnr}; "
         f"color_saturation={settings.siril_color_saturation}; "
+        f"deconvolution_enabled={getattr(settings, 'siril_deconvolution_enabled', False)}; "
         f"debug_mode={settings.siril_debug_mode}"
     )
     _log_existing_image(siril_input, write_log, "siril_input.tif")
@@ -374,6 +376,31 @@ def _run_siril_calibration(
     write_log("Siril color calibration succeeded.")
     _log_existing_image(siril_output_fit, write_log, "siril_output.fit")
 
+    object_type = _normalized_object_type(settings)
+    deconvolved_output_fit = job_folder / "siril_deconvolved.fit"
+    use_deconvolution = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy"
+    if use_deconvolution:
+        write_log("Siril Richardson-Lucy deconvolution test enabled for galaxy data.")
+        deconvolution_script = create_deconvolution_script(
+            siril_output_fit,
+            deconvolved_output_fit,
+            job_folder,
+            iterations=8,
+            alpha=3000,
+        )
+        write_log(f"Siril deconvolution script: {deconvolution_script}")
+        try:
+            run_siril_script(siril_exe, deconvolution_script, job_folder, write_log)
+        except Exception as exc:
+            write_log(f"Siril deconvolution failed; continuing with non-deconvolved Siril output. Error: {exc}")
+        else:
+            if deconvolved_output_fit.exists():
+                siril_output_fit = deconvolved_output_fit
+                write_log("Siril Richardson-Lucy deconvolution succeeded.")
+                _log_existing_image(siril_output_fit, write_log, "siril_deconvolved.fit")
+            else:
+                write_log("Siril deconvolution completed but did not create output; continuing without it.")
+
     siril_image = load_image(siril_output_fit, write_log)
     siril_image = np.flipud(siril_image)
     write_log("Corrected Siril FITS orientation with vertical flip.")
@@ -382,7 +409,6 @@ def _run_siril_calibration(
     _log_existing_image(raw_siril, write_log, "siril_calibrated.tif")
 
     if mode == "Basic":
-        object_type = _normalized_object_type(settings)
         chroma_95 = chroma_percentile(siril_image, 95.0)
         emission_score = red_emission_dominance(siril_image)
         write_log(

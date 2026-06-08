@@ -85,6 +85,7 @@ PROGRESS_LINE_RE = re.compile(r"progress:\s*(?P<label>.*?),\s*(?P<percent>\d+(?:
 def _mapped_stage_progress(stage: str, stage_percent: float) -> int:
     spans = {
         "Siril Color Calibration": (22, 42),
+        "Siril Deconvolution": (42, 47),
         "DeepSNR Denoising": (48, 68),
         "StarNet Star Separation": (72, 90),
     }
@@ -116,6 +117,10 @@ def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
         ("Siril executable:", "Siril Color Calibration", 22),
         ("Running Siril:", "Siril Color Calibration", 26),
         ("Siril color calibration succeeded.", "Siril Color Calibration", 42),
+        ("Siril Richardson-Lucy deconvolution test enabled", "Siril Deconvolution", 42),
+        ("Siril deconvolution script:", "Siril Deconvolution", 43),
+        ("Siril Richardson-Lucy deconvolution succeeded.", "Siril Deconvolution", 47),
+        ("Siril deconvolution failed", "Siril Color Calibration", 42),
         ("DeepSNR executable:", "DeepSNR Denoising", 48),
         ("DeepSNR background cleanup executable:", "DeepSNR Background Cleanup", 36),
         ("denoised.tif:", "DeepSNR Denoising", 68),
@@ -996,6 +1001,25 @@ def _html() -> str:
       font-size: 15px;
       padding: 13px 14px;
     }
+    .toggle {
+      min-height: 48px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid #2c4773;
+      border-radius: 10px;
+      background: #0b1628;
+      color: #f7fbff;
+      font-size: 14px;
+      font-weight: 800;
+      padding: 12px 14px;
+      cursor: pointer;
+    }
+    .toggle input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--blue);
+    }
     .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
     .warning {
       display: none;
@@ -1200,6 +1224,10 @@ def _html() -> str:
             <option value="Aggressive">Aggressive</option>
           </select>
         </label>
+        <label class="toggle" title="Experimental: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
+          <input id="sirilDeconvolution" type="checkbox" />
+          Siril deconvolution
+        </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div id="warning" class="warning"></div>
@@ -1248,6 +1276,7 @@ def _html() -> str:
     const objectType = document.getElementById("objectType");
     const inputMode = document.getElementById("inputMode");
     const stretchLevel = document.getElementById("stretchLevel");
+    const sirilDeconvolution = document.getElementById("sirilDeconvolution");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
@@ -1963,6 +1992,7 @@ def _html() -> str:
       data.append("object_type", objectType.value);
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
+      data.append("siril_deconvolution", sirilDeconvolution.checked ? "true" : "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -2197,6 +2227,7 @@ def _run_job(
     object_type: str = "Nebula",
     input_mode: str = "Auto",
     stretch_level: str = "Standard",
+    siril_deconvolution: bool = False,
 ) -> None:
     with jobs_lock:
         job = jobs[job_id]
@@ -2238,9 +2269,11 @@ def _run_job(
         settings.prestretched_input = mode == "Pre-stretched"
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
+        settings.siril_deconvolution_enabled = bool(siril_deconvolution)
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
+        write_log(f"Siril deconvolution test: {'enabled' if settings.siril_deconvolution_enabled else 'disabled'}")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
             if not Path(getattr(settings, attr)).exists():
                 setattr(settings, attr, getattr(defaults, attr))
@@ -2521,6 +2554,7 @@ async def create_job(
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
+    siril_deconvolution: bool = Form(False),
     user: AuthUser = Depends(require_user),
 ) -> dict[str, str]:
     _cleanup_old_temp_files()
@@ -2573,7 +2607,11 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
             )
-    executor.submit(_run_job, job_id, input_path, pre_stretched, object_type, input_mode, stretch_level)
+        if siril_deconvolution:
+            jobs[job_id].warnings.append(
+                "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
+            )
+    executor.submit(_run_job, job_id, input_path, pre_stretched, object_type, input_mode, stretch_level, siril_deconvolution)
     return {"id": job_id}
 
 

@@ -134,6 +134,8 @@ class MainWindow(QMainWindow):
         self.pixel_size_edit = QLineEdit(self.settings.siril_pixel_size)
         self.apply_scnr_check = QCheckBox("Apply SCNR / Remove Green")
         self.apply_scnr_check.setChecked(self.settings.siril_apply_scnr)
+        self.siril_deconvolution_check = QCheckBox("Test Siril Galaxy Deconvolution")
+        self.siril_deconvolution_check.setChecked(self.settings.siril_deconvolution_enabled)
         self.debug_mode_check = QCheckBox("Debug mode")
         self.debug_mode_check.setChecked(self.settings.siril_debug_mode)
         self.saturation_slider = QSlider(Qt.Horizontal)
@@ -373,12 +375,15 @@ class MainWindow(QMainWindow):
             siril_pixel_size=self.pixel_size_edit.text().strip(),
             siril_apply_scnr=self.apply_scnr_check.isChecked(),
             siril_color_saturation=self.saturation_slider.value(),
+            siril_deconvolution_enabled=self.siril_deconvolution_check.isChecked(),
             siril_debug_mode=self.debug_mode_check.isChecked(),
             galaxy_background_smoothness=self.background_smoothness_slider.value(),
             galaxy_background_darkness=self.background_darkness_slider.value(),
             galaxy_chroma_noise_reduction=self.chroma_noise_slider.value(),
             galaxy_protect_detail=self.protect_galaxy_check.isChecked(),
             input_processing_mode=getattr(self.settings, "input_processing_mode", "Auto"),
+            stretch_level=getattr(self.settings, "stretch_level", "Standard"),
+            telescope_profile=getattr(self.settings, "telescope_profile", "Auto"),
             prestretched_input=False,
             object_type=getattr(self.settings, "object_type", "Nebula"),
         )

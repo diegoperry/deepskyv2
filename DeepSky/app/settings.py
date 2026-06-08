@@ -28,6 +28,7 @@ class AppSettings:
     siril_pixel_size: str
     siril_apply_scnr: bool
     siril_color_saturation: int
+    siril_deconvolution_enabled: bool
     siril_debug_mode: bool
     galaxy_background_smoothness: int
     galaxy_background_darkness: int
@@ -65,6 +66,7 @@ def default_settings() -> AppSettings:
         siril_pixel_size="",
         siril_apply_scnr=False,
         siril_color_saturation=15,
+        siril_deconvolution_enabled=False,
         siril_debug_mode=False,
         galaxy_background_smoothness=90,
         galaxy_background_darkness=90,
