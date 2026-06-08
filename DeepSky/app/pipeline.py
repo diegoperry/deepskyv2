@@ -433,7 +433,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         else:
             write_log("Raw input detected; using protected SeeStar-style baseline stretch path.")
 
-    should_use_siril_calibration = mode in {PipelineMode.FULL, PipelineMode.SIRIL} and settings.color_calibration_mode != "Off"
+    should_use_siril_calibration = settings.color_calibration_mode != "Off" and (
+        mode == PipelineMode.SIRIL
+        or (mode == PipelineMode.FULL and use_prestretched)
+    )
     if should_use_siril_calibration:
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
         _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
