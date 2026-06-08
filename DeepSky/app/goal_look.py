@@ -55,6 +55,29 @@ def red_emission_dominance(image: np.ndarray) -> float:
     return red_p95 / other_p95
 
 
+def reflection_nebula_bias(image: np.ndarray) -> float:
+    rgb = _to_float01(image)
+    if rgb.ndim != 3 or rgb.shape[-1] < 3:
+        return 0.0
+    lum = _luminance(rgb)
+    signal_mask = lum > np.percentile(lum, 35.0)
+    red_excess = np.clip(rgb[..., 0] - 0.5 * (rgb[..., 1] + rgb[..., 2]), 0.0, 1.0)
+    green_excess = np.clip(rgb[..., 1] - 0.5 * (rgb[..., 0] + rgb[..., 2]), 0.0, 1.0)
+    blue_excess = np.clip(rgb[..., 2] - 0.5 * (rgb[..., 0] + rgb[..., 1]), 0.0, 1.0)
+    red_p95 = float(np.percentile(red_excess[signal_mask], 95.0))
+    green_p95 = float(np.percentile(green_excess[signal_mask], 95.0))
+    blue_p95 = float(np.percentile(blue_excess[signal_mask], 95.0))
+    other_p95 = max(green_p95, blue_p95, 1e-6)
+    low_red_bias = np.clip((1.55 - red_p95 / other_p95) / 0.85, 0.0, 1.0)
+    green_cast = np.clip(
+        (green_p95 - max(red_p95, blue_p95) * 0.72)
+        / max(1e-6, green_p95 + max(red_p95, blue_p95)),
+        0.0,
+        1.0,
+    )
+    return float(np.clip(low_red_bias * (1.0 - green_cast * 2.8), 0.0, 1.0))
+
+
 def _suppress_green_excess(rgb: np.ndarray, strength: float = 0.65) -> np.ndarray:
     lum = _luminance(rgb)
     green_target = np.maximum(0.5 * (rgb[..., 0] + rgb[..., 2]), rgb[..., 0] * 0.92)
@@ -801,7 +824,7 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
 
     lum = _luminance(rgb)
     rgb = np.clip(lum[..., None] + (rgb - lum[..., None]) * (1.9 if stretch else 1.25), 0.0, 1.0)
-    reflection_bias = np.clip((1.55 - red_emission_dominance(rgb)) / 0.85, 0.0, 1.0)
+    reflection_bias = reflection_nebula_bias(rgb)
 
     lum = _luminance(rgb)
     red_excess = np.clip(rgb[..., 0] - 0.52 * rgb[..., 1] - 0.48 * rgb[..., 2], 0.0, 1.0)
@@ -1040,7 +1063,7 @@ def apply_starless_nebula_detail(image: np.ndarray, log: LogCallback | None = No
 
     rgb = _to_float01(arr)
     lum = _luminance(rgb)
-    reflection_bias = np.clip((1.55 - red_emission_dominance(rgb)) / 0.85, 0.0, 1.0)
+    reflection_bias = reflection_nebula_bias(rgb)
 
     broad = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 22.0)
     broad_low = float(np.percentile(broad, 34.0))

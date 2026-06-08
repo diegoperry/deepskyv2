@@ -129,6 +129,33 @@ def _adjust_stretch_strength(base_strength: str, stretch_level: str) -> str:
     return base_strength
 
 
+def _looks_like_green_duoband_raw(image: np.ndarray, analysis: object | None) -> bool:
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return False
+
+    rgb = arr[..., :3].astype(np.float32)
+    if np.issubdtype(arr.dtype, np.integer):
+        max_value = float(np.iinfo(arr.dtype).max)
+        if max_value > 0:
+            rgb /= max_value
+    elif rgb.size and float(np.nanmax(rgb)) > 1.0:
+        rgb /= 65535.0
+    rgb = np.nan_to_num(rgb, nan=0.0, posinf=0.0, neginf=0.0)
+
+    pixels = rgb.reshape(-1, 3)
+    medians = np.percentile(pixels, 50.0, axis=0)
+    highs = np.percentile(pixels, 97.5, axis=0)
+    metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
+    raw_p50 = float(metrics.get("raw_p50", np.percentile(rgb, 50.0)))
+    raw_p999 = float(metrics.get("raw_p999", np.percentile(rgb, 99.9)))
+
+    compressed_raw = raw_p50 > 0.045 and raw_p999 < 0.16
+    green_median = medians[1] > max(medians[0], medians[2]) * 1.10 + 0.004
+    green_high = highs[1] > max(highs[0], highs[2]) * 1.02 + 0.004
+    return bool(compressed_raw and green_median and green_high)
+
+
 def _auto_baseline_stretch_strength(
     analysis: object | None,
     detected_telescope: str,
@@ -437,6 +464,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         mode == PipelineMode.SIRIL
         or (mode == PipelineMode.FULL and use_prestretched)
     )
+    green_duoband_raw = False
     if should_use_siril_calibration:
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
         _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
@@ -458,19 +486,29 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif use_protected_raw_finish:
+        working_image = load_image(working, write_log)
+        green_duoband_raw = object_type == "nebula" and _looks_like_green_duoband_raw(working_image, analysis)
         base_strength, baseline_reason = _auto_baseline_stretch_strength(
             analysis,
             detected_telescope,
             object_type,
             gentle_recommended=False,
         )
+        stretch_source_image = working_image
+        if green_duoband_raw:
+            base_strength = "gentle"
+            baseline_reason = "green-dominant low-dynamic duo-band raw frame; avoiding SeeStar-style background lift"
+            stretch_source_image = load_image(original, write_log)
         stretch_strength = _adjust_stretch_strength(base_strength, stretch_level)
         write_log(f"Auto stretch baseline: {base_strength} ({baseline_reason}).")
         write_log(f"Applying {stretch_strength} stretch after user adjustment: {stretch_level}.")
-        stretched_image = astrophotography_stretch(load_image(working, write_log), strength=stretch_strength)
+        stretched_image = astrophotography_stretch(stretch_source_image, strength=stretch_strength)
         save_tiff(stretched, stretched_image, write_log)
         _log_existing_image(stretched, write_log, "stretched.tif")
-        if object_type in {"galaxy", "star cluster"}:
+        if green_duoband_raw:
+            write_log("Green-dominant duo-band raw finish: preserving gentle stretch without nebula color lift.")
+            shutil.copy2(stretched, calibrated)
+        elif object_type in {"galaxy", "star cluster"}:
             write_log(f"Applying protected raw broadband finish for: {object_type}.")
             calibrated_image = apply_prestretched_broadband_look(stretched_image, write_log)
             save_tiff(calibrated, calibrated_image, write_log)
@@ -517,11 +555,13 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless, write_log, "starless.tif")
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
-        if object_type == "nebula":
+        if object_type == "nebula" and not green_duoband_raw:
             write_log("Enhancing starless nebula dust/detail before star recombination.")
             enhanced_starless = apply_starless_nebula_detail(load_image(starless, write_log), write_log)
             save_tiff(starless, enhanced_starless, write_log)
             _log_existing_image(starless, write_log, "enhanced starless.tif")
+        elif green_duoband_raw:
+            write_log("Skipping starless nebula dust/detail enhancer for green-dominant duo-band raw frame.")
         add_images(starless, stars, final)
         _log_existing_image(final, write_log, "final.tif")
         current = final
