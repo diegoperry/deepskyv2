@@ -447,6 +447,56 @@ def blend_broadband_background_denoise(
     return _to_uint16(blended)
 
 
+def blend_galaxy_deconvolution_detail(
+    base_image: np.ndarray,
+    deconvolved_image: np.ndarray,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    base = _to_float01(base_image)
+    decon = _to_float01(deconvolved_image)
+    if base.shape != decon.shape:
+        if log:
+            log(f"Skipped galaxy deconvolution blend: shape mismatch {base.shape} vs {decon.shape}")
+        return base_image
+
+    base_lum = _luminance(base).astype(np.float32)
+    decon_lum = _luminance(decon).astype(np.float32)
+
+    broad = cv2.GaussianBlur(base_lum, (0, 0), 24.0)
+    compact = cv2.GaussianBlur(base_lum, (0, 0), 7.0)
+    extended = compact * 0.58 + broad * 0.42
+    low = float(np.percentile(extended, 72.0))
+    high = float(np.percentile(extended, 99.65))
+    galaxy_mask = np.clip((extended - low) / max(1e-6, high - low), 0.0, 1.0) ** 0.86
+    galaxy_mask = cv2.GaussianBlur(galaxy_mask.astype(np.float32), (0, 0), 11.0)
+
+    star_core = np.clip(
+        (base_lum - np.percentile(base_lum, 97.7))
+        / max(1e-6, np.percentile(base_lum, 99.995) - np.percentile(base_lum, 97.7)),
+        0.0,
+        1.0,
+    ) ** 1.45
+    star_core = cv2.dilate(star_core.astype(np.float32), np.ones((3, 3), dtype=np.uint8), iterations=1)
+    star_core = cv2.GaussianBlur(star_core.astype(np.float32), (0, 0), 1.25)
+    blend_mask = np.clip(galaxy_mask * (1.0 - star_core * 0.96), 0.0, 0.46)
+
+    decon_detail = decon_lum - cv2.GaussianBlur(decon_lum, (0, 0), 1.6)
+    base_detail = base_lum - cv2.GaussianBlur(base_lum, (0, 0), 1.6)
+    extra_detail = np.clip(decon_detail - base_detail * 0.35, -0.035, 0.055)
+    detail_lum = np.clip(base_lum + extra_detail * blend_mask * 0.78, 0.0, 1.0)
+    output = np.clip(base * (detail_lum / np.maximum(base_lum, 1e-5))[..., None], 0.0, 1.0)
+
+    if log:
+        log(
+            "Blended Siril deconvolution as galaxy-only detail layer: "
+            f"galaxy_mask_mean={float(np.mean(galaxy_mask)):.5f}, "
+            f"star_reject_mean={float(np.mean(star_core)):.5f}, "
+            f"blend_mask_mean={float(np.mean(blend_mask)):.5f}, "
+            f"blend_mask_max={float(np.max(blend_mask)):.5f}"
+        )
+    return _to_uint16(output)
+
+
 def apply_small_galaxy_darkroom_look(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:

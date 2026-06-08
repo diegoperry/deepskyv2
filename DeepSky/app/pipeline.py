@@ -16,6 +16,7 @@ from .goal_look import (
     apply_prestretched_nebula_rgb_reveal,
     apply_small_galaxy_darkroom_look,
     apply_starless_nebula_detail,
+    blend_galaxy_deconvolution_detail,
     blend_broadband_background_denoise,
     chroma_percentile,
     red_emission_dominance,
@@ -304,7 +305,7 @@ def _run_siril_calibration(
 ) -> Path:
     mode = settings.color_calibration_mode
     object_type = _normalized_object_type(settings)
-    use_inline_deconvolution = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy" and mode == "Basic"
+    use_deconvolution_layer = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy" and mode == "Basic"
     if mode == "Off":
         write_log("Color calibration is off; applying local stretch only.")
         return _run_local_stretch_calibration(working, stretched, calibrated, write_log)
@@ -339,7 +340,7 @@ def _run_siril_calibration(
         f"apply_scnr={settings.siril_apply_scnr}; "
         f"color_saturation={settings.siril_color_saturation}; "
         f"deconvolution_enabled={getattr(settings, 'siril_deconvolution_enabled', False)}; "
-        f"inline_deconvolution={use_inline_deconvolution}; "
+        f"deconvolution_layer={use_deconvolution_layer}; "
         f"debug_mode={settings.siril_debug_mode}"
     )
     _log_existing_image(siril_input, write_log, "siril_input.tif")
@@ -363,12 +364,7 @@ def _run_siril_calibration(
             job_folder,
             apply_scnr=settings.siril_apply_scnr,
             color_saturation=settings.siril_color_saturation,
-            enable_deconvolution=use_inline_deconvolution,
-            deconvolution_iterations=14,
-            deconvolution_alpha=1800,
         )
-        if use_inline_deconvolution:
-            write_log("Siril Richardson-Lucy deconvolution test enabled inside the linear Basic script.")
 
     write_log(f"Siril script: {script_path}")
     try:
@@ -383,9 +379,38 @@ def _run_siril_calibration(
     write_log("Siril color calibration succeeded.")
     _log_existing_image(siril_output_fit, write_log, "siril_output.fit")
 
+    deconvolved_output_fit = job_folder / "siril_deconvolved.fit"
+    if use_deconvolution_layer:
+        write_log("Siril Richardson-Lucy deconvolution test enabled as a galaxy-detail layer.")
+        deconvolution_script = create_basic_color_script(
+            siril_input,
+            deconvolved_output_fit,
+            job_folder,
+            apply_scnr=settings.siril_apply_scnr,
+            color_saturation=settings.siril_color_saturation,
+            enable_deconvolution=True,
+            deconvolution_iterations=14,
+            deconvolution_alpha=1800,
+        )
+        write_log(f"Siril deconvolution layer script: {deconvolution_script}")
+        try:
+            run_siril_script(siril_exe, deconvolution_script, job_folder, write_log)
+        except Exception as exc:
+            write_log(f"Siril deconvolution layer failed; continuing with normal Siril output. Error: {exc}")
+        else:
+            if deconvolved_output_fit.exists():
+                write_log("Siril Richardson-Lucy deconvolution layer succeeded.")
+                _log_existing_image(deconvolved_output_fit, write_log, "siril_deconvolved.fit")
+            else:
+                write_log("Siril deconvolution layer completed but did not create output; continuing without it.")
+
     siril_image = load_image(siril_output_fit, write_log)
     siril_image = np.flipud(siril_image)
     write_log("Corrected Siril FITS orientation with vertical flip.")
+    deconvolution_image = None
+    if use_deconvolution_layer and deconvolved_output_fit.exists():
+        deconvolution_image = load_image(deconvolved_output_fit, write_log)
+        deconvolution_image = np.flipud(deconvolution_image)
     raw_siril = job_folder / "siril_calibrated.tif"
     save_tiff(raw_siril, siril_image, write_log)
     _log_existing_image(raw_siril, write_log, "siril_calibrated.tif")
@@ -404,6 +429,9 @@ def _run_siril_calibration(
             else:
                 write_log("Object type is Galaxy; using neutral broadband finish with protected background cleanup.")
                 finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "galaxy")
+            if deconvolution_image is not None:
+                write_log("Applying Siril deconvolution detail after galaxy finish.")
+                finished_image = blend_galaxy_deconvolution_detail(finished_image, deconvolution_image, write_log)
         elif object_type == "star cluster":
             write_log("Object type is Star Cluster; using neutral star-preserving broadband finish.")
             finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "star_cluster")
