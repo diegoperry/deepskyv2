@@ -511,12 +511,21 @@ def apply_small_galaxy_darkroom_look(image: np.ndarray, log: LogCallback | None 
     extended = extended_small * 0.72 + extended_large * 0.28
     galaxy_low = float(np.percentile(extended, 92.0))
     galaxy_high = float(np.percentile(extended, 99.85))
-    galaxy_mask = np.clip(
+    galaxy_core_mask = np.clip(
         (extended - galaxy_low) / max(1e-6, galaxy_high - galaxy_low),
         0.0,
         1.0,
     ) ** 0.62
-    galaxy_mask = cv2.GaussianBlur(galaxy_mask.astype(np.float32), (0, 0), 5.0)
+    galaxy_halo_low = float(np.percentile(extended, 82.0))
+    galaxy_halo_high = float(np.percentile(extended, 99.35))
+    galaxy_halo_mask = np.clip(
+        (extended - galaxy_halo_low) / max(1e-6, galaxy_halo_high - galaxy_halo_low),
+        0.0,
+        1.0,
+    ) ** 1.15
+    galaxy_mask = np.maximum(galaxy_core_mask, galaxy_halo_mask * 0.46)
+    galaxy_mask = cv2.GaussianBlur(galaxy_mask.astype(np.float32), (0, 0), 14.0)
+    galaxy_mask = np.clip(galaxy_mask, 0.0, 0.82)
 
     core_mask = np.clip(
         (extended - np.percentile(extended, 97.1))
@@ -546,11 +555,15 @@ def apply_small_galaxy_darkroom_look(image: np.ndarray, log: LogCallback | None 
     edge_star_reject = np.clip(edge_mask * (1.0 - galaxy_mask * 0.85), 0.0, 1.0)
 
     rgb8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-    denoised = cv2.fastNlMeansDenoisingColored(rgb8, None, 36, 52, 7, 45).astype(np.float32) / 255.0
-    base = cv2.GaussianBlur(denoised, (0, 0), 11.0) * 0.35 + cv2.GaussianBlur(denoised, (0, 0), 34.0) * 0.65
+    denoised = cv2.fastNlMeansDenoisingColored(rgb8, None, 30, 42, 7, 35).astype(np.float32) / 255.0
+    base = (
+        rgb * 0.42
+        + cv2.GaussianBlur(denoised, (0, 0), 8.0) * 0.28
+        + cv2.GaussianBlur(denoised, (0, 0), 30.0) * 0.30
+    )
     base_lum = _luminance(base)
-    base = base_lum[..., None] + (base - base_lum[..., None]) * 0.12
-    base = np.clip(base * (0.31 - edge_mask[..., None] * 0.10) + 0.0028, 0.0, 1.0)
+    base = base_lum[..., None] + (base - base_lum[..., None]) * 0.24
+    base = np.clip(base * (0.40 - edge_mask[..., None] * 0.08) + 0.0032, 0.0, 1.0)
 
     galaxy_rgb = rgb.copy()
     galaxy_lum = _luminance(galaxy_rgb)
@@ -590,7 +603,11 @@ def apply_small_galaxy_darkroom_look(image: np.ndarray, log: LogCallback | None 
     star_warm = np.array([1.12, 0.96, 0.86], dtype=np.float32).reshape(1, 1, 3)
     star_layer = np.clip(star_lum[..., None] * star_color * star_warm * 0.56, 0.0, 1.0)
 
-    output = np.clip(base * (1.0 - galaxy_mask[..., None] * 0.88) + galaxy_rgb * (galaxy_mask[..., None] * 0.88), 0.0, 1.0)
+    galaxy_weight = cv2.GaussianBlur(galaxy_mask.astype(np.float32), (0, 0), 8.0)
+    galaxy_weight = np.clip(galaxy_weight * 0.64, 0.0, 0.58)[..., None]
+    output = np.clip(base * (1.0 - galaxy_weight) + galaxy_rgb * galaxy_weight, 0.0, 1.0)
+    field_detail_weight = np.clip(galaxy_mask * 0.18, 0.0, 0.14)[..., None]
+    output = np.clip(output + (rgb - cv2.GaussianBlur(rgb, (0, 0), 2.2)) * field_detail_weight, 0.0, 1.0)
     star_mix = np.clip(star_mask[..., None] * (1.0 - galaxy_mask[..., None] * 0.45) * (1.0 - edge_star_reject[..., None] * 0.86), 0.0, 0.54)
     output = np.clip(output * (1.0 - star_mix) + star_layer * star_mix, 0.0, 1.0)
 

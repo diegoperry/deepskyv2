@@ -426,6 +426,9 @@ def _run_siril_calibration(
             if darkroom_small_galaxy:
                 write_log("Object type is Galaxy; applying raw Siril small-galaxy darkroom finish.")
                 finished_image = apply_small_galaxy_darkroom_look(siril_image, write_log)
+            elif deconvolution_image is not None:
+                write_log("Object type is Galaxy with Siril deconvolution; using broadband finish without heavy background cleanup.")
+                finished_image = apply_broadband_look(siril_image, write_log)
             else:
                 write_log("Object type is Galaxy; using neutral broadband finish with protected background cleanup.")
                 finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "galaxy")
@@ -652,8 +655,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
 
     current = calibrated
+    preserve_siril_galaxy_finish = gradient_galaxy_siril or (
+        siril_deconvolution_requested and mode == PipelineMode.FULL
+    )
 
-    if mode in {PipelineMode.FULL, PipelineMode.DEEPSNR} and not gradient_galaxy_siril:
+    if mode in {PipelineMode.FULL, PipelineMode.DEEPSNR} and not preserve_siril_galaxy_finish:
         deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
         if not deepsnr_exe:
             raise FileNotFoundError("DeepSNR executable not found. Update the DeepSNR path in settings.")
@@ -661,10 +667,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         run_deepsnr(current, denoised, deepsnr_exe, write_log)
         _log_existing_image(denoised, write_log, "denoised.tif")
         current = denoised
-    elif gradient_galaxy_siril and mode == PipelineMode.FULL:
-        write_log("Skipping generic DeepSNR stage; gradient-heavy galaxy cleanup already applied.")
+    elif preserve_siril_galaxy_finish and mode == PipelineMode.FULL:
+        write_log("Skipping generic DeepSNR stage; Siril galaxy finish already applied.")
 
-    if mode in {PipelineMode.FULL, PipelineMode.STARNET} and not gradient_galaxy_siril:
+    if mode in {PipelineMode.FULL, PipelineMode.STARNET} and not preserve_siril_galaxy_finish:
         if mode == PipelineMode.STARNET and not denoised.exists():
             shutil.copy2(current, denoised)
             _log_existing_image(denoised, write_log, "denoised.tif")
@@ -687,11 +693,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         add_images(starless, stars, final)
         _log_existing_image(final, write_log, "final.tif")
         current = final
-    elif gradient_galaxy_siril and mode == PipelineMode.FULL:
-        write_log("Skipping StarNet stage for gradient-heavy small-galaxy darkroom finish.")
+    elif preserve_siril_galaxy_finish and mode == PipelineMode.FULL:
+        write_log("Skipping StarNet stage for Siril galaxy finish.")
 
     if mode in {PipelineMode.STRETCH, PipelineMode.DEEPSNR, PipelineMode.SIRIL} or (
-        gradient_galaxy_siril and mode == PipelineMode.FULL
+        preserve_siril_galaxy_finish and mode == PipelineMode.FULL
     ):
         shutil.copy2(current, final)
         _log_existing_image(final, write_log, "final.tif")
