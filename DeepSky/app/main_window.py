@@ -376,6 +376,7 @@ class MainWindow(QMainWindow):
             siril_apply_scnr=self.apply_scnr_check.isChecked(),
             siril_color_saturation=self.saturation_slider.value(),
             siril_deconvolution_enabled=self.siril_deconvolution_check.isChecked(),
+            starless_test_enabled=getattr(self.settings, "starless_test_enabled", False),
             siril_debug_mode=self.debug_mode_check.isChecked(),
             galaxy_background_smoothness=self.background_smoothness_slider.value(),
             galaxy_background_darkness=self.background_darkness_slider.value(),

@@ -31,7 +31,7 @@ from .image_io import (
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
-from .image_math import add_images, subtract_images
+from .image_math import add_bright_star_fraction, add_images, subtract_images
 from .python_color_calibration import python_fallback_color_calibration
 from .settings import AppSettings
 from .siril_cli import (
@@ -523,6 +523,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     denoised = job_folder / "denoised.tif"
     starless = job_folder / "starless.tif"
     stars = job_folder / "stars.tif"
+    starless_test = job_folder / "starless_test.tif"
+    starless_test_stars = job_folder / "starless_test_stars.tif"
     final = job_folder / "final.tif"
     final_png = job_folder / "final.png"
 
@@ -534,6 +536,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     stretch_level = _normalized_stretch_level(settings)
     object_type = _normalized_object_type(settings)
     siril_deconvolution_requested = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy"
+    starless_test_requested = bool(getattr(settings, "starless_test_enabled", False))
     write_log(f"Selected stretch level: {stretch_level}.")
     use_prestretched = bool(getattr(settings, "prestretched_input", False)) or input_mode == "pre_stretched"
     use_protected_raw_finish = False
@@ -690,7 +693,12 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             _log_existing_image(starless, write_log, "enhanced starless.tif")
         elif green_duoband_raw:
             write_log("Skipping starless nebula dust/detail enhancer for green-dominant duo-band raw frame.")
-        add_images(starless, stars, final)
+        if starless_test_requested:
+            write_log("Starless test enabled; recombining starless image with brightest 30% of stars.")
+            threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=0.30)
+            write_log(f"Starless test kept bright stars with layer threshold {threshold:.1f}.")
+        else:
+            add_images(starless, stars, final)
         _log_existing_image(final, write_log, "final.tif")
         current = final
     elif preserve_siril_galaxy_finish and mode == PipelineMode.FULL:
@@ -700,6 +708,20 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         preserve_siril_galaxy_finish and mode == PipelineMode.FULL
     ):
         shutil.copy2(current, final)
+        _log_existing_image(final, write_log, "final.tif")
+
+    if starless_test_requested and (preserve_siril_galaxy_finish or mode not in {PipelineMode.FULL, PipelineMode.STARNET}):
+        starnet_exe = find_executable(Path(settings.starnet_folder))
+        if not starnet_exe:
+            raise FileNotFoundError("StarNet executable not found. Update the StarNet path in settings.")
+        write_log("Starless test enabled; running StarNet on final image.")
+        write_log(f"StarNet executable: {starnet_exe}")
+        run_starnet(final, starless_test, starnet_exe, write_log)
+        _log_existing_image(starless_test, write_log, "starless_test.tif")
+        subtract_images(final, starless_test, starless_test_stars)
+        _log_existing_image(starless_test_stars, write_log, "starless_test_stars.tif")
+        threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=0.30)
+        write_log(f"Starless test kept bright stars with layer threshold {threshold:.1f}.")
         _log_existing_image(final, write_log, "final.tif")
 
     save_png(final_png, load_image(final, write_log), write_log)

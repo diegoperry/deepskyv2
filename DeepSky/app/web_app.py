@@ -122,6 +122,9 @@ def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
         ("Running command: rl", "Siril Deconvolution", 43),
         ("Richardson-Lucy deconvolution", "Siril Deconvolution", 44),
         ("Blended Siril deconvolution as galaxy-only detail layer", "Siril Deconvolution", 47),
+        ("Starless test enabled", "Starless Test", 86),
+        ("starless_test.tif:", "Starless Test", 90),
+        ("starless_test_stars.tif:", "Starless Test", 92),
         ("DeepSNR executable:", "DeepSNR Denoising", 48),
         ("DeepSNR background cleanup executable:", "DeepSNR Background Cleanup", 36),
         ("denoised.tif:", "DeepSNR Denoising", 68),
@@ -1229,6 +1232,10 @@ def _html() -> str:
           <input id="sirilDeconvolution" type="checkbox" />
           Siril deconvolution
         </label>
+        <label class="toggle" title="Experimental: creates a mostly starless result while keeping the brightest 30% of the star layer.">
+          <input id="starlessTest" type="checkbox" />
+          Starless test
+        </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div id="warning" class="warning"></div>
@@ -1278,6 +1285,7 @@ def _html() -> str:
     const inputMode = document.getElementById("inputMode");
     const stretchLevel = document.getElementById("stretchLevel");
     const sirilDeconvolution = document.getElementById("sirilDeconvolution");
+    const starlessTest = document.getElementById("starlessTest");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
@@ -1994,6 +2002,7 @@ def _html() -> str:
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
       data.append("siril_deconvolution", sirilDeconvolution.checked ? "true" : "false");
+      data.append("starless_test", starlessTest.checked ? "true" : "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -2229,6 +2238,7 @@ def _run_job(
     input_mode: str = "Auto",
     stretch_level: str = "Standard",
     siril_deconvolution: bool = False,
+    starless_test: bool = False,
 ) -> None:
     with jobs_lock:
         job = jobs[job_id]
@@ -2271,10 +2281,12 @@ def _run_job(
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
         settings.siril_deconvolution_enabled = bool(siril_deconvolution)
+        settings.starless_test_enabled = bool(starless_test)
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
         write_log(f"Siril deconvolution test: {'enabled' if settings.siril_deconvolution_enabled else 'disabled'}")
+        write_log(f"Starless test: {'enabled' if settings.starless_test_enabled else 'disabled'}")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
             if not Path(getattr(settings, attr)).exists():
                 setattr(settings, attr, getattr(defaults, attr))
@@ -2556,6 +2568,7 @@ async def create_job(
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
     siril_deconvolution: bool = Form(False),
+    starless_test: bool = Form(False),
     user: AuthUser = Depends(require_user),
 ) -> dict[str, str]:
     _cleanup_old_temp_files()
@@ -2612,7 +2625,21 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
             )
-    executor.submit(_run_job, job_id, input_path, pre_stretched, object_type, input_mode, stretch_level, siril_deconvolution)
+        if starless_test:
+            jobs[job_id].warnings.append(
+                "Experimental Starless test is enabled for this run. The result keeps only the brighter star layer."
+            )
+    executor.submit(
+        _run_job,
+        job_id,
+        input_path,
+        pre_stretched,
+        object_type,
+        input_mode,
+        stretch_level,
+        siril_deconvolution,
+        starless_test,
+    )
     return {"id": job_id}
 
 
