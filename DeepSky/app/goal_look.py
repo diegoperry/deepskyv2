@@ -647,18 +647,60 @@ def apply_broadband_look(image: np.ndarray, log: LogCallback | None = None) -> n
     rgb = np.clip(rgb * (contrast_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
 
     lum = _luminance(rgb)
-    dark_mask = lum < np.percentile(lum, 45.0)
+    star_for_balance = np.clip(
+        (lum - np.percentile(lum, 96.8))
+        / max(1e-6, np.percentile(lum, 99.96) - np.percentile(lum, 96.8)),
+        0.0,
+        1.0,
+    ) ** 1.65
+    star_for_balance = cv2.GaussianBlur(star_for_balance.astype(np.float32), (0, 0), 0.8)
+    dark_mask = (lum < np.percentile(lum, 48.0)) & (star_for_balance < 0.08)
     if int(np.count_nonzero(dark_mask)) >= 128:
         sky = np.median(rgb[dark_mask], axis=0)
         neutral = float(np.mean(sky))
-        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.90, 1.08)
-        gains[1] = min(gains[1], 0.98)
+        gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.90, 1.10)
         rgb = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
     else:
         gains = np.ones(3, dtype=np.float32)
 
     lum = _luminance(rgb)
-    rgb = np.clip(lum[..., None] + (rgb - lum[..., None]) * 0.55, 0.0, 1.0)
+    extended = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 18.0) * 0.62 + cv2.GaussianBlur(
+        lum.astype(np.float32), (0, 0), 42.0
+    ) * 0.38
+    galaxy_mask = np.clip(
+        (extended - np.percentile(extended, 72.0))
+        / max(1e-6, np.percentile(extended, 99.55) - np.percentile(extended, 72.0)),
+        0.0,
+        1.0,
+    ) ** 0.78
+    galaxy_mask = cv2.GaussianBlur(galaxy_mask.astype(np.float32), (0, 0), 6.0)
+    galaxy_core_mask = np.clip(
+        (extended - np.percentile(extended, 92.5))
+        / max(1e-6, np.percentile(extended, 99.88) - np.percentile(extended, 92.5)),
+        0.0,
+        1.0,
+    ) ** 1.12
+    galaxy_core_mask = cv2.GaussianBlur(galaxy_core_mask.astype(np.float32), (0, 0), 4.5)
+    galaxy_dust_mask = np.clip(galaxy_mask - galaxy_core_mask * 0.45, 0.0, 1.0)
+
+    star_color_mask = np.clip(
+        (lum - np.percentile(lum, 97.2))
+        / max(1e-6, np.percentile(lum, 99.985) - np.percentile(lum, 97.2)),
+        0.0,
+        1.0,
+    ) ** 1.55
+    star_color_mask = cv2.GaussianBlur(star_color_mask.astype(np.float32), (0, 0), 0.75)
+
+    saturation = 0.58 + galaxy_mask[..., None] * 0.46 + star_color_mask[..., None] * 0.22
+    rgb = np.clip(lum[..., None] + (rgb - lum[..., None]) * np.clip(saturation, 0.52, 1.16), 0.0, 1.0)
+
+    lum = _luminance(rgb)
+    cool_dust = np.array([0.88, 1.02, 1.22], dtype=np.float32).reshape(1, 1, 3)
+    warm_core = np.array([1.22, 1.05, 0.82], dtype=np.float32).reshape(1, 1, 3)
+    dust_tinted = np.clip(lum[..., None] * cool_dust, 0.0, 1.0)
+    rgb = np.clip(rgb * (1.0 - galaxy_dust_mask[..., None] * 0.26) + dust_tinted * (galaxy_dust_mask[..., None] * 0.26), 0.0, 1.0)
+    core_tinted = np.clip(lum[..., None] * warm_core, 0.0, 1.0)
+    rgb = np.clip(rgb * (1.0 - galaxy_core_mask[..., None] * 0.34) + core_tinted * (galaxy_core_mask[..., None] * 0.34), 0.0, 1.0)
 
     core = np.clip(
         (lum - np.percentile(lum, 90.0))
@@ -679,7 +721,7 @@ def apply_broadband_look(image: np.ndarray, log: LogCallback | None = None) -> n
         1.0,
     ) ** 1.7
     neutral_star = lum[..., None] + np.clip(rgb - lum[..., None], -0.06, 0.06)
-    rgb = rgb * (1.0 - star[..., None] * 0.42) + neutral_star * (star[..., None] * 0.42)
+    rgb = rgb * (1.0 - star[..., None] * 0.18) + neutral_star * (star[..., None] * 0.18)
 
     lum = _luminance(rgb)
     star_protect = np.clip(
@@ -724,6 +766,8 @@ def apply_broadband_look(image: np.ndarray, log: LogCallback | None = None) -> n
             f"black={black:.5f}, white={white:.5f}, final_black={final_black:.5f}, "
             f"sky_gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
             f"median_luminance={np.median(final_lum):.5f}, chroma_p95={chroma_percentile(rgb, 95.0):.5f}, "
+            f"galaxy_mask_mean={float(np.mean(galaxy_mask)):.5f}, "
+            f"galaxy_core_mean={float(np.mean(galaxy_core_mask)):.5f}, "
             f"reflection_mask_mean={float(np.mean(reflection_mask)):.5f}"
         )
     return _to_uint16(rgb)
