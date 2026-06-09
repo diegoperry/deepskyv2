@@ -694,8 +694,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         elif green_duoband_raw:
             write_log("Skipping starless nebula dust/detail enhancer for green-dominant duo-band raw frame.")
         if starless_test_requested:
-            write_log("Starless test enabled; recombining starless image with brightest 30% of stars.")
-            threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=0.30)
+            write_log("Starless test enabled; recombining starless image with brightest 10% of stars.")
+            threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=0.10)
             write_log(f"Starless test kept bright stars with layer threshold {threshold:.1f}.")
         else:
             add_images(starless, stars, final)
@@ -720,7 +720,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless_test, write_log, "starless_test.tif")
         subtract_images(final, starless_test, starless_test_stars)
         _log_existing_image(starless_test_stars, write_log, "starless_test_stars.tif")
-        threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=0.30)
+        threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=0.10)
         write_log(f"Starless test kept bright stars with layer threshold {threshold:.1f}.")
         _log_existing_image(final, write_log, "final.tif")
 

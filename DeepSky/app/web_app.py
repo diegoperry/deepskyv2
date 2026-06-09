@@ -1232,7 +1232,7 @@ def _html() -> str:
           <input id="sirilDeconvolution" type="checkbox" />
           Siril deconvolution
         </label>
-        <label class="toggle" title="Experimental: creates a mostly starless result while keeping the brightest 30% of the star layer.">
+        <label class="toggle" title="Experimental: removes about 90% of stars while keeping the brightest 10% of the star layer.">
           <input id="starlessTest" type="checkbox" />
           Starless test
         </label>
@@ -2627,7 +2627,7 @@ async def create_job(
             )
         if starless_test:
             jobs[job_id].warnings.append(
-                "Experimental Starless test is enabled for this run. The result keeps only the brighter star layer."
+                "Experimental Starless test is enabled for this run. The result removes about 90% of stars and keeps only the brightest star layer."
             )
     executor.submit(
         _run_job,
