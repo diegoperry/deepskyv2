@@ -664,7 +664,7 @@ def _landing_html() -> str:
           <article class="slider">
             <div class="compare" style="--pos: 50%">
               <img src="/static/landing/galaxy_before.png" alt="Before galaxy processing">
-              <img class="after" src="/static/landing/galaxy_after.png" alt="After galaxy processing">
+              <img class="after" src="/static/landing/galaxy_after.jpg" alt="After galaxy processing">
               <div class="handle"></div>
             </div>
             <input type="range" min="0" max="100" value="50" aria-label="Compare galaxy before and after">
@@ -743,7 +743,7 @@ def _landing_html() -> str:
           <details><summary>Does it work with SeeStar files?</summary><p>Yes. DeepSky is being tuned around real SeeStar-style FITS and TIFF uploads, including both linear and already-stretched files.</p></details>
           <details><summary>Is this catalog photometric color calibration?</summary><p>When Siril PCC is available and the file has enough metadata, catalog-based star color calibration can be used. Otherwise DeepSky uses pixel-based background and star balancing.</p></details>
           <details><summary>Will it replace manual processing?</summary><p>No. It is meant to produce a strong first processed result quickly, especially for users who do not want to spend hours tuning multiple astronomy tools.</p></details>
-          <details><summary>Do I need an account?</summary><p>No account or paid tier is required yet. The current version is focused on letting users process an image.</p></details>
+          <details><summary>Do I need an account?</summary><p>Yes. Create an account or sign in to process images. Your first 3 images are free.</p></details>
         </div>
       </div>
     </section>
