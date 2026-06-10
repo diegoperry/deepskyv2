@@ -207,6 +207,13 @@ def _needs_siril_for_gradient_galaxy(
     return bool(small_faint_galaxy and spread > 0.25), spread
 
 
+def _is_compact_siril_galaxy(analysis: object | None) -> bool:
+    metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
+    raw_p999 = float(metrics.get("raw_p999", 1.0))
+    bright_fraction = float(metrics.get("bright_fraction", 1.0))
+    return raw_p999 < 0.025 and bright_fraction < 0.00025
+
+
 def _auto_baseline_stretch_strength(
     analysis: object | None,
     detected_telescope: str,
@@ -668,6 +675,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     preserve_siril_galaxy_finish = gradient_galaxy_siril or (
         siril_deconvolution_requested and mode == PipelineMode.FULL
     )
+    skip_siril_galaxy_star_reduction = (
+        preserve_siril_galaxy_finish
+        and object_type == "galaxy"
+        and _is_compact_siril_galaxy(analysis)
+    )
 
     if mode in {PipelineMode.FULL, PipelineMode.DEEPSNR} and not preserve_siril_galaxy_finish:
         deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
@@ -733,7 +745,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     if (
         starless_test_requested
         and (preserve_siril_galaxy_finish or mode not in {PipelineMode.FULL, PipelineMode.STARNET})
-        and not (preserve_siril_galaxy_finish and object_type == "galaxy")
+        and not skip_siril_galaxy_star_reduction
     ):
         starnet_exe = find_executable(Path(settings.starnet_folder))
         if not starnet_exe:
@@ -744,7 +756,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless_test, write_log, "starless_test.tif")
         subtract_images(final, starless_test, starless_test_stars)
         _log_existing_image(starless_test_stars, write_log, "starless_test_stars.tif")
-        keep_fraction = 0.10 if object_type == "nebula" else 0.60
+        keep_fraction = 0.10 if object_type == "nebula" or preserve_siril_galaxy_finish else 0.60
         threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
         write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
         if object_type == "nebula":
@@ -752,8 +764,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
             save_tiff(final, cosmos_nebula, write_log)
         _log_existing_image(final, write_log, "final.tif")
-    elif starless_test_requested and preserve_siril_galaxy_finish and object_type == "galaxy":
-        write_log("Star reduction skipped for Siril deconvolution galaxy finish to preserve compact galaxy detail.")
+    elif starless_test_requested and skip_siril_galaxy_star_reduction:
+        write_log("Star reduction skipped for compact Siril deconvolution galaxy finish to preserve detail.")
 
     save_png(final_png, load_image(final, write_log), write_log)
     after_preview = job_folder / "after_preview.png"
