@@ -218,6 +218,7 @@ def _auto_baseline_stretch_strength(
     raw_p999 = float(metrics.get("raw_p999", 0.0))
     shadow_fraction = float(metrics.get("shadow_fraction", 0.0))
     midtone_fraction = float(metrics.get("midtone_fraction", 0.0))
+    bright_fraction = float(metrics.get("bright_fraction", 0.0))
     recommended_mode = getattr(analysis, "recommended_mode", "")
 
     if recommended_mode == "pre_stretched":
@@ -225,6 +226,11 @@ def _auto_baseline_stretch_strength(
     if object_type == "galaxy":
         if raw_p999 < 0.012:
             return "seestar_aggressive", f"very faint protected raw galaxy signal raw_p999={raw_p999:.5f}"
+        if raw_p999 < 0.020 and bright_fraction < 0.00020:
+            return (
+                "seestar_slight",
+                f"compact bright galaxy protected from over-stretch raw_p999={raw_p999:.5f}, bright_fraction={bright_fraction:.5f}",
+            )
         return "seestar", f"protected raw galaxy baseline raw_p999={raw_p999:.5f}"
     if raw_p999 < 0.012:
         return "seestar_extra_aggressive", f"very faint protected raw signal raw_p999={raw_p999:.5f}"
