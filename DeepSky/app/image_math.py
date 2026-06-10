@@ -22,6 +22,37 @@ def add_images(base_path: Path, add_path: Path, output_path: Path) -> None:
     save_tiff(output_path, final)
 
 
+def add_weighted_star_layer(
+    base_path: Path,
+    stars_path: Path,
+    output_path: Path,
+    floor_weight: float = 0.05,
+    low_percentile: float = 96.5,
+    high_percentile: float = 99.85,
+    curve_power: float = 1.0,
+) -> tuple[float, float]:
+    base = load_tiff(base_path).astype(np.float32)
+    stars = load_tiff(stars_path).astype(np.float32)
+    if stars.ndim == 3:
+        star_lum = stars[..., :3].max(axis=2)
+    else:
+        star_lum = stars
+
+    low = float(np.percentile(star_lum, low_percentile))
+    high = float(np.percentile(star_lum, high_percentile))
+    strength = np.clip((star_lum - low) / max(1.0, high - low), 0.0, 1.0)
+    smooth = strength * strength * (3.0 - 2.0 * strength)
+    weight = float(np.clip(floor_weight, 0.0, 1.0)) + (1.0 - float(np.clip(floor_weight, 0.0, 1.0))) * (
+        smooth ** max(0.1, float(curve_power))
+    )
+    if stars.ndim == 3:
+        weight = weight[..., None]
+
+    final = np.clip(base + stars * weight, 0, 65535).astype(np.uint16)
+    save_tiff(output_path, final)
+    return low, high
+
+
 def add_bright_star_fraction(
     base_path: Path,
     stars_path: Path,

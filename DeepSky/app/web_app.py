@@ -1229,11 +1229,11 @@ def _html() -> str:
           </select>
         </label>
         <label class="toggle" title="Experimental: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
-          <input id="sirilDeconvolution" type="checkbox" />
+          <input id="sirilDeconvolution" type="checkbox" checked />
           Siril deconvolution
         </label>
         <label class="toggle" title="Experimental: removes about 90% of stars while keeping the brightest 10% of the star layer.">
-          <input id="starlessTest" type="checkbox" />
+          <input id="starlessTest" type="checkbox" checked />
           Starless test
         </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
@@ -2567,8 +2567,8 @@ async def create_job(
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
-    siril_deconvolution: bool = Form(False),
-    starless_test: bool = Form(False),
+    siril_deconvolution: bool = Form(True),
+    starless_test: bool = Form(True),
     user: AuthUser = Depends(require_user),
 ) -> dict[str, str]:
     _cleanup_old_temp_files()

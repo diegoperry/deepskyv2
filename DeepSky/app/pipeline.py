@@ -32,7 +32,7 @@ from .image_io import (
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
-from .image_math import add_bright_star_fraction, add_images, subtract_images
+from .image_math import add_bright_star_fraction, add_images, add_weighted_star_layer, subtract_images
 from .python_color_calibration import python_fallback_color_calibration
 from .settings import AppSettings
 from .siril_cli import (
@@ -709,7 +709,15 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
                 save_tiff(final, cosmos_nebula, write_log)
         else:
-            add_images(starless, stars, final)
+            if object_type == "nebula" and not green_duoband_raw:
+                write_log("Reducing faint nebula star/noise layer before recombination.")
+                low, high = add_weighted_star_layer(starless, stars, final)
+                write_log(f"Weighted nebula star layer: low={low:.1f}, high={high:.1f}.")
+                write_log("Applying Cosmos-style dark nebula finish.")
+                cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
+                save_tiff(final, cosmos_nebula, write_log)
+            else:
+                add_images(starless, stars, final)
         _log_existing_image(final, write_log, "final.tif")
         current = final
     elif preserve_siril_galaxy_finish and mode == PipelineMode.FULL:
