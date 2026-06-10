@@ -122,9 +122,9 @@ def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
         ("Running command: rl", "Siril Deconvolution", 43),
         ("Richardson-Lucy deconvolution", "Siril Deconvolution", 44),
         ("Blended Siril deconvolution as galaxy-only detail layer", "Siril Deconvolution", 47),
-        ("Starless test enabled", "Starless Test", 86),
-        ("starless_test.tif:", "Starless Test", 90),
-        ("starless_test_stars.tif:", "Starless Test", 92),
+        ("Star reduction enabled", "Star Reduction", 86),
+        ("starless_test.tif:", "Star Reduction", 90),
+        ("starless_test_stars.tif:", "Star Reduction", 92),
         ("DeepSNR executable:", "DeepSNR Denoising", 48),
         ("DeepSNR background cleanup executable:", "DeepSNR Background Cleanup", 36),
         ("denoised.tif:", "DeepSNR Denoising", 68),
@@ -1232,9 +1232,9 @@ def _html() -> str:
           <input id="sirilDeconvolution" type="checkbox" checked />
           Siril deconvolution
         </label>
-        <label class="toggle" title="Experimental: removes about 90% of stars while keeping the brightest 10% of the star layer.">
+        <label class="toggle" title="Reduces the star layer so the target stands out more clearly.">
           <input id="starlessTest" type="checkbox" checked />
-          Starless test
+          Star Reduction
         </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
@@ -2286,7 +2286,7 @@ def _run_job(
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
         write_log(f"Siril deconvolution test: {'enabled' if settings.siril_deconvolution_enabled else 'disabled'}")
-        write_log(f"Starless test: {'enabled' if settings.starless_test_enabled else 'disabled'}")
+        write_log(f"Star reduction: {'enabled' if settings.starless_test_enabled else 'disabled'}")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
             if not Path(getattr(settings, attr)).exists():
                 setattr(settings, attr, getattr(defaults, attr))
@@ -2627,7 +2627,7 @@ async def create_job(
             )
         if starless_test:
             jobs[job_id].warnings.append(
-                "Experimental Starless test is enabled for this run. The result removes about 90% of stars and keeps only the brightest star layer."
+                "Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
             )
     executor.submit(
         _run_job,

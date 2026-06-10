@@ -701,9 +701,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         elif green_duoband_raw:
             write_log("Skipping starless nebula dust/detail enhancer for green-dominant duo-band raw frame.")
         if starless_test_requested:
-            write_log("Starless test enabled; recombining starless image with brightest 10% of stars.")
-            threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=0.10)
-            write_log(f"Starless test kept bright stars with layer threshold {threshold:.1f}.")
+            keep_fraction = 0.10 if object_type == "nebula" else 0.60
+            write_log(f"Star reduction enabled; recombining starless image with brightest {keep_fraction:.0%} of stars.")
+            threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=keep_fraction)
+            write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
             if object_type == "nebula" and not green_duoband_raw:
                 write_log("Applying Cosmos-style dark nebula finish.")
                 cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
@@ -729,23 +730,30 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         shutil.copy2(current, final)
         _log_existing_image(final, write_log, "final.tif")
 
-    if starless_test_requested and (preserve_siril_galaxy_finish or mode not in {PipelineMode.FULL, PipelineMode.STARNET}):
+    if (
+        starless_test_requested
+        and (preserve_siril_galaxy_finish or mode not in {PipelineMode.FULL, PipelineMode.STARNET})
+        and not (preserve_siril_galaxy_finish and object_type == "galaxy")
+    ):
         starnet_exe = find_executable(Path(settings.starnet_folder))
         if not starnet_exe:
             raise FileNotFoundError("StarNet executable not found. Update the StarNet path in settings.")
-        write_log("Starless test enabled; running StarNet on final image.")
+        write_log("Star reduction enabled; running StarNet on final image.")
         write_log(f"StarNet executable: {starnet_exe}")
         run_starnet(final, starless_test, starnet_exe, write_log)
         _log_existing_image(starless_test, write_log, "starless_test.tif")
         subtract_images(final, starless_test, starless_test_stars)
         _log_existing_image(starless_test_stars, write_log, "starless_test_stars.tif")
-        threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=0.10)
-        write_log(f"Starless test kept bright stars with layer threshold {threshold:.1f}.")
+        keep_fraction = 0.10 if object_type == "nebula" else 0.60
+        threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
+        write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
         if object_type == "nebula":
             write_log("Applying Cosmos-style dark nebula finish.")
             cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
             save_tiff(final, cosmos_nebula, write_log)
         _log_existing_image(final, write_log, "final.tif")
+    elif starless_test_requested and preserve_siril_galaxy_finish and object_type == "galaxy":
+        write_log("Star reduction skipped for Siril deconvolution galaxy finish to preserve compact galaxy detail.")
 
     save_png(final_png, load_image(final, write_log), write_log)
     after_preview = job_folder / "after_preview.png"
