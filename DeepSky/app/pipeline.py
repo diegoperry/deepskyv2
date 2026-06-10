@@ -11,6 +11,7 @@ import numpy as np
 from .cli_tools import find_executable, run_deepsnr, run_starnet
 from .goal_look import (
     apply_broadband_look,
+    apply_cosmos_style_nebula_finish,
     apply_goal_look,
     apply_prestretched_broadband_look,
     apply_prestretched_nebula_rgb_reveal,
@@ -703,6 +704,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             write_log("Starless test enabled; recombining starless image with brightest 10% of stars.")
             threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=0.10)
             write_log(f"Starless test kept bright stars with layer threshold {threshold:.1f}.")
+            if object_type == "nebula" and not green_duoband_raw:
+                write_log("Applying Cosmos-style dark nebula finish.")
+                cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
+                save_tiff(final, cosmos_nebula, write_log)
         else:
             add_images(starless, stars, final)
         _log_existing_image(final, write_log, "final.tif")
@@ -728,6 +733,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless_test_stars, write_log, "starless_test_stars.tif")
         threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=0.10)
         write_log(f"Starless test kept bright stars with layer threshold {threshold:.1f}.")
+        if object_type == "nebula":
+            write_log("Applying Cosmos-style dark nebula finish.")
+            cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
+            save_tiff(final, cosmos_nebula, write_log)
         _log_existing_image(final, write_log, "final.tif")
 
     save_png(final_png, load_image(final, write_log), write_log)

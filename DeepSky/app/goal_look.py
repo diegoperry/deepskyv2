@@ -1377,3 +1377,90 @@ def apply_starless_nebula_detail(image: np.ndarray, log: LogCallback | None = No
             f"filament_mean={float(np.mean(filament)):.5f}, reflection_bias={float(reflection_bias):.3f}"
         )
     return _to_uint16(lifted)
+
+
+def apply_cosmos_style_nebula_finish(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+
+    rgb = _to_float01(arr)
+    lum = _luminance(rgb).astype(np.float32)
+
+    blur5 = cv2.GaussianBlur(lum, (0, 0), 5.0)
+    blur20 = cv2.GaussianBlur(lum, (0, 0), 20.0)
+    high_frequency = lum - blur20
+    high_low = float(np.percentile(high_frequency, 58.0))
+    high_peak = float(np.percentile(high_frequency, 99.2))
+    structure = np.clip((high_frequency - high_low) / max(1e-6, high_peak - high_low), 0.0, 1.0)
+
+    edge = np.abs(lum - blur5)
+    edge_low = float(np.percentile(edge, 62.0))
+    edge_peak = float(np.percentile(edge, 99.1))
+    edge = np.clip((edge - edge_low) / max(1e-6, edge_peak - edge_low), 0.0, 1.0)
+
+    red_excess = np.clip((rgb[..., 0] - np.maximum(rgb[..., 1], rgb[..., 2]) * 0.88) / 0.24, 0.0, 1.0)
+    blue_excess = np.clip((rgb[..., 2] - rgb[..., 0] * 0.66) / 0.22, 0.0, 1.0)
+    signal_low = float(np.percentile(lum, 28.0))
+    signal_high = float(np.percentile(lum, 98.8))
+    signal = np.clip((lum - signal_low) / max(1e-6, signal_high - signal_low), 0.0, 1.0)
+
+    filament = np.clip(
+        structure * 0.75 + edge * 0.75 + (red_excess + blue_excess) * 0.28 * signal,
+        0.0,
+        1.0,
+    )
+    filament = cv2.GaussianBlur((filament**0.72).astype(np.float32), (0, 0), 1.5)
+
+    star_low = float(np.percentile(lum, 97.2))
+    star_high = float(np.percentile(lum, 99.96))
+    stars = np.clip((lum - star_low) / max(1e-6, star_high - star_low), 0.0, 1.0)
+    stars = cv2.GaussianBlur(stars.astype(np.float32), (0, 0), 0.65)
+
+    sky = np.clip(1.0 - np.clip(filament + stars * 0.95, 0.0, 1.0), 0.0, 1.0)
+    base_lum = lum[..., None]
+    neutral_sky = base_lum * np.array([1.02, 0.92, 0.86], dtype=np.float32).reshape(1, 1, 3)
+    warm_filament = base_lum * np.array([1.22, 0.76, 0.54], dtype=np.float32).reshape(1, 1, 3)
+    cool_filament = base_lum * np.array([0.58, 0.78, 1.18], dtype=np.float32).reshape(1, 1, 3)
+
+    finished = np.clip(rgb * (1.0 - sky[..., None] * 0.82), 0.0, 1.0)
+    finished = np.clip(finished - 0.11 * sky[..., None], 0.0, 1.0)
+
+    finished_lum = _luminance(finished)
+    saturation = 0.50 + filament[..., None] * 0.42 + stars[..., None] * 0.20
+    finished = np.clip(
+        finished_lum[..., None] + (finished - finished_lum[..., None]) * saturation,
+        0.0,
+        1.0,
+    )
+
+    finished = np.clip(
+        finished * (1.0 - sky[..., None] * 0.55) + neutral_sky * (sky[..., None] * 0.55),
+        0.0,
+        1.0,
+    )
+    finished = np.clip(
+        finished * (1.0 - red_excess[..., None] * filament[..., None] * 0.30)
+        + warm_filament * (red_excess[..., None] * filament[..., None] * 0.30),
+        0.0,
+        1.0,
+    )
+    finished = np.clip(
+        finished * (1.0 - blue_excess[..., None] * filament[..., None] * 0.18)
+        + cool_filament * (blue_excess[..., None] * filament[..., None] * 0.18),
+        0.0,
+        1.0,
+    )
+    finished = np.clip(finished**1.28, 0.0, 1.0)
+
+    if log:
+        final_lum = _luminance(finished)
+        sky_sample = final_lum[sky > 0.7]
+        sky_mean = float(np.mean(sky_sample)) if sky_sample.size else float(np.mean(final_lum))
+        log(
+            "Applied Cosmos-style nebula finish: "
+            f"sky_mean={sky_mean:.5f}, "
+            f"filament_mean={float(np.mean(filament)):.5f}, "
+            f"star_mean={float(np.mean(stars)):.5f}"
+        )
+    return _to_uint16(finished)
