@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from .image_io import load_tiff, save_tiff
@@ -48,5 +49,29 @@ def add_bright_star_fraction(
 
     kept_stars = stars * mask
     final = np.clip(base + kept_stars.astype(np.int32), 0, 65535).astype(np.uint16)
+    final = _repair_retained_star_pinholes(final, mask)
     save_tiff(output_path, final)
     return threshold
+
+
+def _repair_retained_star_pinholes(image: np.ndarray, retained_star_mask: np.ndarray) -> np.ndarray:
+    if image.ndim != 3:
+        return image
+
+    support = retained_star_mask[..., 0] if retained_star_mask.ndim == 3 else retained_star_mask
+    support = (support > 0).astype(np.uint8)
+    if int(np.count_nonzero(support)) == 0:
+        return image
+
+    support = cv2.dilate(support, np.ones((5, 5), dtype=np.uint8), iterations=1).astype(bool)
+    arr = image.astype(np.float32)
+    lum = arr[..., :3].max(axis=2)
+    local_peak = cv2.dilate(lum, np.ones((7, 7), dtype=np.uint8), iterations=1)
+    pinhole = support & (local_peak > 9000.0) & (lum < local_peak * 0.42)
+    if int(np.count_nonzero(pinhole)) == 0:
+        return image
+
+    fill = cv2.GaussianBlur(arr, (0, 0), 1.35)
+    repaired = arr.copy()
+    repaired[pinhole] = np.maximum(repaired[pinhole], fill[pinhole] * 1.08)
+    return np.clip(repaired, 0, 65535).astype(np.uint16)
