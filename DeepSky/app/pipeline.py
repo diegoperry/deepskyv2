@@ -686,7 +686,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless, write_log, "starless.tif")
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
-        if object_type == "nebula" and not green_duoband_raw:
+        if starless_test_requested and object_type == "nebula" and not green_duoband_raw:
             write_log("Enhancing starless nebula dust/detail before star recombination.")
             enhanced_starless = apply_starless_nebula_detail(load_image(starless, write_log), write_log)
             save_tiff(starless, enhanced_starless, write_log)
