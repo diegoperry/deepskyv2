@@ -74,7 +74,9 @@ def add_bright_star_fraction(
 
     keep_fraction = float(np.clip(keep_fraction, 0.0, 1.0))
     threshold = float(np.percentile(candidates, (1.0 - keep_fraction) * 100.0))
-    mask = (star_lum >= threshold).astype(np.float32)
+    bright_mask = star_lum >= threshold
+    large_mask = _large_retained_star_mask(star_lum, candidate_floor, threshold)
+    mask = np.maximum(bright_mask, large_mask).astype(np.float32)
     if stars.ndim == 3:
         mask = mask[..., None]
 
@@ -83,6 +85,35 @@ def add_bright_star_fraction(
     final = _repair_retained_star_pinholes(final, mask)
     save_tiff(output_path, final)
     return threshold
+
+
+def _large_retained_star_mask(star_lum: np.ndarray, candidate_floor: float, threshold: float) -> np.ndarray:
+    support_floor = max(64.0, threshold * 0.45)
+    support = (star_lum > support_floor).astype(np.uint8)
+    if int(np.count_nonzero(support)) == 0:
+        return np.zeros_like(star_lum, dtype=bool)
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(support, connectivity=8)
+    if count <= 1:
+        return np.zeros_like(star_lum, dtype=bool)
+
+    area = stats[:, cv2.CC_STAT_AREA].astype(np.float32)
+    peaks = np.zeros(count, dtype=np.float32)
+    np.maximum.at(peaks, labels.ravel(), star_lum.ravel().astype(np.float32))
+
+    valid = (np.arange(count) > 0) & (peaks >= max(candidate_floor * 1.5, threshold * 0.35))
+    if not bool(np.any(valid)):
+        return np.zeros_like(star_lum, dtype=bool)
+
+    min_area = max(35.0, float(np.percentile(area[valid], 98.5)))
+    keep_labels = valid & (area >= min_area)
+    keep_labels[0] = False
+    if not bool(np.any(keep_labels)):
+        return np.zeros_like(star_lum, dtype=bool)
+
+    retained = keep_labels[labels]
+    retained = cv2.dilate(retained.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), iterations=1)
+    return retained.astype(bool)
 
 
 def _repair_retained_star_pinholes(image: np.ndarray, retained_star_mask: np.ndarray) -> np.ndarray:
