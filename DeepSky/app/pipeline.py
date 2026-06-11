@@ -214,6 +214,13 @@ def _is_compact_siril_galaxy(analysis: object | None) -> bool:
     return raw_p999 < 0.025 and bright_fraction < 0.00025
 
 
+def _needs_gentle_nebula_star_reduction(analysis: object | None, image: np.ndarray) -> bool:
+    metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
+    raw_p999 = float(metrics.get("raw_p999", 0.0))
+    emission_score = red_emission_dominance(image)
+    return raw_p999 >= 0.055 and emission_score < 2.4
+
+
 def _auto_baseline_stretch_strength(
     analysis: object | None,
     detected_telescope: str,
@@ -705,19 +712,24 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless, write_log, "starless.tif")
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
+        gentle_nebula_star_reduction = False
         if starless_test_requested and object_type == "nebula" and not green_duoband_raw:
+            gentle_nebula_star_reduction = _needs_gentle_nebula_star_reduction(analysis, load_image(current, write_log))
+        if starless_test_requested and object_type == "nebula" and not green_duoband_raw and not gentle_nebula_star_reduction:
             write_log("Enhancing starless nebula dust/detail before star recombination.")
             enhanced_starless = apply_starless_nebula_detail(load_image(starless, write_log), write_log)
             save_tiff(starless, enhanced_starless, write_log)
             _log_existing_image(starless, write_log, "enhanced starless.tif")
+        elif gentle_nebula_star_reduction:
+            write_log("Reflection-style nebula detected; using gentle star reduction without starless dust enhancer.")
         elif green_duoband_raw:
             write_log("Skipping starless nebula dust/detail enhancer for green-dominant duo-band raw frame.")
         if starless_test_requested:
-            keep_fraction = 0.10 if object_type == "nebula" else 0.60
+            keep_fraction = 0.40 if gentle_nebula_star_reduction else (0.10 if object_type == "nebula" else 0.60)
             write_log(f"Star reduction enabled; recombining starless image with brightest {keep_fraction:.0%} of stars.")
             threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=keep_fraction)
             write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
-            if object_type == "nebula" and not green_duoband_raw:
+            if object_type == "nebula" and not green_duoband_raw and not gentle_nebula_star_reduction:
                 write_log("Applying Cosmos-style dark nebula finish.")
                 cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
                 save_tiff(final, cosmos_nebula, write_log)
