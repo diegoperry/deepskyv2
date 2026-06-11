@@ -609,7 +609,7 @@ def _docs_html() -> str:
             <li><span class="label">Input:</span> leave on Auto unless you know your file is already stretched.</li>
             <li><span class="label">Stretch:</span> leave on Standard for the first run.</li>
             <li><span class="label">Siril deconvolution:</span> use it for galaxies when you want sharper arms and dust lanes.</li>
-            <li><span class="label">Star Reduction:</span> currently enabled for galaxies only.</li>
+            <li><span class="label">Star Reduction:</span> automatic for nebulae, available for galaxies, and off for star clusters.</li>
           </ul>
           <div class="callout">If your first result looks wrong, do not keep changing every setting at once. Change one setting, rerun, and compare.</div>
         </section>
@@ -638,7 +638,7 @@ def _docs_html() -> str:
           </div>
           <div class="setting">
             <h3>Star Reduction</h3>
-            <p>Star Reduction reduces the star field so galaxy structure is easier to see. It is currently available for galaxies only. Nebulae and star clusters keep their stars for now because heavy star removal can make those images look artificial or expose starless artifacts.</p>
+            <p>Star Reduction reduces the star field so the target stands out. Galaxy runs can use it directly. Nebula runs choose star handling automatically based on the file, using stronger reduction for emission/filament targets and gentler handling for reflection or cluster-heavy nebulae. Star clusters keep natural stars.</p>
           </div>
         </section>
 
@@ -672,9 +672,9 @@ def _docs_html() -> str:
             <details>
               <summary>Stars look weird, missing, or too reduced</summary>
               <ul>
-                <li>For nebulae and clusters, use Object: Nebula or Star Cluster. Star Reduction is disabled there.</li>
+                <li>For star clusters, use Object: Star Cluster to preserve natural stars.</li>
                 <li>For galaxies, turn off Star Reduction if the star field is part of the composition.</li>
-                <li>If a large star looks damaged, rerun with Star Reduction off.</li>
+                <li>For nebulae, DeepSky chooses star handling automatically from the file.</li>
               </ul>
             </details>
             <details>
@@ -1788,15 +1788,19 @@ def _html() -> str:
 
     function syncObjectSettings() {
       const isGalaxy = objectType.value === "Galaxy";
+      const isNebula = objectType.value === "Nebula";
       starlessTest.disabled = !isGalaxy;
-      if (!isGalaxy) {
+      if (isNebula) {
+        starlessTest.checked = true;
+        starlessToggle.title = "Nebula star handling is automatic.";
+      } else if (!isGalaxy) {
         starlessTest.checked = false;
-        starlessToggle.title = "Star Reduction is currently only enabled for galaxy processing.";
+        starlessToggle.title = "Star Reduction is disabled for star cluster processing.";
       } else {
         starlessTest.checked = true;
         starlessToggle.title = "Reduces the star layer so the target stands out more clearly.";
       }
-      starlessToggle.classList.toggle("disabled", !isGalaxy);
+      starlessToggle.classList.toggle("disabled", !isGalaxy && !isNebula);
     }
 
     function showUploadProgress(label) {
@@ -2307,7 +2311,7 @@ def _html() -> str:
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
       data.append("siril_deconvolution", sirilDeconvolution.checked ? "true" : "false");
-      data.append("starless_test", objectType.value === "Galaxy" && starlessTest.checked ? "true" : "false");
+      data.append("starless_test", objectType.value === "Nebula" || (objectType.value === "Galaxy" && starlessTest.checked) ? "true" : "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -2587,7 +2591,9 @@ def _run_job(
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
         settings.siril_deconvolution_enabled = bool(siril_deconvolution)
-        settings.starless_test_enabled = bool(starless_test) and settings.object_type == "Galaxy"
+        settings.starless_test_enabled = settings.object_type == "Nebula" or (
+            bool(starless_test) and settings.object_type == "Galaxy"
+        )
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
@@ -2928,6 +2934,10 @@ async def create_job(
 
     with jobs_lock:
         jobs[job_id] = WebJob(id=job_id, user_id=user.id, user_email=user.email, credit_consumed=credit_consumed)
+        normalized_object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
+        effective_star_reduction = normalized_object_type == "Nebula" or (
+            bool(starless_test) and normalized_object_type == "Galaxy"
+        )
         if pre_stretched:
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
@@ -2936,7 +2946,11 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
             )
-        if starless_test:
+        if normalized_object_type == "Nebula":
+            jobs[job_id].warnings.append(
+                "Nebula star handling is automatic. DeepSky will choose natural, gentle, or stronger star reduction from the file."
+            )
+        elif effective_star_reduction:
             jobs[job_id].warnings.append(
                 "Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
             )
