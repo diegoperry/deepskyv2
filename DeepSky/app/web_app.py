@@ -1024,6 +1024,13 @@ def _html() -> str:
       height: 18px;
       accent-color: var(--blue);
     }
+    .toggle.disabled {
+      opacity: .52;
+      cursor: not-allowed;
+    }
+    .toggle.disabled input {
+      cursor: not-allowed;
+    }
     .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
     .warning {
       display: none;
@@ -1286,6 +1293,7 @@ def _html() -> str:
     const stretchLevel = document.getElementById("stretchLevel");
     const sirilDeconvolution = document.getElementById("sirilDeconvolution");
     const starlessTest = document.getElementById("starlessTest");
+    const starlessToggle = starlessTest.closest(".toggle");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
@@ -1494,6 +1502,19 @@ def _html() -> str:
       previewProgressFill.classList.remove("indeterminate");
       setProgress(uploadProgressFill, uploadProgressValue, 0);
       setProgress(previewProgressFill, previewProgressValue, 0);
+    }
+
+    function syncObjectSettings() {
+      const isGalaxy = objectType.value === "Galaxy";
+      starlessTest.disabled = !isGalaxy;
+      if (!isGalaxy) {
+        starlessTest.checked = false;
+        starlessToggle.title = "Star Reduction is currently only enabled for galaxy processing.";
+      } else {
+        starlessTest.checked = true;
+        starlessToggle.title = "Reduces the star layer so the target stands out more clearly.";
+      }
+      starlessToggle.classList.toggle("disabled", !isGalaxy);
     }
 
     function showUploadProgress(label) {
@@ -1790,6 +1811,8 @@ def _html() -> str:
       }
     });
 
+    objectType.addEventListener("change", syncObjectSettings);
+
     signIn.addEventListener("click", async () => {
       if (!authClient) return;
       try {
@@ -2002,7 +2025,7 @@ def _html() -> str:
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
       data.append("siril_deconvolution", sirilDeconvolution.checked ? "true" : "false");
-      data.append("starless_test", starlessTest.checked ? "true" : "false");
+      data.append("starless_test", objectType.value === "Galaxy" && starlessTest.checked ? "true" : "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -2116,6 +2139,7 @@ def _html() -> str:
       }
     }
 
+    syncObjectSettings();
     void initAuth();
   </script>
 </body>
@@ -2281,7 +2305,7 @@ def _run_job(
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
         settings.siril_deconvolution_enabled = bool(siril_deconvolution)
-        settings.starless_test_enabled = bool(starless_test)
+        settings.starless_test_enabled = bool(starless_test) and settings.object_type == "Galaxy"
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
