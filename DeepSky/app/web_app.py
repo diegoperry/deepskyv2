@@ -143,7 +143,7 @@ def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
     return stage, progress
 
 
-app = FastAPI(title="DeepSky")
+app = FastAPI(title="DeepSky", docs_url=None, redoc_url=None)
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 jobs: dict[str, WebJob] = {}
 previews: dict[str, str] = {}
@@ -447,6 +447,285 @@ def _discard_staged_upload(upload_id: str) -> None:
         shutil.rmtree(staged.path.parent, ignore_errors=True)
 
 
+def _docs_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeepSky Docs</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #060a12;
+      --panel: #0b121f;
+      --line: #20304c;
+      --text: #f7fbff;
+      --muted: #91a6ca;
+      --blue: #5c8dff;
+      --green: #67e8c9;
+      --amber: #ffd166;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 50% -12%, rgba(92, 141, 255, .22), transparent 380px),
+        linear-gradient(180deg, rgba(11,18,31,.55), rgba(6,10,18,0) 280px),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: inherit; }
+    .wrap { width: min(1120px, calc(100vw - 40px)); margin: 0 auto; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(6, 10, 18, .82);
+      border-bottom: 1px solid rgba(32, 48, 76, .65);
+      backdrop-filter: blur(14px);
+    }
+    .nav { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { font-weight: 900; font-size: 20px; text-decoration: none; }
+    .brand span {
+      background: linear-gradient(90deg, var(--blue), #a98cff, #ff806d);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .navlinks { display: flex; gap: 22px; align-items: center; color: var(--muted); font-weight: 800; font-size: 14px; }
+    .navlinks a { text-decoration: none; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 20px;
+      border-radius: 10px;
+      background: #2f6fe5;
+      color: white;
+      text-decoration: none;
+      font-weight: 900;
+      border: 1px solid rgba(126, 164, 255, .38);
+    }
+    main { padding: 58px 0 78px; }
+    .hero { max-width: 820px; margin-bottom: 34px; }
+    .eyebrow {
+      color: #9fc0ff;
+      font: 13px Consolas, ui-monospace, monospace;
+      margin-bottom: 14px;
+    }
+    h1 { margin: 0; font-size: clamp(42px, 5.4vw, 74px); line-height: .98; letter-spacing: 0; }
+    .lead { margin: 20px 0 0; color: var(--muted); font-size: 19px; line-height: 1.6; }
+    .grid { display: grid; grid-template-columns: 280px 1fr; gap: 26px; align-items: start; }
+    .toc {
+      position: sticky;
+      top: 96px;
+      border: 1px solid var(--line);
+      background: rgba(11,18,31,.78);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .toc strong { display: block; margin-bottom: 12px; }
+    .toc a { display: block; color: var(--muted); text-decoration: none; padding: 8px 0; font-weight: 750; }
+    .content { display: grid; gap: 18px; }
+    section {
+      border: 1px solid var(--line);
+      background: rgba(11,18,31,.78);
+      border-radius: 8px;
+      padding: 24px;
+    }
+    h2 { margin: 0 0 14px; font-size: 28px; letter-spacing: 0; }
+    h3 { margin: 22px 0 8px; font-size: 19px; }
+    p { color: var(--muted); line-height: 1.62; margin: 0 0 12px; }
+    ul { margin: 10px 0 0; padding-left: 20px; color: var(--muted); line-height: 1.65; }
+    li { margin: 7px 0; }
+    .callout {
+      border: 1px solid rgba(255, 209, 102, .38);
+      background: rgba(255, 209, 102, .08);
+      color: #ffe3a0;
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-top: 14px;
+      line-height: 1.55;
+    }
+    .setting {
+      border-top: 1px solid rgba(32,48,76,.72);
+      padding-top: 16px;
+      margin-top: 16px;
+    }
+    .setting:first-of-type { border-top: 0; padding-top: 0; }
+    .label { color: var(--green); font-weight: 900; }
+    .trouble { display: grid; gap: 12px; }
+    details {
+      border: 1px solid rgba(32,48,76,.8);
+      border-radius: 8px;
+      background: rgba(6,10,18,.42);
+      padding: 16px 18px;
+    }
+    summary { cursor: pointer; font-weight: 900; font-size: 17px; }
+    footer { border-top: 1px solid rgba(32,48,76,.65); color: #6f86aa; padding: 26px 0; text-align: center; }
+    footer a { color: #9cbcff; text-decoration: none; font-weight: 900; }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .toc { position: static; }
+      .navlinks a:not(.button) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap nav">
+      <a class="brand" href="/">DeepSky <span>Processor</span></a>
+      <nav class="navlinks">
+        <a href="/process">Process</a>
+        <a href="/docs">Docs</a>
+        <a class="button" href="/process">Process An Image</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="hero">
+      <div class="eyebrow">DeepSky processing guide</div>
+      <h1>Settings, fixes, and what to try when an image looks off.</h1>
+      <p class="lead">Use this page as a quick field guide. Start with the object type, leave Input on Auto for most files, then adjust only when the result is too bright, too dark, too noisy, too soft, or missing detail.</p>
+    </div>
+    <div class="grid">
+      <aside class="toc">
+        <strong>On this page</strong>
+        <a href="#quick-start">Quick Start</a>
+        <a href="#settings">Settings</a>
+        <a href="#troubleshooting">Troubleshooting</a>
+        <a href="#downloads">Downloads</a>
+        <a href="#support">Support</a>
+      </aside>
+      <div class="content">
+        <section id="quick-start">
+          <h2>Quick Start</h2>
+          <p>For most uploads, use these defaults first:</p>
+          <ul>
+            <li><span class="label">Object:</span> choose Galaxy, Nebula, or Star Cluster based on the main target.</li>
+            <li><span class="label">Input:</span> leave on Auto unless you know your file is already stretched.</li>
+            <li><span class="label">Stretch:</span> leave on Standard for the first run.</li>
+            <li><span class="label">Siril deconvolution:</span> use it for galaxies when you want sharper arms and dust lanes.</li>
+            <li><span class="label">Star Reduction:</span> currently enabled for galaxies only.</li>
+          </ul>
+          <div class="callout">If your first result looks wrong, do not keep changing every setting at once. Change one setting, rerun, and compare.</div>
+        </section>
+
+        <section id="settings">
+          <h2>What The Settings Mean</h2>
+          <div class="setting">
+            <h3>Object</h3>
+            <p>This chooses the finishing style. Galaxy processing protects broadband color, dust lanes, cores, and spiral texture. Nebula processing focuses on gas and dust. Star Cluster processing keeps stars more natural and avoids heavy star removal.</p>
+          </div>
+          <div class="setting">
+            <h3>Input</h3>
+            <p><span class="label">Auto</span> lets DeepSky inspect the file histogram and choose the safest path. Use this first.</p>
+            <p><span class="label">Linear</span> tells DeepSky the file is raw or mostly unstretched. Use this if Auto is too gentle or the preview looks very dark before processing.</p>
+            <p><span class="label">Pre-stretched</span> tells DeepSky the image already has visible brightness/contrast. Use this if the result looks overexposed, washed out, or aggressively stretched.</p>
+          </div>
+          <div class="setting">
+            <h3>Stretch</h3>
+            <p><span class="label">Subtle</span> is safer for bright targets, already-bright files, star clusters, and cores that blow out easily.</p>
+            <p><span class="label">Standard</span> is the normal first try.</p>
+            <p><span class="label">Aggressive</span> is for very faint targets where the normal result is too dark or does not reveal enough gas or galaxy arms.</p>
+          </div>
+          <div class="setting">
+            <h3>Siril Deconvolution</h3>
+            <p>This is a galaxy-focused sharpening/detail pass. It can help spiral structure, dust lanes, and galaxy texture. It is not meant to fix every nebula or star cluster.</p>
+          </div>
+          <div class="setting">
+            <h3>Star Reduction</h3>
+            <p>Star Reduction reduces the star field so galaxy structure is easier to see. It is currently available for galaxies only. Nebulae and star clusters keep their stars for now because heavy star removal can make those images look artificial or expose starless artifacts.</p>
+          </div>
+        </section>
+
+        <section id="troubleshooting">
+          <h2>If The Image Looks Off</h2>
+          <div class="trouble">
+            <details open>
+              <summary>Too bright, blown out, or over-stretched</summary>
+              <ul>
+                <li>Set <span class="label">Stretch</span> to Subtle.</li>
+                <li>Try <span class="label">Input</span> as Pre-stretched if the file already looked bright before processing.</li>
+                <li>For galaxies, keep the object set to Galaxy so the core is protected better.</li>
+              </ul>
+            </details>
+            <details>
+              <summary>Too dark or not enough faint detail</summary>
+              <ul>
+                <li>Try <span class="label">Stretch</span> as Aggressive.</li>
+                <li>Make sure <span class="label">Input</span> is Auto or Linear, not Pre-stretched.</li>
+                <li>For faint nebulae, use Object: Nebula.</li>
+              </ul>
+            </details>
+            <details>
+              <summary>Galaxy looks soft or like a blob</summary>
+              <ul>
+                <li>Use Object: Galaxy.</li>
+                <li>Turn on Siril deconvolution.</li>
+                <li>Try Standard first, then Subtle if the core gets too bright.</li>
+              </ul>
+            </details>
+            <details>
+              <summary>Stars look weird, missing, or too reduced</summary>
+              <ul>
+                <li>For nebulae and clusters, use Object: Nebula or Star Cluster. Star Reduction is disabled there.</li>
+                <li>For galaxies, turn off Star Reduction if the star field is part of the composition.</li>
+                <li>If a large star looks damaged, rerun with Star Reduction off.</li>
+              </ul>
+            </details>
+            <details>
+              <summary>Background is green, noisy, or muddy</summary>
+              <ul>
+                <li>Leave Input on Auto first.</li>
+                <li>Try Object: Nebula for emission targets and Object: Galaxy for broadband galaxy fields.</li>
+                <li>If the image is already edited or exported from another app, try Pre-stretched.</li>
+              </ul>
+            </details>
+            <details>
+              <summary>Nebula gas disappears or looks too gray</summary>
+              <ul>
+                <li>Use Object: Nebula.</li>
+                <li>Try Stretch: Aggressive if the target is faint.</li>
+                <li>Try Stretch: Subtle if bright areas are washing out the dust structure.</li>
+              </ul>
+            </details>
+            <details>
+              <summary>Star cluster looks unnatural</summary>
+              <ul>
+                <li>Use Object: Star Cluster.</li>
+                <li>Use Stretch: Subtle or Standard.</li>
+                <li>Avoid galaxy settings unless the cluster is not the main target.</li>
+              </ul>
+            </details>
+          </div>
+        </section>
+
+        <section id="downloads">
+          <h2>Downloads</h2>
+          <p><span class="label">PNG</span> is best for sharing online and checking the result quickly.</p>
+          <p><span class="label">TIFF</span> is best if you want to continue editing in another program. It preserves more image data than PNG.</p>
+        </section>
+
+        <section id="support">
+          <h2>When You Need Help</h2>
+          <p>If the output still looks wrong, send us the processed image and the original file. The fastest way for us to improve DeepSky is to see the exact file and the exact result that failed.</p>
+          <p><a class="button" href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Message DeepSky Processor</a></p>
+        </section>
+      </div>
+    </div>
+  </main>
+  <footer>
+    <p><a href="/process">Process an image</a> &nbsp;|&nbsp; <a href="/">Home</a></p>
+    <p>DeepSky Built By <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a></p>
+  </footer>
+</body>
+</html>"""
+
+
 def _landing_html() -> str:
     return """<!doctype html>
 <html lang="en">
@@ -619,6 +898,7 @@ def _landing_html() -> str:
       <nav class="navlinks">
         <a href="#results">Results</a>
         <a href="#how">How it works</a>
+        <a href="/docs">Docs</a>
         <a href="#faq">FAQ</a>
         <a class="button" href="/process">Process An Image</a>
       </nav>
@@ -633,6 +913,7 @@ def _landing_html() -> str:
           <p class="lead">DeepSky processes FITS and TIFF files with a dedicated astrophotography pipeline for galaxies, nebulae, and star clusters. Upload, run, compare, and download the result.</p>
           <div class="hero-actions">
             <a class="button" href="/process">Process An Image</a>
+            <a class="secondary" href="/docs">Read the docs</a>
             <a class="secondary" href="#results">See before and after</a>
           </div>
           <div class="trust">
@@ -1277,6 +1558,7 @@ def _html() -> str:
     </div>
     </div>
     <footer class="footer">
+      <p><a href="/docs">Processing docs and troubleshooting guide</a></p>
       <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
       <p>DeepSky Built By
       <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a></p>
@@ -2334,6 +2616,11 @@ def _run_job(
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return _landing_html()
+
+
+@app.get("/docs", response_class=HTMLResponse)
+def docs_page() -> str:
+    return _docs_html()
 
 
 @app.get("/process", response_class=HTMLResponse)
