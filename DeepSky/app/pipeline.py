@@ -323,10 +323,15 @@ def _run_siril_calibration(
     write_log: LogCallback,
     *,
     darkroom_small_galaxy: bool = False,
+    duoband_nebula_broadband_finish: bool = False,
 ) -> Path:
     mode = settings.color_calibration_mode
     object_type = _normalized_object_type(settings)
-    use_deconvolution_layer = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy" and mode == "Basic"
+    use_deconvolution_layer = (
+        bool(getattr(settings, "siril_deconvolution_enabled", False))
+        and mode == "Basic"
+        and (object_type == "galaxy" or duoband_nebula_broadband_finish)
+    )
     if mode == "Off":
         write_log("Color calibration is off; applying local stretch only.")
         return _run_local_stretch_calibration(working, stretched, calibrated, write_log)
@@ -443,7 +448,13 @@ def _run_siril_calibration(
             f"Siril Basic object type: {object_type}; "
             f"chroma p95={chroma_95:.5f}; red_emission_dominance={emission_score:.3f}"
         )
-        if object_type == "galaxy":
+        if duoband_nebula_broadband_finish:
+            write_log("Green duo-band nebula detected; using Siril broadband/deconvolution finish.")
+            finished_image = apply_broadband_look(siril_image, write_log)
+            if deconvolution_image is not None:
+                write_log("Applying Siril deconvolution detail after green duo-band nebula finish.")
+                finished_image = blend_galaxy_deconvolution_detail(finished_image, deconvolution_image, write_log)
+        elif object_type == "galaxy":
             if darkroom_small_galaxy:
                 write_log("Object type is Galaxy; applying raw Siril small-galaxy darkroom finish.")
                 finished_image = apply_small_galaxy_darkroom_look(siril_image, write_log)
@@ -579,11 +590,16 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         else:
             write_log("Raw input detected; using protected SeeStar-style baseline stretch path.")
 
+    working_image_for_routing = load_image(working, write_log)
+    green_duoband_raw = object_type == "nebula" and _looks_like_green_duoband_raw(working_image_for_routing, analysis)
+    if green_duoband_raw:
+        write_log("Green-dominant duo-band raw nebula detected; routing through Siril broadband cleanup path.")
+
     gradient_galaxy_siril = False
     gradient_galaxy_spread = 0.0
     if mode == PipelineMode.FULL and settings.color_calibration_mode != "Off":
         gradient_galaxy_siril, gradient_galaxy_spread = _needs_siril_for_gradient_galaxy(
-            load_image(working, write_log),
+            working_image_for_routing,
             analysis,
             detected_telescope,
             object_type,
@@ -599,11 +615,13 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         or (mode == PipelineMode.FULL and use_prestretched)
         or gradient_galaxy_siril
         or (mode == PipelineMode.FULL and siril_deconvolution_requested)
+        or (mode == PipelineMode.FULL and green_duoband_raw)
     )
-    green_duoband_raw = False
     if should_use_siril_calibration:
         if siril_deconvolution_requested and not gradient_galaxy_siril and not use_prestretched and mode == PipelineMode.FULL:
             write_log("Siril deconvolution requested; routing galaxy run through Siril calibration path.")
+        elif green_duoband_raw and mode == PipelineMode.FULL:
+            write_log("Siril cleanup requested for green duo-band nebula.")
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
         _run_siril_calibration(
             original,
@@ -614,6 +632,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             settings,
             write_log,
             darkroom_small_galaxy=gradient_galaxy_siril,
+            duoband_nebula_broadband_finish=green_duoband_raw,
         )
     elif use_prestretched:
         write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril initial stretch.")
@@ -633,8 +652,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif use_protected_raw_finish:
-        working_image = load_image(working, write_log)
-        green_duoband_raw = object_type == "nebula" and _looks_like_green_duoband_raw(working_image, analysis)
+        working_image = working_image_for_routing
         base_strength, baseline_reason = _auto_baseline_stretch_strength(
             analysis,
             detected_telescope,
@@ -681,7 +699,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     current = calibrated
     preserve_siril_galaxy_finish = gradient_galaxy_siril or (
         siril_deconvolution_requested and mode == PipelineMode.FULL
-    )
+    ) or (green_duoband_raw and mode == PipelineMode.FULL)
     skip_siril_galaxy_star_reduction = (
         preserve_siril_galaxy_finish
         and object_type == "galaxy"
@@ -697,7 +715,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(denoised, write_log, "denoised.tif")
         current = denoised
     elif preserve_siril_galaxy_finish and mode == PipelineMode.FULL:
-        write_log("Skipping generic DeepSNR stage; Siril galaxy finish already applied.")
+        write_log("Skipping generic DeepSNR stage; Siril finish already applied.")
 
     if mode in {PipelineMode.FULL, PipelineMode.STARNET} and not preserve_siril_galaxy_finish:
         if mode == PipelineMode.STARNET and not denoised.exists():
@@ -746,7 +764,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(final, write_log, "final.tif")
         current = final
     elif preserve_siril_galaxy_finish and mode == PipelineMode.FULL:
-        write_log("Skipping StarNet stage for Siril galaxy finish.")
+        write_log("Skipping StarNet stage for Siril finish.")
 
     if mode in {PipelineMode.STRETCH, PipelineMode.DEEPSNR, PipelineMode.SIRIL} or (
         preserve_siril_galaxy_finish and mode == PipelineMode.FULL
@@ -771,7 +789,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         keep_fraction = 0.10 if object_type == "nebula" or preserve_siril_galaxy_finish else 0.60
         threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
         write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
-        if object_type == "nebula":
+        if object_type == "nebula" and not green_duoband_raw:
             write_log("Applying Cosmos-style dark nebula finish.")
             cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
             save_tiff(final, cosmos_nebula, write_log)
