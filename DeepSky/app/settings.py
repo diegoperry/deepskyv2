@@ -30,6 +30,7 @@ class AppSettings:
     siril_color_saturation: int
     siril_deconvolution_enabled: bool
     starless_test_enabled: bool
+    star_handling_mode: str
     siril_debug_mode: bool
     galaxy_background_smoothness: int
     galaxy_background_darkness: int
@@ -69,6 +70,7 @@ def default_settings() -> AppSettings:
         siril_color_saturation=15,
         siril_deconvolution_enabled=True,
         starless_test_enabled=True,
+        star_handling_mode="Standard",
         siril_debug_mode=False,
         galaxy_background_smoothness=90,
         galaxy_background_darkness=90,
