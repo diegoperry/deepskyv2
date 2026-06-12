@@ -70,7 +70,7 @@ def default_settings() -> AppSettings:
         siril_color_saturation=15,
         siril_deconvolution_enabled=True,
         starless_test_enabled=True,
-        star_handling_mode="Standard",
+        star_handling_mode="Slight Star Reduction",
         siril_debug_mode=False,
         galaxy_background_smoothness=90,
         galaxy_background_darkness=90,

@@ -124,7 +124,6 @@ def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
         ("Blended Siril deconvolution as galaxy-only detail layer", "Siril Deconvolution", 47),
         ("Star reduction enabled", "Star Reduction", 86),
         ("Slight Star Reduction enabled", "Star Reduction", 86),
-        ("Starless enabled", "Starless", 86),
         ("starless_test.tif:", "Star Reduction", 90),
         ("starless_test_stars.tif:", "Star Reduction", 92),
         ("DeepSNR executable:", "DeepSNR Denoising", 48),
@@ -267,17 +266,6 @@ def _object_get(value: Any, key: str, default: Any = None) -> Any:
     if isinstance(value, dict):
         return value.get(key, default)
     return getattr(value, key, default)
-
-
-def _normalize_star_setting(value: str | None, legacy_starless: bool = False) -> str:
-    normalized = (value or "").strip().lower().replace("_", " ").replace("-", " ")
-    if normalized in {"starless", "zero stars", "no stars"}:
-        return "Starless"
-    if normalized in {"slight", "slight star reduction", "star reduction", "reduced", "reduce"}:
-        return "Slight Star Reduction"
-    if normalized == "standard":
-        return "Standard"
-    return "Slight Star Reduction" if legacy_starless else "Standard"
 
 
 def _get_profile(user_id: str) -> dict[str, Any] | None:
@@ -622,7 +610,7 @@ def _docs_html() -> str:
             <li><span class="label">Input:</span> leave on Auto unless you know your file is already stretched.</li>
             <li><span class="label">Stretch:</span> leave on Standard for the first run.</li>
             <li><span class="label">Siril deconvolution:</span> use it for galaxies when you want sharper arms and dust lanes.</li>
-            <li><span class="label">Star Settings:</span> use Standard first, Slight Star Reduction to quiet busy fields, or Starless when you want the target without stars.</li>
+            <li><span class="label">Star Reduction:</span> DeepSky automatically reduces stars so gas, dust, and galaxy structure stand out.</li>
           </ul>
           <div class="callout">If your first result looks wrong, do not keep changing every setting at once. Change one setting, rerun, and compare.</div>
         </section>
@@ -650,10 +638,8 @@ def _docs_html() -> str:
             <p>This is a galaxy-focused sharpening/detail pass. It can help spiral structure, dust lanes, and galaxy texture. It is not meant to fix every nebula or star cluster.</p>
           </div>
           <div class="setting">
-            <h3>Star Settings</h3>
-            <p><span class="label">Standard</span> keeps the natural star layer. Use this when stars are part of the composition, especially clusters and wide star fields.</p>
-            <p><span class="label">Slight Star Reduction</span> keeps the current reduced-star look. It lets gas, dust, and galaxy structure stand out without fully deleting the field.</p>
-            <p><span class="label">Starless</span> removes the star layer instead of recombining it. Use this for testing faint nebula structure or when stars dominate the target.</p>
+            <h3>Star Reduction</h3>
+            <p>DeepSky automatically applies slight star reduction. It keeps the brighter stars, reduces the busy faint star field, and lets gas, dust, and galaxy structure stand out without making the image feel empty.</p>
           </div>
         </section>
 
@@ -688,9 +674,8 @@ def _docs_html() -> str:
               <summary>Stars look weird, missing, or too reduced</summary>
               <ul>
                 <li>For star clusters, use Object: Star Cluster to preserve natural stars.</li>
-                <li>Set Star Settings to Standard if the field needs natural stars.</li>
-                <li>Use Slight Star Reduction when stars are distracting but should still be present.</li>
-                <li>Use Starless only when you intentionally want the target with no recombined star layer.</li>
+                <li>Use Object: Galaxy for broadband galaxy fields and Object: Nebula for gas/dust targets.</li>
+                <li>If stars still look too strong, try a more subtle stretch so the field does not get over-amplified.</li>
               </ul>
             </details>
             <details>
@@ -1536,14 +1521,6 @@ def _html() -> str:
           <input id="sirilDeconvolution" type="checkbox" checked />
           Siril deconvolution
         </label>
-        <label class="select">
-          Star Settings
-          <select id="starSettings">
-            <option value="Standard" selected>Standard</option>
-            <option value="Slight Star Reduction">Slight Star Reduction</option>
-            <option value="Starless">Starless</option>
-          </select>
-        </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div id="warning" class="warning"></div>
@@ -1594,7 +1571,6 @@ def _html() -> str:
     const inputMode = document.getElementById("inputMode");
     const stretchLevel = document.getElementById("stretchLevel");
     const sirilDeconvolution = document.getElementById("sirilDeconvolution");
-    const starSettings = document.getElementById("starSettings");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
@@ -1803,11 +1779,6 @@ def _html() -> str:
       previewProgressFill.classList.remove("indeterminate");
       setProgress(uploadProgressFill, uploadProgressValue, 0);
       setProgress(previewProgressFill, previewProgressValue, 0);
-    }
-
-    function syncObjectSettings() {
-      if (starSettings.dataset.userChanged === "true") return;
-      starSettings.value = objectType.value === "Galaxy" ? "Slight Star Reduction" : "Standard";
     }
 
     function showUploadProgress(label) {
@@ -2104,11 +2075,6 @@ def _html() -> str:
       }
     });
 
-    objectType.addEventListener("change", syncObjectSettings);
-    starSettings.addEventListener("change", () => {
-      starSettings.dataset.userChanged = "true";
-    });
-
     signIn.addEventListener("click", async () => {
       if (!authClient) return;
       try {
@@ -2321,8 +2287,8 @@ def _html() -> str:
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
       data.append("siril_deconvolution", sirilDeconvolution.checked ? "true" : "false");
-      data.append("star_setting", starSettings.value);
-      data.append("starless_test", starSettings.value === "Standard" ? "false" : "true");
+      data.append("star_setting", "Slight Star Reduction");
+      data.append("starless_test", "true");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -2436,7 +2402,6 @@ def _html() -> str:
       }
     }
 
-    syncObjectSettings();
     void initAuth();
   </script>
 </body>
@@ -2560,7 +2525,7 @@ def _run_job(
     stretch_level: str = "Standard",
     siril_deconvolution: bool = False,
     starless_test: bool = False,
-    star_setting: str = "Standard",
+    star_setting: str = "Slight Star Reduction",
 ) -> None:
     with jobs_lock:
         job = jobs[job_id]
@@ -2603,8 +2568,8 @@ def _run_job(
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
         settings.siril_deconvolution_enabled = bool(siril_deconvolution)
-        settings.star_handling_mode = _normalize_star_setting(star_setting, starless_test)
-        settings.starless_test_enabled = settings.star_handling_mode != "Standard"
+        settings.star_handling_mode = "Slight Star Reduction"
+        settings.starless_test_enabled = True
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
@@ -2946,7 +2911,6 @@ async def create_job(
 
     with jobs_lock:
         jobs[job_id] = WebJob(id=job_id, user_id=user.id, user_email=user.email, credit_consumed=credit_consumed)
-        normalized_star_setting = _normalize_star_setting(star_setting, starless_test)
         if pre_stretched:
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
@@ -2955,14 +2919,9 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
             )
-        if normalized_star_setting == "Slight Star Reduction":
-            jobs[job_id].warnings.append(
-                "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
-            )
-        elif normalized_star_setting == "Starless":
-            jobs[job_id].warnings.append(
-                "Starless is enabled for this run. DeepSky will remove the star layer instead of recombining it."
-            )
+        jobs[job_id].warnings.append(
+            "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
+        )
     executor.submit(
         _run_job,
         job_id,
