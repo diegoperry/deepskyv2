@@ -609,7 +609,7 @@ def _docs_html() -> str:
             <li><span class="label">Object:</span> choose Galaxy, Nebula, or Star Cluster based on the main target.</li>
             <li><span class="label">Input:</span> leave on Auto unless you know your file is already stretched.</li>
             <li><span class="label">Stretch:</span> leave on Standard for the first run.</li>
-            <li><span class="label">Siril deconvolution:</span> use it for galaxies when you want sharper arms and dust lanes.</li>
+            <li><span class="label">Deconvolution:</span> leave it off first, then test it on galaxies if you want sharper arms and dust lanes.</li>
             <li><span class="label">Star Reduction:</span> DeepSky automatically reduces stars so gas, dust, and galaxy structure stand out.</li>
           </ul>
           <div class="callout">If your first result looks wrong, do not keep changing every setting at once. Change one setting, rerun, and compare.</div>
@@ -634,8 +634,8 @@ def _docs_html() -> str:
             <p><span class="label">Aggressive</span> is for very faint targets where the normal result is too dark or does not reveal enough gas or galaxy arms.</p>
           </div>
           <div class="setting">
-            <h3>Siril Deconvolution</h3>
-            <p>This is a galaxy-focused sharpening/detail pass. It can help spiral structure, dust lanes, and galaxy texture. It is not meant to fix every nebula or star cluster.</p>
+            <h3>Deconvolution</h3>
+            <p>This optional galaxy-focused detail pass can sharpen spiral structure, dust lanes, and galaxy texture. It can also exaggerate grain on noisy data, so compare an unchecked run against a checked run before deciding.</p>
           </div>
           <div class="setting">
             <h3>Star Reduction</h3>
@@ -666,7 +666,7 @@ def _docs_html() -> str:
               <summary>Galaxy looks soft or like a blob</summary>
               <ul>
                 <li>Use Object: Galaxy.</li>
-                <li>Turn on Siril deconvolution.</li>
+                <li>Try deconvolution after you have a clean baseline, but turn it back off if the background gets grainy.</li>
                 <li>Try Standard first, then Subtle if the core gets too bright.</li>
               </ul>
             </details>
@@ -1313,6 +1313,27 @@ def _html() -> str:
     .toggle.disabled input {
       cursor: not-allowed;
     }
+    .detail-option {
+      width: min(720px, 100%);
+      margin: 16px auto 0;
+      border: 1px solid rgba(80, 125, 190, .42);
+      border-radius: 12px;
+      background: rgba(11, 22, 40, .72);
+      padding: 16px 18px;
+      text-align: left;
+    }
+    .detail-option h3 {
+      margin: 0 0 7px;
+      color: #f7fbff;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+    .detail-option p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
     .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
     .warning {
       display: none;
@@ -1517,11 +1538,15 @@ def _html() -> str:
             <option value="Aggressive">Aggressive</option>
           </select>
         </label>
-        <label class="toggle" title="Experimental: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
-          <input id="sirilDeconvolution" type="checkbox" checked />
-          Siril deconvolution
-        </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
+      </div>
+      <div class="detail-option">
+        <h3>Want to add more detail? Test out deconvolution</h3>
+        <p>Deconvolution can sharpen galaxy arms and dust lanes when the data is clean. On noisy or faint images it can also make the background look grainy, so compare both versions.</p>
+        <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
+          <input id="sirilDeconvolution" type="checkbox" />
+          Use deconvolution
+        </label>
       </div>
       <div id="warning" class="warning"></div>
       <div id="progressPanel" class="progress-panel" hidden>
@@ -2860,7 +2885,7 @@ async def create_job(
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
-    siril_deconvolution: bool = Form(True),
+    siril_deconvolution: bool = Form(False),
     starless_test: bool = Form(True),
     star_setting: str = Form(""),
     user: AuthUser = Depends(require_user),

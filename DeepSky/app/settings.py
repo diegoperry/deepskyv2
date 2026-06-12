@@ -68,7 +68,7 @@ def default_settings() -> AppSettings:
         siril_pixel_size="",
         siril_apply_scnr=False,
         siril_color_saturation=15,
-        siril_deconvolution_enabled=True,
+        siril_deconvolution_enabled=False,
         starless_test_enabled=True,
         star_handling_mode="Slight Star Reduction",
         siril_debug_mode=False,
