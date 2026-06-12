@@ -6,6 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
+import cv2
 import numpy as np
 
 from .cli_tools import find_executable, run_deepsnr, run_starnet
@@ -157,6 +158,112 @@ def _looks_like_green_duoband_raw(image: np.ndarray, analysis: object | None) ->
     green_median = medians[1] > max(medians[0], medians[2]) * 1.10 + 0.004
     green_high = highs[1] > max(highs[0], highs[2]) * 1.02 + 0.004
     return bool(compressed_raw and green_median and green_high)
+
+
+def _to_float01(image: np.ndarray) -> np.ndarray:
+    arr = np.asarray(image)
+    rgb = arr[..., :3].astype(np.float32) if arr.ndim == 3 else arr.astype(np.float32)
+    if np.issubdtype(arr.dtype, np.integer):
+        max_value = float(np.iinfo(arr.dtype).max)
+        if max_value > 0:
+            rgb /= max_value
+    elif rgb.size and float(np.nanmax(rgb)) > 1.0:
+        rgb /= 65535.0
+    return np.nan_to_num(np.clip(rgb, 0.0, 1.0), nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _rgb_luminance(rgb: np.ndarray) -> np.ndarray:
+    return rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
+
+
+def _apply_duoband_nebula_finish(
+    image: np.ndarray,
+    write_log: LogCallback,
+    palette: str = "warm",
+) -> np.ndarray:
+    rgb = _to_float01(image)
+    lum = _rgb_luminance(rgb).astype(np.float32)
+
+    black = float(np.percentile(lum, 10.0))
+    white = float(np.percentile(lum, 99.75))
+    base_lum = np.clip((lum - black) / max(1e-6, white - black), 0.0, 1.0)
+    base_lum = np.clip(base_lum ** 0.78, 0.0, 1.0)
+
+    large = cv2.GaussianBlur(base_lum, (0, 0), 16.0)
+    small = cv2.GaussianBlur(base_lum, (0, 0), 1.2)
+    detail = np.clip(base_lum + (small - large) * 0.42, 0.0, 1.0)
+
+    green_signal = np.clip(rgb[..., 1] - np.maximum(rgb[..., 0], rgb[..., 2]) * 0.72, 0.0, 1.0)
+    sky_anchor = float(np.percentile(base_lum, 54.0))
+    signal = np.clip(
+        (base_lum - sky_anchor)
+        / max(1e-6, np.percentile(base_lum, 99.35) - sky_anchor),
+        0.0,
+        1.0,
+    )
+    chroma_signal = np.clip(green_signal / max(1e-6, float(np.percentile(green_signal, 99.6))), 0.0, 1.0)
+    signal = np.clip(signal * 0.78 + chroma_signal * 0.26, 0.0, 1.0)
+    signal = cv2.GaussianBlur((signal ** 0.92).astype(np.float32), (0, 0), 1.35)
+
+    star_core = np.clip(
+        (base_lum - np.percentile(base_lum, 98.2))
+        / max(1e-6, np.percentile(base_lum, 99.96) - np.percentile(base_lum, 98.2)),
+        0.0,
+        1.0,
+    )
+    star_core = cv2.GaussianBlur(star_core.astype(np.float32), (0, 0), 0.7)
+    broad_haze = cv2.GaussianBlur(signal.astype(np.float32), (0, 0), 18.0)
+    haze_reject = np.clip((broad_haze - 0.16) / 0.40, 0.0, 1.0)
+    nebula = np.clip(signal * (1.0 - star_core * 0.82) * (0.66 + 0.34 * haze_reject), 0.0, 1.0)
+    nebula = np.clip((nebula - 0.055) / 0.945, 0.0, 1.0)
+
+    palettes = {
+        "gold": (
+            np.array([1.68, 0.82, 0.38], dtype=np.float32),
+            np.array([1.18, 0.72, 0.48], dtype=np.float32),
+            0.16,
+        ),
+        "warm": (
+            np.array([1.46, 0.74, 0.42], dtype=np.float32),
+            np.array([1.05, 0.70, 0.54], dtype=np.float32),
+            0.20,
+        ),
+        "deep": (
+            np.array([1.58, 0.66, 0.32], dtype=np.float32),
+            np.array([0.70, 0.88, 1.12], dtype=np.float32),
+            0.23,
+        ),
+    }
+    warm_color, cool_color, sky_floor = palettes.get(palette, palettes["warm"])
+
+    sky_mask = np.clip(1.0 - nebula * 1.35 - star_core * 0.75, 0.0, 1.0)
+    sky_mask = cv2.GaussianBlur(sky_mask.astype(np.float32), (0, 0), 2.0)
+    neutral_sky = np.clip(detail[..., None] * np.array([0.50, 0.51, 0.50], dtype=np.float32), 0.0, 1.0)
+    warm_nebula = np.clip(detail[..., None] * warm_color.reshape(1, 1, 3), 0.0, 1.0)
+    cool_shadow = np.clip(detail[..., None] * cool_color.reshape(1, 1, 3), 0.0, 1.0)
+    shadow = np.clip((large - detail) / max(1e-6, float(np.percentile(large, 98.0))), 0.0, 1.0)
+
+    finished = np.clip(neutral_sky - sky_floor * sky_mask[..., None], 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - shadow[..., None] * 0.34) + cool_shadow * (shadow[..., None] * nebula[..., None] * 0.20), 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - nebula[..., None] * 0.90) + warm_nebula * (nebula[..., None] * 0.90), 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - sky_mask[..., None] * 0.36), 0.0, 1.0)
+
+    star_neutral = np.clip(base_lum[..., None] * np.array([1.10, 1.02, 0.94], dtype=np.float32), 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - star_core[..., None] * 0.78) + star_neutral * (star_core[..., None] * 0.78), 0.0, 1.0)
+
+    final_lum = _rgb_luminance(finished)
+    saturation = 0.78 + nebula[..., None] * (0.92 if palette != "gold" else 1.05) + star_core[..., None] * 0.15
+    finished = np.clip(final_lum[..., None] + (finished - final_lum[..., None]) * saturation, 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - sky_mask[..., None] * 0.18) + final_lum[..., None] * (sky_mask[..., None] * 0.18), 0.0, 1.0)
+
+    write_log(
+        "Applied duo-band nebula color finish: "
+        f"palette={palette}; black={black:.5f}; white={white:.5f}; "
+        f"signal_mean={float(np.mean(signal)):.5f}; nebula_mean={float(np.mean(nebula)):.5f}; "
+        f"sky_mean={float(np.mean(sky_mask)):.5f}; "
+        f"star_mean={float(np.mean(star_core)):.5f}"
+    )
+    return np.clip(finished * 65535.0, 0.0, 65535.0).round().astype(np.uint16)
 
 
 def _working_background_spread(image: np.ndarray) -> float:
@@ -670,8 +777,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         save_tiff(stretched, stretched_image, write_log)
         _log_existing_image(stretched, write_log, "stretched.tif")
         if green_duoband_raw:
-            write_log("Green-dominant duo-band raw finish: preserving gentle stretch without nebula color lift.")
-            shutil.copy2(stretched, calibrated)
+            palette = str(getattr(settings, "duoband_palette", "warm") or "warm").strip().lower()
+            write_log(f"Green-dominant duo-band raw finish: applying {palette} color lift.")
+            calibrated_image = _apply_duoband_nebula_finish(stretched_image, write_log, palette)
+            save_tiff(calibrated, calibrated_image, write_log)
         elif object_type in {"galaxy", "star cluster"}:
             write_log(f"Applying protected raw broadband finish for: {object_type}.")
             calibrated_image = apply_prestretched_broadband_look(stretched_image, write_log)
