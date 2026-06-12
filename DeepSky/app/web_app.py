@@ -42,7 +42,7 @@ MAX_WORKERS = 1
 MAX_UPLOAD_BYTES = 300 * 1024 * 1024
 MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
 CHUNK_UPLOAD_BYTES = 8 * 1024 * 1024
-FREE_IMAGE_CREDITS = 3
+FREE_IMAGE_CREDITS = 5
 PAID_PLAN_LABEL = "$15/month"
 PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 
@@ -1040,7 +1040,7 @@ def _landing_html() -> str:
           <details><summary>Does it work with SeeStar files?</summary><p>Yes. DeepSky is being tuned around real SeeStar-style FITS and TIFF uploads, including both linear and already-stretched files.</p></details>
           <details><summary>Is this catalog photometric color calibration?</summary><p>When Siril PCC is available and the file has enough metadata, catalog-based star color calibration can be used. Otherwise DeepSky uses pixel-based background and star balancing.</p></details>
           <details><summary>Will it replace manual processing?</summary><p>No. It is meant to produce a strong first processed result quickly, especially for users who do not want to spend hours tuning multiple astronomy tools.</p></details>
-          <details><summary>Do I need an account?</summary><p>Yes. Create an account or sign in to process images. Your first 3 images are free.</p></details>
+          <details><summary>Do I need an account?</summary><p>Yes. Create an account or sign in to process images. Your first 5 images are free.</p></details>
         </div>
       </div>
     </section>
