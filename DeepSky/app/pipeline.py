@@ -702,6 +702,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     skip_siril_galaxy_star_reduction = (
         preserve_siril_galaxy_finish
         and object_type == "galaxy"
+        and not starless_only_requested
         and _is_compact_siril_galaxy(analysis)
     )
 
