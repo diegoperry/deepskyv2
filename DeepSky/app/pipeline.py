@@ -315,10 +315,29 @@ def _apply_duoband_nebula_finish(
     warm_nebula = np.clip(detail[..., None] * warm_color.reshape(1, 1, 3), 0.0, 1.0)
     cool_shadow = np.clip(detail[..., None] * cool_color.reshape(1, 1, 3), 0.0, 1.0)
     shadow = np.clip((large - detail) / max(1e-6, float(np.percentile(large, 98.0))), 0.0, 1.0)
+    warm_signal = np.clip(rgb[..., 0] - np.maximum(rgb[..., 1], rgb[..., 2]) * 0.76, 0.0, 1.0)
+    cool_signal = np.clip(np.maximum(rgb[..., 1], rgb[..., 2]) - rgb[..., 0] * 0.84, 0.0, 1.0)
+    warm_norm = np.clip(warm_signal / max(1e-6, float(np.percentile(warm_signal, 99.5))), 0.0, 1.0)
+    cool_norm = np.clip(cool_signal / max(1e-6, float(np.percentile(cool_signal, 99.5))), 0.0, 1.0)
+    broad_halo = np.clip(cv2.GaussianBlur(nebula.astype(np.float32), (0, 0), 9.0) * (1.0 - signal * 0.52), 0.0, 1.0)
+    pink_halo = np.clip(detail[..., None] * np.array([1.10, 0.72, 1.08], dtype=np.float32).reshape(1, 1, 3), 0.0, 1.0)
+    warm_gold = np.clip(detail[..., None] * np.array([1.24, 0.86, 0.46], dtype=np.float32).reshape(1, 1, 3), 0.0, 1.0)
+    cool_cyan = np.clip(detail[..., None] * np.array([0.58, 0.98, 1.28], dtype=np.float32).reshape(1, 1, 3), 0.0, 1.0)
+    bright_core = np.clip(
+        (detail - np.percentile(detail, 85.0))
+        / max(1e-6, np.percentile(detail, 99.7) - np.percentile(detail, 85.0)),
+        0.0,
+        1.0,
+    ) * nebula
+    core_white = np.clip(detail[..., None] * np.array([1.06, 1.00, 0.94], dtype=np.float32).reshape(1, 1, 3), 0.0, 1.0)
 
     finished = np.clip(neutral_sky - sky_floor * sky_mask[..., None], 0.0, 1.0)
     finished = np.clip(finished * (1.0 - shadow[..., None] * 0.34) + cool_shadow * (shadow[..., None] * nebula[..., None] * 0.20), 0.0, 1.0)
-    finished = np.clip(finished * (1.0 - nebula[..., None] * 0.90) + warm_nebula * (nebula[..., None] * 0.90), 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - broad_halo[..., None] * 0.16) + pink_halo * (broad_halo[..., None] * 0.16), 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - nebula[..., None] * 0.86) + warm_nebula * (nebula[..., None] * 0.86), 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - warm_norm[..., None] * nebula[..., None] * 0.20) + warm_gold * (warm_norm[..., None] * nebula[..., None] * 0.20), 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - cool_norm[..., None] * nebula[..., None] * 0.28) + cool_cyan * (cool_norm[..., None] * nebula[..., None] * 0.28), 0.0, 1.0)
+    finished = np.clip(finished * (1.0 - bright_core[..., None] * 0.12) + core_white * (bright_core[..., None] * 0.12), 0.0, 1.0)
     finished = np.clip(finished * (1.0 - sky_mask[..., None] * 0.36), 0.0, 1.0)
 
     star_neutral = np.clip(base_lum[..., None] * np.array([1.10, 1.02, 0.94], dtype=np.float32), 0.0, 1.0)
@@ -333,6 +352,7 @@ def _apply_duoband_nebula_finish(
         "Applied duo-band nebula color finish: "
         f"palette={palette}; black={black:.5f}; white={white:.5f}; "
         f"signal_mean={float(np.mean(signal)):.5f}; nebula_mean={float(np.mean(nebula)):.5f}; "
+        f"warm_mean={float(np.mean(warm_norm * nebula)):.5f}; cool_mean={float(np.mean(cool_norm * nebula)):.5f}; "
         f"sky_mean={float(np.mean(sky_mask)):.5f}; "
         f"star_mean={float(np.mean(star_core)):.5f}"
     )

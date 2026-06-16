@@ -1082,6 +1082,7 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
 
     lum = _luminance(rgb)
     red_excess = np.clip(rgb[..., 0] - 0.52 * rgb[..., 1] - 0.48 * rgb[..., 2], 0.0, 1.0)
+    blue_excess = np.clip(np.maximum(rgb[..., 1], rgb[..., 2]) - rgb[..., 0] * 0.82, 0.0, 1.0)
     red_low = float(np.percentile(red_excess, 42.0))
     red_high = float(np.percentile(red_excess, 99.5))
     red_mask = np.clip((red_excess - red_low) / max(1e-6, red_high - red_low), 0.0, 1.0) ** 0.7
@@ -1213,12 +1214,26 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
         nebula_body = cv2.GaussianBlur(nebula_body.astype(np.float32), (0, 0), 1.1)
         nebula_body = np.clip(nebula_body, 0.0, 1.0) ** (0.72 if stretch else 0.58)
         nebula_body = np.clip(nebula_body * (1.0 - star_protect * 0.82), 0.0, 1.0)
+        edge_emission = np.clip(diffuse_detail * (1.0 - red_mask * 0.55) * signal, 0.0, 1.0)
+        edge_emission = cv2.GaussianBlur(edge_emission.astype(np.float32), (0, 0), 1.6)
+        cool_emission = cv2.GaussianBlur((np.maximum(blue_excess, edge_emission * 0.92) * signal * (1.0 - star_core)).astype(np.float32), (0, 0), 2.2)
+        cool_emission = np.clip(cool_emission, 0.0, 1.0) ** (0.75 if stretch else 0.62)
+        mixed_emission = np.clip(np.minimum(red_mask, blue_excess) * signal * (1.0 - star_core), 0.0, 1.0)
+        mixed_emission = cv2.GaussianBlur(mixed_emission.astype(np.float32), (0, 0), 1.8)
+        mixed_emission = np.clip(mixed_emission, 0.0, 1.0)
+        pink_halo = np.clip((broad_dust * faint_signal * (1.0 - cool_emission * 0.45)).astype(np.float32), 0.0, 1.0)
         orange_target = lum[..., None] * np.array([1.58, 0.66, 0.28], dtype=np.float32).reshape(1, 1, 3)
-        color_mix = np.clip(nebula_body[..., None] * (0.28 if stretch else 0.74), 0.0, 0.74)
-        rgb = np.clip(rgb * (1.0 - color_mix) + orange_target * color_mix, 0.0, 1.0)
-        rgb[..., 0] = np.clip(rgb[..., 0] + nebula_body * (0.05 if stretch else 0.17), 0.0, 1.0)
-        rgb[..., 1] = np.clip(rgb[..., 1] + nebula_body * (0.012 if stretch else 0.026), 0.0, 1.0)
-        rgb[..., 2] = np.clip(rgb[..., 2] - nebula_body * (0.010 if stretch else 0.050), 0.0, 1.0)
+        cyan_target = lum[..., None] * np.array([0.62, 0.96, 1.32], dtype=np.float32).reshape(1, 1, 3)
+        pink_target = lum[..., None] * np.array([1.12, 0.76, 1.08], dtype=np.float32).reshape(1, 1, 3)
+        warm_mix = np.clip((nebula_body * (1.0 - cool_emission * 0.58))[..., None] * (0.22 if stretch else 0.52), 0.0, 0.60)
+        cool_mix = np.clip((cool_emission * np.maximum(nebula_body, mixed_emission * 1.2))[..., None] * (0.24 if stretch else 0.52), 0.0, 0.54)
+        pink_mix = np.clip((pink_halo * (1.0 - red_mask * 0.28))[..., None] * (0.10 if stretch else 0.18), 0.0, 0.18)
+        rgb = np.clip(rgb * (1.0 - pink_mix) + pink_target * pink_mix, 0.0, 1.0)
+        rgb = np.clip(rgb * (1.0 - warm_mix) + orange_target * warm_mix, 0.0, 1.0)
+        rgb = np.clip(rgb * (1.0 - cool_mix) + cyan_target * cool_mix, 0.0, 1.0)
+        rgb[..., 0] = np.clip(rgb[..., 0] + nebula_body * (0.03 if stretch else 0.10), 0.0, 1.0)
+        rgb[..., 1] = np.clip(rgb[..., 1] + mixed_emission * (0.012 if stretch else 0.022), 0.0, 1.0)
+        rgb[..., 2] = np.clip(rgb[..., 2] + cool_emission * (0.03 if stretch else 0.08) - nebula_body * (0.004 if stretch else 0.018), 0.0, 1.0)
 
         lum = _luminance(rgb)
         bright_emission = np.clip(
@@ -1592,16 +1607,50 @@ def apply_pixinsight_style_nebula_finish(image: np.ndarray, log: LogCallback | N
     output[..., 1] = np.clip(output[..., 1] - cyan_sheet * sky_mask * 0.12, 0.0, 1.0)
     output[..., 2] = np.clip(output[..., 2] - cyan_sheet * sky_mask * 0.16, 0.0, 1.0)
 
+    ha_signal = np.clip((output[..., 0] - np.maximum(output[..., 1], output[..., 2]) * 0.72) / 0.24, 0.0, 1.0)
+    oiii_signal = np.clip((np.maximum(output[..., 1], output[..., 2]) - output[..., 0] * 0.76) / 0.24, 0.0, 1.0)
     warm_signal = np.clip((output[..., 0] - output[..., 2] * 0.78) * nebula_mask, 0.0, 1.0)
     highlight = np.clip(
         (out_lum - np.percentile(out_lum, 82.0)) / max(1e-6, np.percentile(out_lum, 99.55) - np.percentile(out_lum, 82.0)),
         0.0,
         1.0,
     ) * nebula_mask
-    cream = out_lum[..., None] * np.array([1.12, 0.94, 0.74], dtype=np.float32).reshape(1, 1, 3)
-    output = np.clip(output * (1.0 - highlight[..., None] * 0.18) + cream * (highlight[..., None] * 0.18), 0.0, 1.0)
-    output[..., 0] = np.clip(output[..., 0] + warm_signal * 0.045, 0.0, 1.0)
-    output[..., 1] = np.clip(output[..., 1] + warm_signal * 0.012, 0.0, 1.0)
+    faint_halo = np.clip((broad_signal ** 0.90) * (1.0 - detail_signal * 0.55) * (1.0 - star_protect * 0.85), 0.0, 1.0)
+    filament = np.clip((detail_signal ** 0.92) * nebula_mask * (1.0 - star_protect * 0.90), 0.0, 1.0)
+    edge_field = cv2.GaussianBlur(np.abs(cv2.Laplacian(broad.astype(np.float32), cv2.CV_32F, ksize=3)), (0, 0), 1.4)
+    edge_field = np.clip(
+        (edge_field - np.percentile(edge_field, 72.0))
+        / max(1e-6, np.percentile(edge_field, 99.5) - np.percentile(edge_field, 72.0)),
+        0.0,
+        1.0,
+    ) * nebula_mask
+    mixed_emission = np.clip(np.minimum(ha_signal, oiii_signal) * (0.55 + detail_signal * 0.65), 0.0, 1.0)
+    cool_candidate = np.clip(np.maximum(oiii_signal, edge_field * (1.0 - ha_signal * 0.58)) * (0.55 + filament * 0.60), 0.0, 1.0)
+
+    halo_lum = np.clip(out_lum * (0.72 + broad_signal * 0.38), 0.0, 1.0)
+    filament_lum = np.clip(out_lum * (0.86 + detail_signal * 0.42), 0.0, 1.0)
+    core_lum = np.clip(out_lum * (0.94 + highlight * 0.26), 0.0, 1.0)
+
+    pink_target = halo_lum[..., None] * np.array([1.16, 0.70, 1.12], dtype=np.float32).reshape(1, 1, 3)
+    gold_target = filament_lum[..., None] * np.array([1.20, 0.84, 0.46], dtype=np.float32).reshape(1, 1, 3)
+    cyan_target = filament_lum[..., None] * np.array([0.50, 1.00, 1.36], dtype=np.float32).reshape(1, 1, 3)
+    blue_core_target = core_lum[..., None] * np.array([0.76, 1.02, 1.38], dtype=np.float32).reshape(1, 1, 3)
+    cream = core_lum[..., None] * np.array([1.08, 0.97, 0.88], dtype=np.float32).reshape(1, 1, 3)
+
+    pink_mix = np.clip(faint_halo[..., None] * (0.12 + (1.0 - cool_candidate[..., None]) * 0.12), 0.0, 0.22)
+    gold_mix = np.clip((ha_signal * filament * (1.0 - oiii_signal * 0.50))[..., None] * 0.24, 0.0, 0.26)
+    cyan_mix = np.clip((cool_candidate * filament * (0.70 + mixed_emission * 0.30))[..., None] * 0.40, 0.0, 0.44)
+    core_blue_mix = np.clip((highlight * (cool_candidate * 0.82 + mixed_emission * 0.50))[..., None] * 0.26, 0.0, 0.30)
+    cream_mix = np.clip((highlight * (0.10 + ha_signal * 0.08 + oiii_signal * 0.05))[..., None], 0.0, 0.20)
+
+    output = np.clip(output * (1.0 - pink_mix) + pink_target * pink_mix, 0.0, 1.0)
+    output = np.clip(output * (1.0 - gold_mix) + gold_target * gold_mix, 0.0, 1.0)
+    output = np.clip(output * (1.0 - cyan_mix) + cyan_target * cyan_mix, 0.0, 1.0)
+    output = np.clip(output * (1.0 - core_blue_mix) + blue_core_target * core_blue_mix, 0.0, 1.0)
+    output = np.clip(output * (1.0 - cream_mix) + cream * cream_mix, 0.0, 1.0)
+
+    output[..., 0] = np.clip(output[..., 0] + warm_signal * 0.018, 0.0, 1.0)
+    output[..., 1] = np.clip(output[..., 1] + warm_signal * 0.004, 0.0, 1.0)
 
     bg_after_pixels = output[sky_mask > 0.62]
     if bg_after_pixels.size < 512:
@@ -1612,6 +1661,8 @@ def apply_pixinsight_style_nebula_finish(image: np.ndarray, log: LogCallback | N
             "Applied PixInsight-style nebula finish: "
             f"bg_before_RGB={bg_before[0]:.5f},{bg_before[1]:.5f},{bg_before[2]:.5f}; "
             f"bg_after_RGB={bg_after[0]:.5f},{bg_after[1]:.5f},{bg_after[2]:.5f}; "
+            f"ha_mean={float(np.mean(ha_signal * nebula_mask)):.5f}; "
+            f"oiii_mean={float(np.mean(oiii_signal * nebula_mask)):.5f}; "
             f"sky_mask_mean={float(np.mean(sky_mask)):.5f}; "
             f"nebula_mask_mean={float(np.mean(nebula_mask)):.5f}; "
             f"star_mask_mean={float(np.mean(star_mask)):.5f}"
