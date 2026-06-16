@@ -14,6 +14,7 @@ from .goal_look import (
     apply_broadband_look,
     apply_cosmos_style_nebula_finish,
     apply_goal_look,
+    apply_pixinsight_style_nebula_finish,
     apply_prestretched_broadband_look,
     apply_prestretched_nebula_rgb_reveal,
     apply_small_galaxy_darkroom_look,
@@ -170,6 +171,78 @@ def _to_float01(image: np.ndarray) -> np.ndarray:
     elif rgb.size and float(np.nanmax(rgb)) > 1.0:
         rgb /= 65535.0
     return np.nan_to_num(np.clip(rgb, 0.0, 1.0), nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim < 2:
+        return arr
+    height, width = arr.shape[:2]
+    base_y = int(round(height * fraction))
+    base_x = int(round(width * fraction))
+    if base_y < 1 or base_x < 1:
+        return arr
+
+    rgb = _to_float01(arr)
+    lum = _rgb_luminance(rgb)
+    chroma = np.max(rgb, axis=2) - np.min(rgb, axis=2)
+
+    inset_y = max(base_y, int(round(height * 0.12)))
+    inset_x = max(base_x, int(round(width * 0.12)))
+    interior = lum[inset_y : height - inset_y, inset_x : width - inset_x]
+    interior_chroma = chroma[inset_y : height - inset_y, inset_x : width - inset_x]
+    if interior.size < 1024:
+        return arr
+
+    interior_p95 = float(np.percentile(interior, 95.0))
+    interior_std = float(np.std(interior))
+    interior_chroma_p95 = float(np.percentile(interior_chroma, 95.0))
+    max_y = int(round(height * 0.14))
+    max_x = int(round(width * 0.14))
+    step_y = max(4, int(round(height * 0.01)))
+    step_x = max(4, int(round(width * 0.01)))
+    stripe_y = max(6, int(round(height * 0.018)))
+    stripe_x = max(6, int(round(width * 0.018)))
+
+    top = bottom = base_y
+    left = right = base_x
+
+    def bad_luminance(stripe: np.ndarray, stripe_chroma: np.ndarray, vertical: bool) -> bool:
+        if stripe.size < 16:
+            return False
+        axis_len = stripe.shape[0] if vertical else stripe.shape[1]
+        tile_count = 8
+        worst_p95 = 0.0
+        worst_std = 0.0
+        worst_chroma = 0.0
+        for index in range(tile_count):
+            start = index * axis_len // tile_count
+            stop = (index + 1) * axis_len // tile_count
+            tile = stripe[start:stop, :] if vertical else stripe[:, start:stop]
+            tile_chroma = stripe_chroma[start:stop, :] if vertical else stripe_chroma[:, start:stop]
+            if tile.size < 16:
+                continue
+            worst_p95 = max(worst_p95, float(np.percentile(tile, 95.0)))
+            worst_std = max(worst_std, float(np.std(tile)))
+            worst_chroma = max(worst_chroma, float(np.percentile(tile_chroma, 95.0)))
+        return bool(
+            worst_p95 > interior_p95 * 1.25 + 0.018
+            or worst_std > interior_std * 1.55 + 0.004
+            or worst_chroma > interior_chroma_p95 * 1.35 + 0.010
+        )
+
+    while top < max_y and bad_luminance(lum[top : top + stripe_y, :], chroma[top : top + stripe_y, :], vertical=False):
+        top += step_y
+    while bottom < max_y and bad_luminance(lum[height - bottom - stripe_y : height - bottom, :], chroma[height - bottom - stripe_y : height - bottom, :], vertical=False):
+        bottom += step_y
+    while left < max_x and bad_luminance(lum[:, left : left + stripe_x], chroma[:, left : left + stripe_x], vertical=True):
+        left += step_x
+    while right < max_x and bad_luminance(lum[:, width - right - stripe_x : width - right], chroma[:, width - right - stripe_x : width - right], vertical=True):
+        right += step_x
+
+    if height - top - bottom < 96 or width - left - right < 96:
+        return arr
+    return arr[top : height - bottom, left : width - right].copy()
 
 
 def _rgb_luminance(rgb: np.ndarray) -> np.ndarray:
@@ -860,18 +933,18 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 write_log(f"Slight Star Reduction enabled; recombining starless image with brightest {keep_fraction:.0%} of stars.")
                 threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=keep_fraction)
                 write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
-            if object_type == "nebula" and not green_duoband_raw and not gentle_nebula_star_reduction:
-                write_log("Applying Cosmos-style dark nebula finish.")
-                cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
-                save_tiff(final, cosmos_nebula, write_log)
+            if object_type == "nebula" and not gentle_nebula_star_reduction:
+                write_log("Applying PixInsight-style nebula finish.")
+                pixinsight_nebula = apply_pixinsight_style_nebula_finish(load_image(final, write_log), write_log)
+                save_tiff(final, pixinsight_nebula, write_log)
         else:
             if object_type == "nebula" and not green_duoband_raw:
                 write_log("Reducing faint nebula star/noise layer before recombination.")
                 low, high = add_weighted_star_layer(starless, stars, final)
                 write_log(f"Weighted nebula star layer: low={low:.1f}, high={high:.1f}.")
-                write_log("Applying Cosmos-style dark nebula finish.")
-                cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
-                save_tiff(final, cosmos_nebula, write_log)
+                write_log("Applying PixInsight-style nebula finish.")
+                pixinsight_nebula = apply_pixinsight_style_nebula_finish(load_image(final, write_log), write_log)
+                save_tiff(final, pixinsight_nebula, write_log)
             else:
                 add_images(starless, stars, final)
         _log_existing_image(final, write_log, "final.tif")
@@ -906,13 +979,19 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             keep_fraction = 0.10 if object_type == "nebula" or preserve_siril_galaxy_finish else 0.60
             threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
             write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
-        if object_type == "nebula" and not green_duoband_raw:
-            write_log("Applying Cosmos-style dark nebula finish.")
-            cosmos_nebula = apply_cosmos_style_nebula_finish(load_image(final, write_log), write_log)
-            save_tiff(final, cosmos_nebula, write_log)
+            if object_type == "nebula":
+                write_log("Applying PixInsight-style nebula finish.")
+                pixinsight_nebula = apply_pixinsight_style_nebula_finish(load_image(final, write_log), write_log)
+                save_tiff(final, pixinsight_nebula, write_log)
         _log_existing_image(final, write_log, "final.tif")
     elif starless_test_requested and skip_siril_galaxy_star_reduction:
         write_log("Star reduction skipped for compact Siril deconvolution galaxy finish to preserve detail.")
+
+    if object_type == "nebula" and final.exists():
+        write_log("Cropping nebula stacking edges before export.")
+        edge_cropped = _crop_edge_artifacts(load_image(final, write_log), fraction=0.025)
+        save_tiff(final, edge_cropped, write_log)
+        _log_existing_image(final, write_log, "edge-cropped final.tif")
 
     save_png(final_png, load_image(final, write_log), write_log)
     after_preview = job_folder / "after_preview.png"

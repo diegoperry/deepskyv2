@@ -1464,3 +1464,156 @@ def apply_cosmos_style_nebula_finish(image: np.ndarray, log: LogCallback | None 
             f"star_mean={float(np.mean(stars)):.5f}"
         )
     return _to_uint16(finished)
+
+
+def _edge_support(shape: tuple[int, int], fraction: float = 0.035) -> np.ndarray:
+    height, width = shape
+    yy, xx = np.mgrid[0:height, 0:width]
+    distance = np.minimum.reduce([xx, yy, width - 1 - xx, height - 1 - yy]).astype(np.float32)
+    feather = max(8.0, min(height, width) * fraction)
+    return np.clip(distance / feather, 0.0, 1.0)
+
+
+def _safe_percentile(values: np.ndarray, percentile: float, fallback: float = 0.0) -> float:
+    if values.size == 0:
+        return fallback
+    return float(np.percentile(values, percentile))
+
+
+def apply_pixinsight_style_nebula_finish(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+
+    rgb = _to_float01(arr)
+    lum = _luminance(rgb).astype(np.float32)
+    support = _edge_support(lum.shape, 0.04)
+    safe = support > 0.98
+    safe_lum = lum[safe] if np.any(safe) else lum.reshape(-1)
+
+    star_seed = np.clip(
+        (lum - _safe_percentile(safe_lum, 97.9))
+        / max(1e-6, _safe_percentile(safe_lum, 99.96) - _safe_percentile(safe_lum, 97.9)),
+        0.0,
+        1.0,
+    ) ** 1.35
+    star_mask = cv2.GaussianBlur(star_seed.astype(np.float32), (0, 0), 1.0)
+    star_protect = cv2.GaussianBlur(star_seed.astype(np.float32), (0, 0), 2.8)
+
+    broad = cv2.GaussianBlur(lum, (0, 0), 18.0)
+    medium = cv2.GaussianBlur(lum, (0, 0), 5.0)
+    fine = np.abs(lum - medium)
+    chroma = np.max(rgb, axis=2) - np.min(rgb, axis=2)
+    red_or_oiii = np.maximum(
+        np.clip(rgb[..., 0] - np.maximum(rgb[..., 1], rgb[..., 2]) * 0.72, 0.0, 1.0),
+        np.clip(np.maximum(rgb[..., 1], rgb[..., 2]) - rgb[..., 0] * 0.72, 0.0, 1.0),
+    )
+
+    broad_signal = np.clip(
+        (broad - _safe_percentile(broad[safe], 58.0, float(np.percentile(broad, 58.0))))
+        / max(1e-6, _safe_percentile(broad[safe], 98.8, float(np.percentile(broad, 98.8))) - _safe_percentile(broad[safe], 58.0, float(np.percentile(broad, 58.0)))),
+        0.0,
+        1.0,
+    )
+    detail_signal = np.clip(
+        (fine - _safe_percentile(fine[safe], 68.0, float(np.percentile(fine, 68.0))))
+        / max(1e-6, _safe_percentile(fine[safe], 99.3, float(np.percentile(fine, 99.3))) - _safe_percentile(fine[safe], 68.0, float(np.percentile(fine, 68.0)))),
+        0.0,
+        1.0,
+    )
+    color_signal = np.clip(
+        (np.maximum(chroma, red_or_oiii) - _safe_percentile(np.maximum(chroma, red_or_oiii)[safe], 62.0, float(np.percentile(np.maximum(chroma, red_or_oiii), 62.0))))
+        / max(
+            1e-6,
+            _safe_percentile(np.maximum(chroma, red_or_oiii)[safe], 99.2, float(np.percentile(np.maximum(chroma, red_or_oiii), 99.2)))
+            - _safe_percentile(np.maximum(chroma, red_or_oiii)[safe], 62.0, float(np.percentile(np.maximum(chroma, red_or_oiii), 62.0))),
+        ),
+        0.0,
+        1.0,
+    )
+    nebula_mask = np.clip(broad_signal * 0.55 + detail_signal * 0.34 + color_signal * 0.45, 0.0, 1.0)
+    nebula_mask = cv2.GaussianBlur((nebula_mask ** 0.78).astype(np.float32), (0, 0), 3.0)
+    nebula_protect = cv2.GaussianBlur(nebula_mask.astype(np.float32), (0, 0), 9.0)
+
+    sky_mask = np.clip(support * (1.0 - nebula_protect * 1.22) * (1.0 - star_protect * 1.10), 0.0, 1.0)
+    sky_pixels = rgb[sky_mask > 0.62]
+    if sky_pixels.size < 512:
+        fallback = (support > 0.95) & (star_protect < 0.12) & (lum < np.percentile(lum, 55.0))
+        sky_pixels = rgb[fallback]
+    if sky_pixels.size < 512:
+        sky_pixels = rgb.reshape(-1, 3)
+
+    bg_before = np.median(sky_pixels, axis=0).astype(np.float32)
+    neutral = float(np.mean(bg_before))
+    gains = np.clip(neutral / np.maximum(bg_before, 1e-5), 0.72, 1.30)
+    shadow_weight = np.clip(
+        (_safe_percentile(lum[support > 0.95], 72.0, float(np.percentile(lum, 72.0))) - lum)
+        / max(1e-6, _safe_percentile(lum[support > 0.95], 72.0, float(np.percentile(lum, 72.0))) - _safe_percentile(lum[support > 0.95], 4.0, float(np.percentile(lum, 4.0)))),
+        0.0,
+        1.0,
+    )
+    neutral_mix = np.clip(sky_mask * shadow_weight, 0.0, 0.92)
+    output = rgb * (1.0 - neutral_mix[..., None]) + np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0) * neutral_mix[..., None]
+
+    bg_fill = output.copy()
+    bg_median = np.median(output[sky_mask > 0.52], axis=0) if np.count_nonzero(sky_mask > 0.52) > 512 else np.median(output.reshape(-1, 3), axis=0)
+    bg_fill[sky_mask <= 0.52] = bg_median
+    bg_field = np.stack(
+        [cv2.GaussianBlur(bg_fill[..., channel].astype(np.float32), (0, 0), 54.0) for channel in range(3)],
+        axis=2,
+    )
+    correction = bg_field - bg_median.reshape(1, 1, 3)
+    output = np.clip(output - correction * sky_mask[..., None] * 0.72, 0.0, 1.0)
+
+    out_lum = _luminance(output).astype(np.float32)
+    sky_values = out_lum[sky_mask > 0.62]
+    sky_floor = _safe_percentile(sky_values, 42.0, float(np.percentile(out_lum, 18.0)))
+    dark_target = np.clip((out_lum - sky_floor * 0.86) / max(1e-6, 1.0 - sky_floor * 0.86), 0.0, 1.0)
+    dark_target *= 0.52
+    darkened = np.clip(output * (dark_target / np.maximum(out_lum, 1e-5))[..., None], 0.0, 1.0)
+    dark_mix = np.clip(sky_mask[..., None] * (0.64 + 0.18 * (1.0 - nebula_protect[..., None])), 0.0, 0.88)
+    output = np.clip(output * (1.0 - dark_mix) + darkened * dark_mix, 0.0, 1.0)
+
+    out_lum = _luminance(output).astype(np.float32)
+    small = np.stack([cv2.GaussianBlur(output[..., c].astype(np.float32), (0, 0), 0.75) for c in range(3)], axis=2)
+    large = np.stack([cv2.GaussianBlur(output[..., c].astype(np.float32), (0, 0), 8.0) for c in range(3)], axis=2)
+    detail = small - large
+    detail_mask = np.clip(nebula_mask * (1.0 - star_protect * 0.88), 0.0, 1.0)
+    output = np.clip(output + detail * detail_mask[..., None] * 0.26, 0.0, 1.0)
+
+    out_lum = _luminance(output).astype(np.float32)
+    saturation_mask = np.clip(nebula_mask[..., None] * 0.34 + star_mask[..., None] * 0.10 - sky_mask[..., None] * 0.28, -0.30, 0.42)
+    output = np.clip(out_lum[..., None] + (output - out_lum[..., None]) * (1.0 + saturation_mask), 0.0, 1.0)
+
+    out_lum = _luminance(output).astype(np.float32)
+    red_sheet = np.clip(output[..., 0] - np.maximum(output[..., 1], output[..., 2]) * 1.18, 0.0, 1.0)
+    cyan_sheet = np.clip(np.maximum(output[..., 1], output[..., 2]) - output[..., 0] * 1.28, 0.0, 1.0)
+    output[..., 0] = np.clip(output[..., 0] - red_sheet * sky_mask * 0.42, 0.0, 1.0)
+    output[..., 1] = np.clip(output[..., 1] - cyan_sheet * sky_mask * 0.12, 0.0, 1.0)
+    output[..., 2] = np.clip(output[..., 2] - cyan_sheet * sky_mask * 0.16, 0.0, 1.0)
+
+    warm_signal = np.clip((output[..., 0] - output[..., 2] * 0.78) * nebula_mask, 0.0, 1.0)
+    highlight = np.clip(
+        (out_lum - np.percentile(out_lum, 82.0)) / max(1e-6, np.percentile(out_lum, 99.55) - np.percentile(out_lum, 82.0)),
+        0.0,
+        1.0,
+    ) * nebula_mask
+    cream = out_lum[..., None] * np.array([1.12, 0.94, 0.74], dtype=np.float32).reshape(1, 1, 3)
+    output = np.clip(output * (1.0 - highlight[..., None] * 0.18) + cream * (highlight[..., None] * 0.18), 0.0, 1.0)
+    output[..., 0] = np.clip(output[..., 0] + warm_signal * 0.045, 0.0, 1.0)
+    output[..., 1] = np.clip(output[..., 1] + warm_signal * 0.012, 0.0, 1.0)
+
+    bg_after_pixels = output[sky_mask > 0.62]
+    if bg_after_pixels.size < 512:
+        bg_after_pixels = output.reshape(-1, 3)
+    bg_after = np.median(bg_after_pixels, axis=0)
+    if log:
+        log(
+            "Applied PixInsight-style nebula finish: "
+            f"bg_before_RGB={bg_before[0]:.5f},{bg_before[1]:.5f},{bg_before[2]:.5f}; "
+            f"bg_after_RGB={bg_after[0]:.5f},{bg_after[1]:.5f},{bg_after[2]:.5f}; "
+            f"sky_mask_mean={float(np.mean(sky_mask)):.5f}; "
+            f"nebula_mask_mean={float(np.mean(nebula_mask)):.5f}; "
+            f"star_mask_mean={float(np.mean(star_mask)):.5f}"
+        )
+    return _to_uint16(output)
