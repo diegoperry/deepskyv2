@@ -194,6 +194,8 @@ def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarra
     if interior.size < 1024:
         return arr
 
+    interior_p10 = float(np.percentile(interior, 10.0))
+    interior_median = float(np.median(interior))
     interior_p95 = float(np.percentile(interior, 95.0))
     interior_std = float(np.std(interior))
     interior_chroma_p95 = float(np.percentile(interior_chroma, 95.0))
@@ -212,7 +214,8 @@ def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarra
             return False
         axis_len = stripe.shape[0] if vertical else stripe.shape[1]
         tile_count = 8
-        worst_p95 = 0.0
+        darkest_p10 = 1.0
+        darkest_median = 1.0
         worst_std = 0.0
         worst_chroma = 0.0
         for index in range(tile_count):
@@ -222,13 +225,21 @@ def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarra
             tile_chroma = stripe_chroma[start:stop, :] if vertical else stripe_chroma[:, start:stop]
             if tile.size < 16:
                 continue
-            worst_p95 = max(worst_p95, float(np.percentile(tile, 95.0)))
+            darkest_p10 = min(darkest_p10, float(np.percentile(tile, 10.0)))
+            darkest_median = min(darkest_median, float(np.median(tile)))
             worst_std = max(worst_std, float(np.std(tile)))
             worst_chroma = max(worst_chroma, float(np.percentile(tile_chroma, 95.0)))
+        dark_and_noisy = (
+            (darkest_p10 < interior_p10 * 0.72 - 0.004 or darkest_median < interior_median * 0.74 - 0.006)
+            and (worst_std > interior_std * 1.45 + 0.003 or worst_chroma > interior_chroma_p95 * 1.28 + 0.008)
+        )
+        extreme_noise = (
+            worst_std > interior_std * 2.05 + 0.006
+            and worst_chroma > interior_chroma_p95 * 1.55 + 0.010
+            and darkest_median < interior_p95 * 0.92
+        )
         return bool(
-            worst_p95 > interior_p95 * 1.25 + 0.018
-            or worst_std > interior_std * 1.55 + 0.004
-            or worst_chroma > interior_chroma_p95 * 1.35 + 0.010
+            dark_and_noisy or extreme_noise
         )
 
     while top < max_y and bad_luminance(lum[top : top + stripe_y, :], chroma[top : top + stripe_y, :], vertical=False):
@@ -240,6 +251,19 @@ def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarra
     while right < max_x and bad_luminance(lum[:, width - right - stripe_x : width - right], chroma[:, width - right - stripe_x : width - right], vertical=True):
         right += step_x
 
+    max_side_crop_y = int(round(height * 0.05))
+    max_side_crop_x = int(round(width * 0.05))
+    max_total_crop_y = int(round(height * 0.08))
+    max_total_crop_x = int(round(width * 0.08))
+    if (
+        top > max_side_crop_y
+        or bottom > max_side_crop_y
+        or left > max_side_crop_x
+        or right > max_side_crop_x
+        or top + bottom > max_total_crop_y
+        or left + right > max_total_crop_x
+    ):
+        return arr
     if height - top - bottom < 96 or width - left - right < 96:
         return arr
     return arr[top : height - bottom, left : width - right].copy()

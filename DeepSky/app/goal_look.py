@@ -1546,11 +1546,30 @@ def apply_pixinsight_style_nebula_finish(image: np.ndarray, log: LogCallback | N
         0.0,
         1.0,
     )
+    diffuse_signal = np.clip(
+        (broad - _safe_percentile(broad[safe], 42.0, float(np.percentile(broad, 42.0))))
+        / max(1e-6, _safe_percentile(broad[safe], 97.6, float(np.percentile(broad, 97.6))) - _safe_percentile(broad[safe], 42.0, float(np.percentile(broad, 42.0)))),
+        0.0,
+        1.0,
+    )
+    diffuse_color = np.clip(
+        (np.maximum(chroma, red_or_oiii) - _safe_percentile(np.maximum(chroma, red_or_oiii)[safe], 48.0, float(np.percentile(np.maximum(chroma, red_or_oiii), 48.0))))
+        / max(
+            1e-6,
+            _safe_percentile(np.maximum(chroma, red_or_oiii)[safe], 98.6, float(np.percentile(np.maximum(chroma, red_or_oiii), 98.6)))
+            - _safe_percentile(np.maximum(chroma, red_or_oiii)[safe], 48.0, float(np.percentile(np.maximum(chroma, red_or_oiii), 48.0))),
+        ),
+        0.0,
+        1.0,
+    )
     nebula_mask = np.clip(broad_signal * 0.55 + detail_signal * 0.34 + color_signal * 0.45, 0.0, 1.0)
     nebula_mask = cv2.GaussianBlur((nebula_mask ** 0.78).astype(np.float32), (0, 0), 3.0)
-    nebula_protect = cv2.GaussianBlur(nebula_mask.astype(np.float32), (0, 0), 9.0)
+    diffuse_nebula = np.clip(diffuse_signal * 0.72 + diffuse_color * 0.52, 0.0, 1.0)
+    diffuse_nebula = cv2.GaussianBlur((diffuse_nebula ** 0.92).astype(np.float32), (0, 0), 10.0)
+    nebula_field = np.clip(np.maximum(nebula_mask, diffuse_nebula * 0.84), 0.0, 1.0)
+    nebula_protect = cv2.GaussianBlur(nebula_field.astype(np.float32), (0, 0), 11.0)
 
-    sky_mask = np.clip(support * (1.0 - nebula_protect * 1.22) * (1.0 - star_protect * 1.10), 0.0, 1.0)
+    sky_mask = np.clip(support * (1.0 - nebula_protect * 1.05) * (1.0 - star_protect * 1.10), 0.0, 1.0)
     sky_pixels = rgb[sky_mask > 0.62]
     if sky_pixels.size < 512:
         fallback = (support > 0.95) & (star_protect < 0.12) & (lum < np.percentile(lum, 55.0))
@@ -1567,7 +1586,7 @@ def apply_pixinsight_style_nebula_finish(image: np.ndarray, log: LogCallback | N
         0.0,
         1.0,
     )
-    neutral_mix = np.clip(sky_mask * shadow_weight, 0.0, 0.92)
+    neutral_mix = np.clip(sky_mask * shadow_weight * (1.0 - diffuse_nebula * 0.55), 0.0, 0.72)
     output = rgb * (1.0 - neutral_mix[..., None]) + np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0) * neutral_mix[..., None]
 
     bg_fill = output.copy()
@@ -1578,15 +1597,22 @@ def apply_pixinsight_style_nebula_finish(image: np.ndarray, log: LogCallback | N
         axis=2,
     )
     correction = bg_field - bg_median.reshape(1, 1, 3)
-    output = np.clip(output - correction * sky_mask[..., None] * 0.72, 0.0, 1.0)
+    correction_mix = np.clip(sky_mask * (1.0 - diffuse_nebula * 0.70), 0.0, 1.0)
+    output = np.clip(output - correction * correction_mix[..., None] * 0.52, 0.0, 1.0)
 
     out_lum = _luminance(output).astype(np.float32)
     sky_values = out_lum[sky_mask > 0.62]
     sky_floor = _safe_percentile(sky_values, 42.0, float(np.percentile(out_lum, 18.0)))
     dark_target = np.clip((out_lum - sky_floor * 0.86) / max(1e-6, 1.0 - sky_floor * 0.86), 0.0, 1.0)
-    dark_target *= 0.52
+    dark_target *= 0.66
     darkened = np.clip(output * (dark_target / np.maximum(out_lum, 1e-5))[..., None], 0.0, 1.0)
-    dark_mix = np.clip(sky_mask[..., None] * (0.64 + 0.18 * (1.0 - nebula_protect[..., None])), 0.0, 0.88)
+    dark_mix = np.clip(
+        sky_mask[..., None]
+        * (0.36 + 0.14 * (1.0 - nebula_protect[..., None]))
+        * (1.0 - diffuse_nebula[..., None] * 0.82),
+        0.0,
+        0.52,
+    )
     output = np.clip(output * (1.0 - dark_mix) + darkened * dark_mix, 0.0, 1.0)
 
     out_lum = _luminance(output).astype(np.float32)
@@ -1665,6 +1691,7 @@ def apply_pixinsight_style_nebula_finish(image: np.ndarray, log: LogCallback | N
             f"oiii_mean={float(np.mean(oiii_signal * nebula_mask)):.5f}; "
             f"sky_mask_mean={float(np.mean(sky_mask)):.5f}; "
             f"nebula_mask_mean={float(np.mean(nebula_mask)):.5f}; "
+            f"diffuse_nebula_mean={float(np.mean(diffuse_nebula)):.5f}; "
             f"star_mask_mean={float(np.mean(star_mask)):.5f}"
         )
     return _to_uint16(output)
