@@ -19,8 +19,10 @@ from threading import Lock
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
 
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
@@ -45,6 +47,102 @@ CHUNK_UPLOAD_BYTES = 8 * 1024 * 1024
 FREE_IMAGE_CREDITS = 5
 PAID_PLAN_LABEL = "$15/month"
 PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
+EXPORT_LOGO_PATH = APP_ROOT / "app" / "static" / "branding" / "deepsky-export-logo.png"
+
+
+def _load_export_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
+    candidates = [
+        Path("C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf"),
+        Path("C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return ImageFont.truetype(str(candidate), size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _build_png_export_with_footer(
+    source_path: Path,
+    telescope: str,
+    target: str,
+    capture_time: str,
+    date_captured: str,
+) -> bytes:
+    image = Image.open(source_path).convert("RGB")
+    width, height = image.size
+    overlay_height = max(84, min(136, int(height * 0.095)))
+    canvas = image.copy()
+    overlay = Image.new("RGBA", (width, overlay_height), (6, 10, 18, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    top_fade = max(14, overlay_height // 2)
+    for index in range(top_fade):
+        alpha = int(88 * ((index + 1) / top_fade) ** 1.55)
+        overlay_draw.line((0, index, width, index), fill=(7, 10, 17, alpha), width=1)
+    overlay_draw.rectangle((0, top_fade, width, overlay_height), fill=(7, 10, 17, 228))
+
+    value_font = _load_export_font(max(16, min(30, width // 18)), bold=True)
+    sub_font = _load_export_font(max(9, min(16, width // 55)), bold=False)
+
+    panel_top = height - overlay_height
+    canvas = canvas.convert("RGBA")
+    canvas.alpha_composite(overlay, (0, panel_top))
+    draw = ImageDraw.Draw(canvas)
+
+    primary_color = (246, 248, 252, 255)
+    secondary_color = (198, 207, 224, 255)
+
+    left_pad = max(18, width // 42)
+    right_pad = max(18, width // 42)
+    usable_width = width - left_pad - right_pad
+    logo_block_width = int(usable_width * 0.27)
+    info_width = usable_width - logo_block_width
+    columns = 4
+    gutter = max(12, width // 120)
+    col_width = max(72, (info_width - gutter * (columns - 1)) // columns)
+
+    entries = [
+        (target.strip() or "-", "TARGET"),
+        (capture_time.strip() or "-", "CAPTURE TIME"),
+        (telescope.strip() or "-", "TELESCOPE"),
+        (date_captured.strip() or "-", "DATE"),
+    ]
+
+    value_y = panel_top + top_fade + max(4, overlay_height // 12)
+    sub_y = value_y + max(22, overlay_height // 2)
+    for index, (value, label) in enumerate(entries):
+        x = left_pad + index * (col_width + gutter)
+        draw.text((x, value_y), value.upper(), fill=primary_color, font=value_font)
+        draw.text((x, sub_y), label, fill=secondary_color, font=sub_font)
+
+    if EXPORT_LOGO_PATH.exists():
+        logo = Image.open(EXPORT_LOGO_PATH).convert("RGBA")
+        logo_target_width = max(108, min(logo_block_width, int(width * 0.22)))
+        scale = logo_target_width / max(1, logo.width)
+        logo_size = (logo_target_width, max(1, int(logo.height * scale)))
+        logo = logo.resize(logo_size, Image.LANCZOS)
+        logo_x = width - right_pad - logo.width
+        text_band_top = value_y
+        text_band_bottom = sub_y + sub_font.size
+        text_band_center = (text_band_top + text_band_bottom) / 2
+        logo_y = int(text_band_center - (logo.height / 2))
+        min_logo_y = panel_top + max(4, top_fade // 3)
+        max_logo_y = panel_top + overlay_height - logo.height - 4
+        logo_y = max(min_logo_y, min(max_logo_y, logo_y))
+        canvas.alpha_composite(logo, (logo_x, logo_y))
+    else:
+        fallback_font = _load_export_font(max(13, min(24, width // 28)), bold=True)
+        fallback_x = width - right_pad - logo_block_width
+        fallback_y = panel_top + max(16, overlay_height // 3)
+        draw.text((fallback_x, fallback_y), "PROCESSED WITH DEEPSKY", fill=primary_color, font=fallback_font)
+
+    canvas = canvas.convert("RGB")
+    buffer = BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 @dataclass
@@ -1421,6 +1519,70 @@ def _html() -> str:
       text-decoration: none;
       font-weight: 700;
     }
+    .export-modal {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(3, 7, 14, .78);
+      backdrop-filter: blur(5px);
+      z-index: 30;
+    }
+    .export-modal[hidden] { display: none; }
+    .export-card {
+      width: min(520px, 100%);
+      border: 1px solid rgba(79, 118, 181, .44);
+      border-radius: 16px;
+      background: #08111f;
+      padding: 22px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+    }
+    .export-card h2 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      color: #f7fbff;
+    }
+    .export-card p {
+      margin: 0 0 18px;
+      color: #9bb1d0;
+      line-height: 1.45;
+    }
+    .export-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .export-field {
+      display: grid;
+      gap: 7px;
+      color: #c9d7ec;
+      font-size: 13px;
+      font-weight: 700;
+      text-align: left;
+    }
+    .export-field input {
+      border: 1px solid #274268;
+      border-radius: 10px;
+      background: #0b1628;
+      color: #f7fbff;
+      font-size: 15px;
+      padding: 12px 13px;
+    }
+    .export-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 20px;
+    }
+    .export-error {
+      min-height: 20px;
+      margin-top: 14px;
+      color: #ffb4b4;
+      font-size: 13px;
+      text-align: left;
+    }
     .footer {
       margin-top: 24px;
       text-align: center;
@@ -1459,6 +1621,7 @@ def _html() -> str:
       main { width: min(100vw - 24px, 1180px); padding-top: 26px; }
       .previews { grid-template-columns: 1fr; }
       .preview { min-height: 280px; }
+      .export-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1579,6 +1742,39 @@ def _html() -> str:
       <span>Processing image...</span>
     </div>
     </div>
+    <div id="pngExportModal" class="export-modal" hidden>
+      <div class="export-card">
+        <h2>Export PNG</h2>
+        <p>Add capture details to render a footer on the PNG export.</p>
+        <label class="checkbox export-toggle">
+          <input id="exportWithoutShowcase" type="checkbox" />
+          Download without data showcase
+        </label>
+        <div class="export-grid">
+          <label class="export-field">
+            Telescope
+            <input id="exportTelescope" type="text" maxlength="80" placeholder="Seestar S50" />
+          </label>
+          <label class="export-field">
+            Target
+            <input id="exportTarget" type="text" maxlength="80" placeholder="NGC 6992" />
+          </label>
+          <label class="export-field">
+            Capture Time
+            <input id="exportCaptureTime" type="text" maxlength="80" placeholder="2h 14m" />
+          </label>
+          <label class="export-field">
+            Date Captured
+            <input id="exportDateCaptured" type="text" maxlength="80" placeholder="2026-06-16" />
+          </label>
+        </div>
+        <div id="exportError" class="export-error"></div>
+        <div class="export-actions">
+          <button id="cancelPngExport" class="link-button" type="button">Cancel</button>
+          <button id="confirmPngExport" class="cta" type="button">Download PNG</button>
+        </div>
+      </div>
+    </div>
     <footer class="footer">
       <p><a href="/docs">Processing docs and troubleshooting guide</a></p>
       <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
@@ -1611,6 +1807,15 @@ def _html() -> str:
     const beforeFrame = document.getElementById("beforeFrame");
     const afterFrame = document.getElementById("afterFrame");
     const downloads = document.getElementById("downloads");
+    const pngExportModal = document.getElementById("pngExportModal");
+    const exportTelescope = document.getElementById("exportTelescope");
+    const exportTarget = document.getElementById("exportTarget");
+    const exportCaptureTime = document.getElementById("exportCaptureTime");
+    const exportDateCaptured = document.getElementById("exportDateCaptured");
+    const exportError = document.getElementById("exportError");
+    const exportWithoutShowcase = document.getElementById("exportWithoutShowcase");
+    const cancelPngExport = document.getElementById("cancelPngExport");
+    const confirmPngExport = document.getElementById("confirmPngExport");
     const accountBar = document.getElementById("accountBar");
     const accountEmail = document.getElementById("accountEmail");
     const billingStatus = document.getElementById("billingStatus");
@@ -1639,6 +1844,8 @@ def _html() -> str:
     let selectedFile = null;
     let stagedUpload = null;
     let activeJob = null;
+    let pendingPngJobId = null;
+    let pendingPngUrl = null;
     let previewRequest = 0;
     const MAX_UPLOAD_BYTES_CLIENT = 300 * 1024 * 1024;
     const CHUNKED_UPLOAD_THRESHOLD = 45 * 1024 * 1024;
@@ -1916,10 +2123,87 @@ def _html() -> str:
       setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     }
 
+    async function responseErrorMessage(response, fallbackMessage) {
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.toLowerCase().includes("application/json")) {
+        const data = await response.json().catch(() => ({}));
+        return data.detail || data.error || fallbackMessage;
+      }
+      const text = await response.text().catch(() => "");
+      const snippet = text.replace(/\s+/g, " ").trim().slice(0, 120);
+      return snippet ? `${fallbackMessage} ${snippet}` : fallbackMessage;
+    }
+
+    function syncPngExportMode() {
+      const disableShowcaseFields = exportWithoutShowcase.checked;
+      [exportTelescope, exportTarget, exportCaptureTime, exportDateCaptured].forEach((input) => {
+        input.disabled = disableShowcaseFields;
+      });
+      confirmPngExport.textContent = disableShowcaseFields ? "Download PNG" : "Download PNG";
+    }
+
+    function openPngExportModal(jobId, pngUrl) {
+      pendingPngJobId = jobId;
+      pendingPngUrl = pngUrl || null;
+      exportError.textContent = "";
+      exportWithoutShowcase.checked = false;
+      exportTelescope.value = exportTelescope.value || "";
+      exportTarget.value = exportTarget.value || objectType.value;
+      exportCaptureTime.value = exportCaptureTime.value || "";
+      exportDateCaptured.value = exportDateCaptured.value || "";
+      syncPngExportMode();
+      pngExportModal.hidden = false;
+      exportTelescope.focus();
+    }
+
+    function closePngExportModal() {
+      pendingPngJobId = null;
+      pendingPngUrl = null;
+      exportError.textContent = "";
+      exportWithoutShowcase.checked = false;
+      confirmPngExport.disabled = false;
+      syncPngExportMode();
+      pngExportModal.hidden = true;
+    }
+
+    function pngExportPayload() {
+      const telescope = exportTelescope.value.trim();
+      const target = exportTarget.value.trim();
+      const captureTime = exportCaptureTime.value.trim();
+      const dateCaptured = exportDateCaptured.value.trim();
+      if (!telescope || !target || !captureTime || !dateCaptured) {
+        throw new Error("Fill in telescope, target, capture time, and date captured.");
+      }
+      return { telescope, target, capture_time: captureTime, date_captured: dateCaptured };
+    }
+
+    async function downloadAnnotatedPng(jobId, payload) {
+      const response = await fetch(`/api/jobs/${jobId}/export/png`, {
+        method: "POST",
+        headers: {
+          ...(await authHeaders()),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response, "PNG export is unavailable right now."));
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = "deepsky-final-annotated.png";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    }
+
     function renderAcceptedDownloads(job) {
       downloads.innerHTML = `
         <button class="link-button" type="button" data-download-url="${job.final}" data-download-name="deepsky-final.tif">Download TIFF</button>
-        <button class="link-button" type="button" data-download-url="${job.png}" data-download-name="deepsky-final.png">Download PNG</button>
+        <button class="link-button" type="button" data-download-kind="png-export" data-job-id="${job.id}" data-download-url="${job.png}" data-download-name="deepsky-final.png">Download PNG</button>
       `;
     }
 
@@ -2213,12 +2497,53 @@ def _html() -> str:
     });
 
     downloads.addEventListener("click", async (event) => {
+      const pngButton = event.target.closest("button[data-download-kind='png-export']");
+      if (pngButton) {
+        openPngExportModal(pngButton.dataset.jobId, pngButton.dataset.downloadUrl);
+        return;
+      }
       const button = event.target.closest("button[data-download-url]");
       if (!button) return;
       try {
         await downloadFile(button.dataset.downloadUrl, button.dataset.downloadName);
       } catch (error) {
         statusEl.textContent = error.message || String(error);
+      }
+    });
+
+    cancelPngExport.addEventListener("click", () => {
+      closePngExportModal();
+    });
+
+    exportWithoutShowcase.addEventListener("change", () => {
+      exportError.textContent = "";
+      syncPngExportMode();
+    });
+
+    pngExportModal.addEventListener("click", (event) => {
+      if (event.target === pngExportModal) {
+        closePngExportModal();
+      }
+    });
+
+    confirmPngExport.addEventListener("click", async () => {
+      if (!pendingPngJobId && !pendingPngUrl) return;
+      try {
+        exportError.textContent = "";
+        confirmPngExport.disabled = true;
+        if (exportWithoutShowcase.checked) {
+          if (!pendingPngUrl) {
+            throw new Error("PNG download is not ready yet.");
+          }
+          await downloadFile(pendingPngUrl, "deepsky-final.png");
+        } else {
+          const payload = pngExportPayload();
+          await downloadAnnotatedPng(pendingPngJobId, payload);
+        }
+        closePngExportModal();
+      } catch (error) {
+        exportError.textContent = error.message || String(error);
+        confirmPngExport.disabled = false;
       }
     });
 
@@ -2970,6 +3295,53 @@ def get_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, An
         if not job or job.user_id != user.id:
             raise HTTPException(status_code=404, detail="Job not found.")
         return _job_response(job)
+
+
+@app.post("/api/jobs/{job_id}/export/png")
+async def export_job_png(
+    job_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_user),
+):
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id or not job.result:
+            raise HTTPException(status_code=404, detail="PNG export is not ready.")
+        source_path = job.result.get("png", job.result["after_preview"])
+    if not source_path or not Path(source_path).exists():
+        raise HTTPException(status_code=404, detail="PNG export file was not found.")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="PNG export details are missing.") from exc
+
+    telescope = str(payload.get("telescope", "")).strip()
+    target = str(payload.get("target", "")).strip()
+    capture_time = str(payload.get("capture_time", "")).strip()
+    date_captured = str(payload.get("date_captured", "")).strip()
+    if not telescope or not target or not capture_time or not date_captured:
+        raise HTTPException(status_code=400, detail="Fill in telescope, target, capture time, and date captured.")
+
+    try:
+        png_bytes = _build_png_export_with_footer(
+            Path(source_path),
+            telescope=telescope[:80],
+            target=target[:80],
+            capture_time=capture_time[:80],
+            date_captured=date_captured[:80],
+        )
+    except Exception as exc:
+        logger.exception("Could not build PNG export footer for job %s", job_id)
+        raise HTTPException(status_code=500, detail="Could not generate annotated PNG export.") from exc
+
+    safe_target = re.sub(r"[^a-zA-Z0-9_-]+", "-", target).strip("-") or "target"
+    filename = f"deepsky-{safe_target}-annotated.png"
+    return StreamingResponse(
+        BytesIO(png_bytes),
+        media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/jobs/{job_id}/file/{kind}")
