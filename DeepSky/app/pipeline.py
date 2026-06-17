@@ -22,6 +22,7 @@ from .goal_look import (
     blend_galaxy_deconvolution_detail,
     blend_broadband_background_denoise,
     chroma_percentile,
+    compose_pixinsight_nebula_layers,
     red_emission_dominance,
 )
 from .image_io import (
@@ -233,13 +234,18 @@ def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarra
             (darkest_p10 < interior_p10 * 0.72 - 0.004 or darkest_median < interior_median * 0.74 - 0.006)
             and (worst_std > interior_std * 1.45 + 0.003 or worst_chroma > interior_chroma_p95 * 1.28 + 0.008)
         )
+        bright_color_noise = (
+            worst_std > interior_std * 1.34 + 0.004
+            and worst_chroma > interior_chroma_p95 * 1.38 + 0.010
+            and darkest_median < interior_p95 * 1.08
+        )
         extreme_noise = (
             worst_std > interior_std * 2.05 + 0.006
             and worst_chroma > interior_chroma_p95 * 1.55 + 0.010
             and darkest_median < interior_p95 * 0.92
         )
         return bool(
-            dark_and_noisy or extreme_noise
+            dark_and_noisy or bright_color_noise or extreme_noise
         )
 
     while top < max_y and bad_luminance(lum[top : top + stripe_y, :], chroma[top : top + stripe_y, :], vertical=False):
@@ -251,10 +257,10 @@ def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarra
     while right < max_x and bad_luminance(lum[:, width - right - stripe_x : width - right], chroma[:, width - right - stripe_x : width - right], vertical=True):
         right += step_x
 
-    max_side_crop_y = int(round(height * 0.05))
-    max_side_crop_x = int(round(width * 0.05))
-    max_total_crop_y = int(round(height * 0.08))
-    max_total_crop_x = int(round(width * 0.08))
+    max_side_crop_y = int(round(height * 0.12))
+    max_side_crop_x = int(round(width * 0.12))
+    max_total_crop_y = int(round(height * 0.18))
+    max_total_crop_x = int(round(width * 0.18))
     if (
         top > max_side_crop_y
         or bottom > max_side_crop_y
@@ -564,7 +570,17 @@ def _run_siril_calibration(
         write_log("Siril executable not found; using Python fallback color calibration.")
         return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
 
-    pcc_command = build_siril_pcc_command(original) if mode == "Siril Photometric" else None
+    pcc_command = (
+        build_siril_pcc_command(
+            original,
+            optional_object_name=settings.siril_object_name.strip() or None,
+            optional_ra_dec=settings.siril_ra_dec.strip() or None,
+            optional_focal_length=settings.siril_focal_length.strip() or None,
+            optional_pixel_size=settings.siril_pixel_size.strip() or None,
+        )
+        if mode == "Siril Photometric"
+        else None
+    )
     if mode == "Siril Photometric" and pcc_command:
         siril_input = job_folder / original.name
         if siril_input.resolve() != original.resolve():
@@ -654,12 +670,16 @@ def _run_siril_calibration(
                 write_log("Siril deconvolution layer completed but did not create output; continuing without it.")
 
     siril_image = load_image(siril_output_fit, write_log)
-    siril_image = np.flipud(siril_image)
-    write_log("Corrected Siril FITS orientation with vertical flip.")
+    if object_type == "nebula":
+        write_log("Preserving Siril FITS orientation for nebula output.")
+    else:
+        siril_image = np.flipud(siril_image)
+        write_log("Corrected Siril FITS orientation with vertical flip.")
     deconvolution_image = None
     if use_deconvolution_layer and deconvolved_output_fit.exists():
         deconvolution_image = load_image(deconvolved_output_fit, write_log)
-        deconvolution_image = np.flipud(deconvolution_image)
+        if object_type != "nebula":
+            deconvolution_image = np.flipud(deconvolution_image)
     raw_siril = job_folder / "siril_calibrated.tif"
     save_tiff(raw_siril, siril_image, write_log)
     _log_existing_image(raw_siril, write_log, "siril_calibrated.tif")
@@ -693,6 +713,9 @@ def _run_siril_calibration(
         else:
             write_log("Object type is Nebula; using emission nebula color finish.")
             finished_image = apply_goal_look(siril_image, write_log, stretch=False)
+    elif object_type == "nebula":
+        write_log("Siril PCC succeeded for nebula; using photometric color as the baseline before nebula finish.")
+        finished_image = astrophotography_stretch(siril_image, strength="standard")
     else:
         write_log("Siril PCC succeeded; preserving Siril photometric color without manual color shaping.")
         finished_image = siril_image
@@ -836,26 +859,48 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 f"using Siril galaxy cleanup path. spread={gradient_galaxy_spread:.3f}"
             )
 
+    nebula_auto_pcc_command = None
+    if mode == PipelineMode.FULL and object_type == "nebula" and settings.color_calibration_mode != "Off":
+        nebula_auto_pcc_command = build_siril_pcc_command(
+            original,
+            optional_object_name=settings.siril_object_name.strip() or None,
+            optional_ra_dec=settings.siril_ra_dec.strip() or None,
+            optional_focal_length=settings.siril_focal_length.strip() or None,
+            optional_pixel_size=settings.siril_pixel_size.strip() or None,
+        )
+        if nebula_auto_pcc_command:
+            write_log(f"Nebula auto Siril PCC available: {nebula_auto_pcc_command}")
+        else:
+            write_log("Nebula auto Siril PCC unavailable; using existing local nebula color path.")
+
     should_use_siril_calibration = settings.color_calibration_mode != "Off" and (
         mode == PipelineMode.SIRIL
         or (mode == PipelineMode.FULL and use_prestretched)
         or gradient_galaxy_siril
         or (mode == PipelineMode.FULL and siril_deconvolution_requested)
+        or bool(nebula_auto_pcc_command)
     )
     if should_use_siril_calibration:
         if siril_deconvolution_requested and not gradient_galaxy_siril and not use_prestretched and mode == PipelineMode.FULL:
             write_log("Siril deconvolution requested; routing galaxy run through Siril calibration path.")
+        original_color_mode = settings.color_calibration_mode
+        if nebula_auto_pcc_command and mode == PipelineMode.FULL and object_type == "nebula":
+            settings.color_calibration_mode = "Siril Photometric"
+            write_log("Nebula mode: routing through Siril PCC before DeepSky nebula finish.")
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
-        _run_siril_calibration(
-            original,
-            working,
-            stretched,
-            calibrated,
-            job_folder,
-            settings,
-            write_log,
-            darkroom_small_galaxy=gradient_galaxy_siril,
-        )
+        try:
+            _run_siril_calibration(
+                original,
+                working,
+                stretched,
+                calibrated,
+                job_folder,
+                settings,
+                write_log,
+                darkroom_small_galaxy=gradient_galaxy_siril,
+            )
+        finally:
+            settings.color_calibration_mode = original_color_mode
     elif use_prestretched:
         write_log("Pre-stretched input mode enabled; skipping DeepSky/Siril initial stretch.")
         write_log(f"Applying pre-stretched object finish for: {object_type}")
@@ -956,6 +1001,56 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless, write_log, "starless.tif")
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
+        if object_type == "nebula" and not green_duoband_raw:
+            if starless_only_requested:
+                write_log("Starless enabled; composing controlled starless nebula without star recombination.")
+                composed_nebula = compose_pixinsight_nebula_layers(
+                    load_image(starless, write_log),
+                    np.zeros_like(load_image(stars, write_log)),
+                    write_log,
+                    star_strength=0.0,
+                )
+            else:
+                star_strength = 0.70 if starless_test_requested else 0.85
+                write_log(f"Composing controlled nebula starless/stars layers with star strength {star_strength:.2f}.")
+                composed_nebula = compose_pixinsight_nebula_layers(
+                    load_image(starless, write_log),
+                    load_image(stars, write_log),
+                    write_log,
+                    star_strength=star_strength,
+                )
+            save_tiff(final, composed_nebula, write_log)
+            _log_existing_image(final, write_log, "final.tif")
+            current = final
+            if final.exists():
+                write_log("Applying nebula edge artifact crop/cleanup.")
+                edge_cropped = _crop_edge_artifacts(load_image(final, write_log), fraction=0.025)
+                save_tiff(final, edge_cropped, write_log)
+                _log_existing_image(final, write_log, "edge-cropped final.tif")
+            save_png(final_png, load_image(final, write_log), write_log)
+            before_preview = job_folder / "before_preview.png"
+            final_preview = job_folder / "final_preview.png"
+            calibrated_preview = job_folder / "calibrated_preview.png"
+            make_preview(working, before_preview, log=write_log, stretch_for_display=True)
+            make_preview(final, final_preview, log=write_log, stretch_for_display=False)
+            preview_source = calibrated if mode == PipelineMode.SIRIL else final
+            make_preview(preview_source, calibrated_preview, log=write_log, stretch_for_display=False)
+            write_log(f"Final image: {final}")
+            return {
+                "job_folder": job_folder,
+                "working": working,
+                "stretched": stretched,
+                "calibrated": calibrated,
+                "denoised": denoised,
+                "starless": starless,
+                "stars": stars,
+                "final": final,
+                "png": final_png,
+                "before_preview": before_preview,
+                "final_preview": final_preview,
+                "calibrated_preview": calibrated_preview,
+                "log": log_file,
+            }
         gentle_nebula_star_reduction = False
         if starless_test_requested and object_type == "nebula" and not green_duoband_raw:
             gentle_nebula_star_reduction = _needs_gentle_nebula_star_reduction(analysis, load_image(current, write_log))

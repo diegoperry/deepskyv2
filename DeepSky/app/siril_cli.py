@@ -127,7 +127,25 @@ def _read_fits_header_values(input_path: Path) -> dict[str, object]:
     with fits.open(input_path, memmap=False) as hdul:
         for hdu in hdul:
             if hdu.header:
-                for key in ("CRVAL1", "RA", "CRVAL2", "DEC", "FOCALLEN", "FOCLEN", "XPIXSZ", "PIXSIZE1", "YPIXSZ"):
+                for key in (
+                    "OBJECT",
+                    "OBJNAME",
+                    "CRVAL1",
+                    "RA",
+                    "OBJCTRA",
+                    "CRVAL2",
+                    "CTYPE1",
+                    "CTYPE2",
+                    "DEC",
+                    "OBJCTDEC",
+                    "FOCALLEN",
+                    "FOCLEN",
+                    "FOCUS",
+                    "XPIXSZ",
+                    "PIXSIZE1",
+                    "YPIXSZ",
+                    "PIXSIZE2",
+                ):
                     if key in hdu.header and key not in values:
                         values[key] = hdu.header[key]
             if hdu.data is not None:
@@ -139,7 +157,21 @@ def _format_header_value(value: object) -> str:
     return str(value).strip().replace(",", ".")
 
 
-def build_siril_pcc_command(input_path: Path) -> str | None:
+def _looks_like_empty_header_value(value: object | None) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip()
+    return not text or text.lower() in {"unknown", "none", "null", "nan", "-"}
+
+
+def build_siril_pcc_command(
+    input_path: Path,
+    *,
+    optional_object_name: str | None = None,
+    optional_ra_dec: str | None = None,
+    optional_focal_length: str | None = None,
+    optional_pixel_size: str | None = None,
+) -> str | None:
     path = Path(input_path)
     if path.suffix.lower() not in SIRIL_PCC_SUFFIXES:
         return None
@@ -149,19 +181,16 @@ def build_siril_pcc_command(input_path: Path) -> str | None:
     except Exception:
         return None
 
-    ra = metadata.get("CRVAL1") or metadata.get("RA")
-    dec = metadata.get("CRVAL2") or metadata.get("DEC")
-    focal = metadata.get("FOCALLEN") or metadata.get("FOCLEN")
-    pixel_size = metadata.get("XPIXSZ") or metadata.get("PIXSIZE1") or metadata.get("YPIXSZ")
-
-    if None in {ra, dec, focal, pixel_size}:
+    has_wcs = (
+        not _looks_like_empty_header_value(metadata.get("CRVAL1"))
+        and not _looks_like_empty_header_value(metadata.get("CRVAL2"))
+        and not _looks_like_empty_header_value(metadata.get("CTYPE1"))
+        and not _looks_like_empty_header_value(metadata.get("CTYPE2"))
+    )
+    if not has_wcs:
         return None
 
-    return (
-        f"pcc {_format_header_value(ra)},{_format_header_value(dec)} -noflip -platesolve "
-        f"-focal={_format_header_value(focal)} -pixelsize={_format_header_value(pixel_size)} "
-        "-downscale -catalog=apass"
-    )
+    return "pcc -catalog=apass"
 
 
 def create_basic_color_script(
@@ -248,18 +277,15 @@ def create_photometric_color_script(
     script_path = Path(work_dir) / "siril_photometric_color.ssf"
     input_name = _relative_or_name(Path(input_path), Path(work_dir))
     output_stem = Path(output_path).with_suffix("").name
-    pcc_command = build_siril_pcc_command(Path(input_path))
+    pcc_command = build_siril_pcc_command(
+        Path(input_path),
+        optional_object_name=optional_object_name,
+        optional_ra_dec=optional_ra_dec,
+        optional_focal_length=optional_focal_length,
+        optional_pixel_size=optional_pixel_size,
+    )
     if pcc_command is None:
-        pcc_parts = ["pcc"]
-        if optional_object_name:
-            pcc_parts.append(f'-object="{optional_object_name}"')
-        if optional_ra_dec:
-            pcc_parts.append(f'-coordinates="{optional_ra_dec}"')
-        if optional_focal_length:
-            pcc_parts.append(f"-focal={optional_focal_length}")
-        if optional_pixel_size:
-            pcc_parts.append(f"-pixelsize={optional_pixel_size}")
-        pcc_command = " ".join(pcc_parts)
+        pcc_command = "pcc -catalog=apass"
 
     lines = [
         SIRIL_REQUIRES_COMMAND,
