@@ -1029,25 +1029,20 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 _log_existing_image(final, write_log, "edge-cropped final.tif")
             save_png(final_png, load_image(final, write_log), write_log)
             before_preview = job_folder / "before_preview.png"
-            final_preview = job_folder / "final_preview.png"
+            after_preview = job_folder / "after_preview.png"
             calibrated_preview = job_folder / "calibrated_preview.png"
             make_preview(working, before_preview, log=write_log, stretch_for_display=True)
-            make_preview(final, final_preview, log=write_log, stretch_for_display=False)
+            make_preview(final, after_preview, log=write_log, stretch_for_display=False)
             preview_source = calibrated if mode == PipelineMode.SIRIL else final
             make_preview(preview_source, calibrated_preview, log=write_log, stretch_for_display=False)
             write_log(f"Final image: {final}")
+            write_log("Done.")
             return {
                 "job_folder": job_folder,
-                "working": working,
-                "stretched": stretched,
-                "calibrated": calibrated,
-                "denoised": denoised,
-                "starless": starless,
-                "stars": stars,
                 "final": final,
                 "png": final_png,
                 "before_preview": before_preview,
-                "final_preview": final_preview,
+                "after_preview": after_preview,
                 "calibrated_preview": calibrated_preview,
                 "log": log_file,
             }
