@@ -38,6 +38,7 @@ class AppSettings:
     galaxy_protect_detail: bool
     input_processing_mode: str
     stretch_level: str
+    nebula_color_separation: str
     telescope_profile: str
     prestretched_input: bool
     object_type: str
@@ -78,6 +79,7 @@ def default_settings() -> AppSettings:
         galaxy_protect_detail=True,
         input_processing_mode="Auto",
         stretch_level="Standard",
+        nebula_color_separation="Balanced",
         telescope_profile="Auto",
         prestretched_input=False,
         object_type="Nebula",

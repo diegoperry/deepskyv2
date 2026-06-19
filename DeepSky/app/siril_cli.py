@@ -104,7 +104,10 @@ def run_siril_script(
             message = line.rstrip()
             log_file.write(message + "\n")
             if log:
-                log(message)
+                try:
+                    log(message)
+                except UnicodeEncodeError:
+                    log(message.encode("ascii", errors="replace").decode("ascii"))
         return_code = process.wait()
 
     if return_code != 0:
@@ -289,8 +292,10 @@ def create_photometric_color_script(
 
     lines = [
         SIRIL_REQUIRES_COMMAND,
-        "# DeepSky Siril Photometric Color Calibration",
+        "# DeepSky Siril PCC color calibration",
         f'load "{input_name}"',
+        "# Siril background extraction before color calibration",
+        "subsky 2",
         pcc_command,
     ]
     if apply_scnr:

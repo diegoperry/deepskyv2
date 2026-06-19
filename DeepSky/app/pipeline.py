@@ -596,7 +596,7 @@ def _run_siril_calibration(
 
     write_log(f"Siril executable: {siril_exe}")
     write_log(
-        "Siril Color Settings: "
+        "Siril calibration settings: "
         f"mode={mode}; "
         f"object_name={settings.siril_object_name or '<empty>'}; "
         f"ra_dec={settings.siril_ra_dec or '<empty>'}; "
@@ -611,6 +611,8 @@ def _run_siril_calibration(
     _log_existing_image(siril_input, write_log, "siril_input.tif")
 
     if mode == "Siril Photometric":
+        write_log("Siril background extraction: enabled before color calibration.")
+        write_log("Siril-based calibration step: enabled.")
         script_path = create_photometric_color_script(
             siril_input,
             siril_output_fit,
@@ -714,7 +716,7 @@ def _run_siril_calibration(
             write_log("Object type is Nebula; using emission nebula color finish.")
             finished_image = apply_goal_look(siril_image, write_log, stretch=False)
     elif object_type == "nebula":
-        write_log("Siril PCC succeeded for nebula; using photometric color as the baseline before nebula finish.")
+        write_log("Siril PCC color calibration succeeded for nebula; handing calibrated data to DeepSky nebula color enhancement.")
         finished_image = astrophotography_stretch(siril_image, strength="standard")
     else:
         write_log("Siril PCC succeeded; preserving Siril photometric color without manual color shaping.")
@@ -886,7 +888,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         original_color_mode = settings.color_calibration_mode
         if nebula_auto_pcc_command and mode == PipelineMode.FULL and object_type == "nebula":
             settings.color_calibration_mode = "Siril Photometric"
-            write_log("Nebula mode: routing through Siril PCC before DeepSky nebula finish.")
+            write_log("Nebula mode: routing through Siril color calibration before DeepSky nebula color enhancement.")
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
         try:
             _run_siril_calibration(
@@ -1002,6 +1004,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
         if object_type == "nebula" and not green_duoband_raw:
+            color_separation = str(getattr(settings, "nebula_color_separation", "Balanced") or "Balanced")
+            write_log("Nebula Color: Enhanced")
+            write_log(f"DeepSky color separation: {color_separation}")
             if starless_only_requested:
                 write_log("Starless enabled; composing controlled starless nebula without star recombination.")
                 composed_nebula = compose_pixinsight_nebula_layers(
@@ -1009,15 +1014,17 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                     np.zeros_like(load_image(stars, write_log)),
                     write_log,
                     star_strength=0.0,
+                    color_separation=color_separation,
                 )
             else:
-                star_strength = 0.70 if starless_test_requested else 0.85
+                star_strength = 0.64 if starless_test_requested else 0.78
                 write_log(f"Composing controlled nebula starless/stars layers with star strength {star_strength:.2f}.")
                 composed_nebula = compose_pixinsight_nebula_layers(
                     load_image(starless, write_log),
                     load_image(stars, write_log),
                     write_log,
                     star_strength=star_strength,
+                    color_separation=color_separation,
                 )
             save_tiff(final, composed_nebula, write_log)
             _log_existing_image(final, write_log, "final.tif")

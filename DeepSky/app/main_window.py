@@ -385,6 +385,7 @@ class MainWindow(QMainWindow):
             galaxy_protect_detail=self.protect_galaxy_check.isChecked(),
             input_processing_mode=getattr(self.settings, "input_processing_mode", "Auto"),
             stretch_level=getattr(self.settings, "stretch_level", "Standard"),
+            nebula_color_separation=getattr(self.settings, "nebula_color_separation", "Balanced"),
             telescope_profile=getattr(self.settings, "telescope_profile", "Auto"),
             prestretched_input=False,
             object_type=getattr(self.settings, "object_type", "Nebula"),

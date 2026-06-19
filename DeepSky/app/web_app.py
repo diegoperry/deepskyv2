@@ -182,10 +182,12 @@ PROGRESS_LINE_RE = re.compile(r"progress:\s*(?P<label>.*?),\s*(?P<percent>\d+(?:
 
 def _mapped_stage_progress(stage: str, stage_percent: float) -> int:
     spans = {
+        "Siril Background Extraction": (22, 30),
         "Siril Color Calibration": (22, 42),
         "Siril Deconvolution": (42, 47),
         "DeepSNR Denoising": (48, 68),
         "StarNet Star Separation": (72, 90),
+        "Nebula Color Enhancement": (90, 95),
     }
     start, end = spans.get(stage, (0, 100))
     return round(start + ((end - start) * max(0.0, min(100.0, stage_percent)) / 100.0))
@@ -213,6 +215,8 @@ def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
         ("Applying local astrophotography stretch", "Stretching Image", 24),
         ("Applying gentle-stretch", "Applying Object Finish", 32),
         ("Siril executable:", "Siril Color Calibration", 22),
+        ("Siril background extraction:", "Siril Background Extraction", 28),
+        ("Siril-based calibration step:", "Siril Color Calibration", 30),
         ("Running Siril:", "Siril Color Calibration", 26),
         ("Siril color calibration succeeded.", "Siril Color Calibration", 42),
         ("Siril Richardson-Lucy deconvolution test enabled", "Siril Deconvolution", 42),
@@ -230,6 +234,9 @@ def _progress_from_log_message(job: WebJob, message: str) -> tuple[str, int]:
         ("StarNet executable:", "StarNet Star Separation", 72),
         ("starless.tif:", "StarNet Star Separation", 90),
         ("stars.tif:", "Recombining Stars", 93),
+        ("Nebula Color: Enhanced", "Nebula Color Enhancement", 91),
+        ("DeepSky color separation:", "Nebula Color Enhancement", 92),
+        ("Composed DeepSky nebula enhancement layers:", "Nebula Color Enhancement", 94),
         ("final.tif:", "Creating Final Image", 95),
         ("Final image:", "Creating Preview", 98),
         ("Done.", "Complete", 100),
@@ -707,6 +714,7 @@ def _docs_html() -> str:
             <li><span class="label">Object:</span> choose Galaxy, Nebula, or Star Cluster based on the main target.</li>
             <li><span class="label">Input:</span> leave on Auto unless you know your file is already stretched.</li>
             <li><span class="label">Stretch:</span> leave on Standard for the first run.</li>
+            <li><span class="label">Color Separation:</span> leave Nebula runs on Balanced first. Siril handles calibration; DeepSky only enhances color where nebula signal is present.</li>
             <li><span class="label">Deconvolution:</span> leave it off first, then test it on galaxies if you want sharper arms and dust lanes.</li>
             <li><span class="label">Star Reduction:</span> DeepSky automatically reduces stars so gas, dust, and galaxy structure stand out.</li>
           </ul>
@@ -717,7 +725,7 @@ def _docs_html() -> str:
           <h2>What The Settings Mean</h2>
           <div class="setting">
             <h3>Object</h3>
-            <p>This chooses the finishing style. Galaxy processing protects broadband color, dust lanes, cores, and spiral texture. Nebula processing focuses on gas and dust. Star Cluster processing keeps stars more natural and avoids heavy star removal.</p>
+            <p>This chooses the finishing style. Galaxy processing protects broadband color, dust lanes, cores, and spiral texture. Nebula processing runs Siril color calibration and background extraction, then applies controlled DeepSky nebula color enhancement. Star Cluster processing keeps stars more natural and avoids heavy star removal.</p>
           </div>
           <div class="setting">
             <h3>Input</h3>
@@ -730,6 +738,10 @@ def _docs_html() -> str:
             <p><span class="label">Subtle</span> is safer for bright targets, already-bright files, star clusters, and cores that blow out easily.</p>
             <p><span class="label">Standard</span> is the normal first try.</p>
             <p><span class="label">Aggressive</span> is for very faint targets where the normal result is too dark or does not reveal enough gas or galaxy arms.</p>
+          </div>
+          <div class="setting">
+            <h3>Color Separation</h3>
+            <p>This Nebula-only setting controls DeepSky's masked color enhancement after Siril calibration. Natural is gentlest, Balanced is the default, and Strong pushes real red/orange and blue/cyan separation harder without coloring empty background.</p>
           </div>
           <div class="setting">
             <h3>Deconvolution</h3>
@@ -1121,7 +1133,7 @@ def _landing_html() -> str:
         <div class="faq">
           <details open><summary>What files can I upload?</summary><p>DeepSky currently accepts FITS, FIT, FTS, TIF, and TIFF files up to 300 MB.</p></details>
           <details><summary>Does it work with SeeStar files?</summary><p>Yes. DeepSky is being tuned around real SeeStar-style FITS and TIFF uploads, including both linear and already-stretched files.</p></details>
-          <details><summary>Is this catalog photometric color calibration?</summary><p>When Siril PCC is available and the file has enough metadata, catalog-based star color calibration can be used. Otherwise DeepSky uses pixel-based background and star balancing.</p></details>
+          <details><summary>How does color work?</summary><p>Siril handles color calibration and background extraction when the file has the metadata needed. Nebula mode then uses masked DeepSky color separation to enhance real red/orange and blue/cyan structure without coloring empty background.</p></details>
           <details><summary>Will it replace manual processing?</summary><p>No. It is meant to produce a strong first processed result quickly, especially for users who do not want to spend hours tuning multiple astronomy tools.</p></details>
           <details><summary>Do I need an account?</summary><p>Yes. Create an account or sign in to process images. Your first 5 images are free.</p></details>
         </div>
@@ -1384,6 +1396,28 @@ def _html() -> str:
       font-weight: 800;
       font-size: 15px;
       padding: 13px 14px;
+    }
+    .pipeline-labels {
+      width: min(720px, 100%);
+      margin: 12px auto 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: center;
+      color: #cfe0ff;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .pipeline-labels[hidden] { display: none; }
+    .pipeline-labels span {
+      border: 1px solid rgba(80, 125, 190, .38);
+      border-radius: 999px;
+      background: rgba(11, 22, 40, .58);
+      padding: 8px 10px;
+    }
+    .pipeline-labels b {
+      color: var(--muted);
+      font-weight: 800;
     }
     .toggle {
       min-height: 48px;
@@ -1701,7 +1735,20 @@ def _html() -> str:
             <option value="Aggressive">Aggressive</option>
           </select>
         </label>
+        <label class="select" id="nebulaColorSeparationField">
+          Color Separation
+          <select id="nebulaColorSeparation">
+            <option value="Natural">Natural</option>
+            <option value="Balanced" selected>Balanced</option>
+            <option value="Strong">Strong</option>
+          </select>
+        </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
+      </div>
+      <div class="pipeline-labels" id="nebulaPipelineLabels">
+        <span><b>Color Calibration:</b> Siril</span>
+        <span><b>Background Extraction:</b> Siril</span>
+        <span><b>Nebula Color:</b> Enhanced</span>
       </div>
       <div class="detail-option">
         <h3>Want to add more detail? Test out deconvolution</h3>
@@ -1791,6 +1838,9 @@ def _html() -> str:
     const objectType = document.getElementById("objectType");
     const inputMode = document.getElementById("inputMode");
     const stretchLevel = document.getElementById("stretchLevel");
+    const nebulaColorSeparation = document.getElementById("nebulaColorSeparation");
+    const nebulaColorSeparationField = document.getElementById("nebulaColorSeparationField");
+    const nebulaPipelineLabels = document.getElementById("nebulaPipelineLabels");
     const sirilDeconvolution = document.getElementById("sirilDeconvolution");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
@@ -1849,6 +1899,12 @@ def _html() -> str:
     let previewRequest = 0;
     const MAX_UPLOAD_BYTES_CLIENT = 300 * 1024 * 1024;
     const CHUNKED_UPLOAD_THRESHOLD = 45 * 1024 * 1024;
+
+    function syncObjectControls() {
+      const isNebula = objectType.value === "Nebula";
+      if (nebulaColorSeparationField) nebulaColorSeparationField.hidden = !isNebula;
+      if (nebulaPipelineLabels) nebulaPipelineLabels.hidden = !isNebula;
+    }
 
     function setAuthMessage(message) {
       authMessage.textContent = message || "";
@@ -2383,6 +2439,8 @@ def _html() -> str:
         warningEl.textContent = "";
       }
     });
+    objectType.addEventListener("change", syncObjectControls);
+    syncObjectControls();
 
     signIn.addEventListener("click", async () => {
       if (!authClient) return;
@@ -2636,6 +2694,7 @@ def _html() -> str:
       data.append("object_type", objectType.value);
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
+      data.append("nebula_color_separation", nebulaColorSeparation ? nebulaColorSeparation.value : "Balanced");
       data.append("siril_deconvolution", sirilDeconvolution.checked ? "true" : "false");
       data.append("star_setting", "Slight Star Reduction");
       data.append("starless_test", "true");
@@ -2873,6 +2932,7 @@ def _run_job(
     object_type: str = "Nebula",
     input_mode: str = "Auto",
     stretch_level: str = "Standard",
+    nebula_color_separation: str = "Balanced",
     siril_deconvolution: bool = False,
     starless_test: bool = False,
     star_setting: str = "Slight Star Reduction",
@@ -2917,12 +2977,21 @@ def _run_job(
         settings.prestretched_input = mode == "Pre-stretched"
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
+        settings.nebula_color_separation = (
+            nebula_color_separation
+            if nebula_color_separation in {"Natural", "Balanced", "Strong"}
+            else "Balanced"
+        )
         settings.siril_deconvolution_enabled = bool(siril_deconvolution)
         settings.star_handling_mode = "Slight Star Reduction"
         settings.starless_test_enabled = True
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
+        if settings.object_type == "Nebula":
+            write_log("Color Calibration: Siril")
+            write_log("Background Extraction: Siril")
+            write_log(f"Selected color separation: {settings.nebula_color_separation}")
         write_log(f"Siril deconvolution test: {'enabled' if settings.siril_deconvolution_enabled else 'disabled'}")
         write_log(f"Star settings: {settings.star_handling_mode}")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
@@ -3210,6 +3279,7 @@ async def create_job(
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
+    nebula_color_separation: str = Form("Balanced"),
     siril_deconvolution: bool = Form(False),
     starless_test: bool = Form(True),
     star_setting: str = Form(""),
@@ -3272,6 +3342,10 @@ async def create_job(
         jobs[job_id].warnings.append(
             "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
         )
+        if object_type == "Nebula":
+            jobs[job_id].warnings.append(
+                f"Nebula color separation is set to {nebula_color_separation if nebula_color_separation in {'Natural', 'Balanced', 'Strong'} else 'Balanced'}."
+            )
     executor.submit(
         _run_job,
         job_id,
@@ -3280,6 +3354,7 @@ async def create_job(
         object_type,
         input_mode,
         stretch_level,
+        nebula_color_separation,
         siril_deconvolution,
         starless_test,
         star_setting,
