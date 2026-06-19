@@ -1809,6 +1809,16 @@ def _apply_showcase_hoo_nebula_grade(
         0.0,
         1.0,
     ) ** 0.70
+    strand_detail_raw = np.maximum(
+        cv2.GaussianBlur(source_lum, (0, 0), 1.1)
+        - cv2.GaussianBlur(source_lum, (0, 0), 8.5),
+        0.0,
+    )
+    strand_detail = np.clip(
+        strand_detail_raw / max(1e-6, float(np.percentile(strand_detail_raw, 99.45))),
+        0.0,
+        1.0,
+    ) ** 0.62
     local_soft = cv2.GaussianBlur(source_lum, (0, 0), 5.5)
     filament_shadow = np.clip(
         (local_soft - source_lum)
@@ -1887,50 +1897,113 @@ def _apply_showcase_hoo_nebula_grade(
     sky_floor = np.array([0.052, 0.067, 0.078], dtype=np.float32).reshape(1, 1, 3)
     showcase = np.clip(base * (1.0 - empty_sky[..., None] * 0.45) + sky_floor * (empty_sky[..., None] * 0.45), 0.0, 1.0)
 
-    filament_color_texture = np.clip(0.34 + local_detail * 0.48 + ridge * 0.30 + filament_shadow * 0.12, 0.22, 1.0)
-    red_push = np.clip(ha_mask * filament_color_texture * 1.18, 0.0, 0.94)
-    blue_push = np.clip(oiii_mask * (0.40 + structured_signal * 0.54) * 0.92, 0.0, 0.82)
+    strand_carrier = np.clip(strand_detail * 0.64 + local_detail * 0.38 + ridge * 0.30, 0.0, 1.0)
+    filament_color_texture = np.clip(0.12 + strand_carrier * 0.94 + filament_shadow * 0.08, 0.08, 1.0)
+    red_structure = np.clip(
+        strand_carrier * 0.78
+        + np.maximum(strand_detail - cv2.GaussianBlur(strand_detail, (0, 0), 2.8), 0.0) * 0.60
+        + ridge * 0.26,
+        0.0,
+        1.0,
+    )
+    red_push = cv2.GaussianBlur(
+        np.clip((r_norm * 0.34 + ha_relative * 0.66) * signal * red_structure * 1.72, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        0.22,
+    )
+    red_fill_guard = cv2.GaussianBlur(red_push.astype(np.float32), (0, 0), 2.4)
+    red_push = np.clip(red_push - red_fill_guard * 0.22, 0.0, 1.0)
+    red_push = np.clip(red_push * (1.0 - oiii_mask * 0.05), 0.0, 0.96)
+    blue_push = cv2.GaussianBlur(
+        np.clip((gb_norm * 0.54 + oiii_relative * 0.46) * signal * red_structure * (0.34 + structured_signal * 0.46) * 1.28, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        0.28,
+    )
+    blue_fill_guard = cv2.GaussianBlur(blue_push.astype(np.float32), (0, 0), 2.6)
+    blue_push = np.clip(blue_push - blue_fill_guard * 0.30, 0.0, 1.0)
+    blue_push = np.clip(blue_push * (1.0 - red_push * 0.22), 0.0, 0.82)
+    white_fiber = cv2.GaussianBlur(
+        np.clip(strand_carrier * signal * (0.22 + red_push * 0.34 + blue_push * 0.42), 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        0.32,
+    )
+    showcase = np.clip(showcase + white_fiber[..., None] * np.array([0.040, 0.044, 0.048], dtype=np.float32).reshape(1, 1, 3), 0.0, 1.0)
     ha_grade = np.stack(
         [
-            showcase[..., 0] * (1.0 + red_push * 1.02),
-            showcase[..., 1] * (1.0 - red_push * 0.10),
-            showcase[..., 2] * (1.0 - red_push * 0.44),
+            showcase[..., 0] * (1.0 + red_push * 1.18),
+            showcase[..., 1] * (1.0 + red_push * 0.28),
+            showcase[..., 2] * (1.0 - red_push * 0.16),
         ],
         axis=2,
     )
-    showcase = np.clip(showcase * (1.0 - red_push[..., None] * 0.68) + ha_grade * (red_push[..., None] * 0.68), 0.0, 1.0)
+    showcase = np.clip(showcase * (1.0 - red_push[..., None] * 0.78) + ha_grade * (red_push[..., None] * 0.78), 0.0, 1.0)
 
     oiii_grade = np.stack(
         [
-            showcase[..., 0] * (1.0 - blue_push * 0.42),
-            showcase[..., 1] * (1.0 + blue_push * 0.22),
-            showcase[..., 2] * (1.0 + blue_push * 0.62),
+            showcase[..., 0] * (1.0 - blue_push * 0.38),
+            showcase[..., 1] * (1.0 + blue_push * 0.28),
+            showcase[..., 2] * (1.0 + blue_push * 0.82),
         ],
         axis=2,
     )
-    showcase = np.clip(showcase * (1.0 - blue_push[..., None] * 0.60) + oiii_grade * (blue_push[..., None] * 0.60), 0.0, 1.0)
+    showcase = np.clip(showcase * (1.0 - blue_push[..., None] * 0.72) + oiii_grade * (blue_push[..., None] * 0.72), 0.0, 1.0)
 
     # Preserve luminance so the color pass does not turn filaments into flat paint.
     showcase_lum = _luminance(showcase).astype(np.float32)
     showcase = np.clip(showcase * (base_lum / np.maximum(showcase_lum, 1e-5))[..., None], 0.0, 1.0)
 
-    color_mask = np.clip(ha_mask * 0.70 + oiii_mask * 0.78 + nebula_mask * 0.08, 0.0, 1.0)
+    color_mask = np.clip(red_push * 0.72 + blue_push * 0.78 + nebula_mask * 0.06, 0.0, 1.0)
     gray = _luminance(showcase).astype(np.float32)
-    showcase = np.clip(gray[..., None] + (showcase - gray[..., None]) * (1.0 + color_mask[..., None] * 0.92), 0.0, 1.0)
+    showcase = np.clip(gray[..., None] + (showcase - gray[..., None]) * (1.0 + color_mask[..., None] * 1.28), 0.0, 1.0)
+
+    # Add fine chroma on top of measured color masks. This makes color ride the
+    # filament texture instead of filling regions as flat paint.
+    detail_carrier = np.clip(
+        (local_detail * 0.40 + strand_detail * 0.52 + ridge * 0.38 + filament_shadow * 0.16)
+        * signal
+        * (1.0 - clean_sky * 0.94)
+        * (1.0 - star_protect * 0.82),
+        0.0,
+        1.0,
+    )
+    ha_fiber = cv2.GaussianBlur(np.clip(red_push * detail_carrier, 0.0, 1.0).astype(np.float32), (0, 0), 0.30)
+    oiii_fiber = cv2.GaussianBlur(
+        np.clip((oiii_mask * 0.44 + oiii_relative * gb_norm * 0.56) * detail_carrier, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        0.40,
+    )
+    oiii_fiber = np.clip(oiii_fiber * (1.0 - ha_fiber * 0.28), 0.0, 1.0)
+    fiber_lum = np.clip(base_lum * 0.62 + source_lum * 0.38, 0.018, 1.0)
+    fiber_delta = (
+        ha_fiber[..., None] * np.array([0.96, 0.22, -0.18], dtype=np.float32).reshape(1, 1, 3)
+        + oiii_fiber[..., None] * np.array([-0.38, 0.24, 0.86], dtype=np.float32).reshape(1, 1, 3)
+    )
+    showcase = np.clip(showcase + fiber_delta * fiber_lum[..., None] * 1.08, 0.0, 1.0)
+    fiber_lum_after = _luminance(showcase).astype(np.float32)
+    fiber_target_lum = np.clip(base_lum + white_fiber * 0.070 + (ha_fiber + oiii_fiber) * signal * 0.050 + strand_detail * signal * 0.038, 0.0, 1.0)
+    showcase = np.clip(showcase * (fiber_target_lum / np.maximum(fiber_lum_after, 1e-5))[..., None], 0.0, 1.0)
 
     # Add a soft H-alpha body and OIII filament haze. This keeps the result wispy
     # instead of only coloring isolated high-SNR knots.
-    ha_haze = cv2.GaussianBlur((ha_mask * (0.10 + local_detail * 0.72 + ridge * 0.16)).astype(np.float32), (0, 0), 0.85)[..., None]
-    oiii_haze = cv2.GaussianBlur((oiii_mask * (0.50 + ridge * 0.34 + local_detail * 0.16)).astype(np.float32), (0, 0), 1.35)[..., None]
+    ha_haze = cv2.GaussianBlur((red_push * (0.02 + local_detail * 0.44 + strand_detail * 0.30)).astype(np.float32), (0, 0), 0.38)[..., None]
+    oiii_haze = cv2.GaussianBlur((oiii_mask * (0.24 + ridge * 0.42 + local_detail * 0.24)).astype(np.float32), (0, 0), 0.82)[..., None]
     showcase = np.clip(
         showcase
-        + ha_haze * np.array([0.020, 0.005, 0.000], dtype=np.float32).reshape(1, 1, 3)
-        + oiii_haze * np.array([0.000, 0.025, 0.072], dtype=np.float32).reshape(1, 1, 3),
+        + ha_haze * np.array([0.006, 0.002, 0.000], dtype=np.float32).reshape(1, 1, 3)
+        + oiii_haze * np.array([0.000, 0.022, 0.062], dtype=np.float32).reshape(1, 1, 3),
         0.0,
         1.0,
     )
     post_haze_lum = _luminance(showcase).astype(np.float32)
-    texture_lum = np.clip(base_lum + local_detail * signal * 0.018 + ridge * signal * 0.024 - filament_shadow * signal * 0.030, 0.0, 1.0)
+    texture_lum = np.clip(
+        base_lum
+        + local_detail * signal * 0.022
+        + strand_detail * signal * 0.046
+        + ridge * signal * 0.034
+        - filament_shadow * signal * 0.026,
+        0.0,
+        1.0,
+    )
     target_haze_lum = np.clip(texture_lum, 0.0, 1.0)
     haze_keep = np.clip(signal * 0.74 + ridge * 0.24, 0.0, 1.0)
     lum_fixed = np.clip(showcase * (target_haze_lum / np.maximum(post_haze_lum, 1e-5))[..., None], 0.0, 1.0)
