@@ -1015,6 +1015,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                     write_log,
                     star_strength=0.0,
                     color_separation=color_separation,
+                    color_reference_image=load_image(calibrated, write_log),
                 )
             else:
                 star_strength = 0.64 if starless_test_requested else 0.78
@@ -1025,6 +1026,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                     write_log,
                     star_strength=star_strength,
                     color_separation=color_separation,
+                    color_reference_image=load_image(calibrated, write_log),
                 )
             save_tiff(final, composed_nebula, write_log)
             _log_existing_image(final, write_log, "final.tif")

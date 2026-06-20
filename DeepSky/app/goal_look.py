@@ -1754,17 +1754,19 @@ def apply_pixinsight_style_nebula_finish(image: np.ndarray, log: LogCallback | N
 
 
 def _nebula_color_separation_strength(mode: str) -> float:
-    normalized = str(mode or "Balanced").strip().lower().replace("_", " ").replace("-", " ")
+    normalized = str(mode or "Strong").strip().lower().replace("_", " ").replace("-", " ")
     if normalized in {"natural", "low", "subtle"}:
         return 0.18
-    if normalized in {"strong", "high", "showcase"}:
+    if normalized in {"strong", "high"}:
+        return 0.68
+    if normalized in {"showcase", "hoo", "showcase hoo"}:
         return 0.48
     return 0.30
 
 
 def _is_showcase_hoo_mode(mode: str) -> bool:
     normalized = str(mode or "").strip().lower().replace("_", " ").replace("-", " ")
-    return normalized in {"strong", "high", "showcase", "hoo", "showcase hoo"}
+    return normalized in {"showcase", "hoo", "showcase hoo"}
 
 
 def _apply_showcase_hoo_nebula_grade(
@@ -2127,10 +2129,16 @@ def compose_pixinsight_nebula_layers(
     log: LogCallback | None = None,
     star_strength: float = 0.70,
     color_separation: str = "Balanced",
+    color_reference_image: np.ndarray | None = None,
 ) -> np.ndarray:
     """Controlled nebula composer: process starless signal and stars separately."""
     starless = _to_float01(starless_image)
     stars = _to_float01(stars_image)
+    color_reference = None
+    if color_reference_image is not None:
+        candidate = _to_float01(color_reference_image)
+        if candidate.ndim == 3 and candidate.shape[-1] >= 3 and candidate.shape[:2] == starless.shape[:2]:
+            color_reference = candidate[..., :3]
     if starless.ndim != 3 or starless.shape[-1] < 3:
         return _to_uint16(starless)
     if stars.ndim != 3 or stars.shape[-1] < 3 or stars.shape[:2] != starless.shape[:2]:
@@ -2166,6 +2174,11 @@ def compose_pixinsight_nebula_layers(
     ridge_low = _safe_percentile(ridge[safe], 58.0, float(np.percentile(ridge, 58.0)))
     ridge_high = _safe_percentile(ridge[safe], 99.35, float(np.percentile(ridge, 99.35)))
     ridge = np.clip((ridge - ridge_low) / max(1e-6, ridge_high - ridge_low), 0.0, 1.0)
+    fine_detail_raw = np.abs(lum - blur8).astype(np.float32)
+    fine_low = _safe_percentile(fine_detail_raw[safe], 68.0, float(np.percentile(fine_detail_raw, 68.0)))
+    fine_high = _safe_percentile(fine_detail_raw[safe], 99.45, float(np.percentile(fine_detail_raw, 99.45)))
+    fine_detail = np.clip((fine_detail_raw - fine_low) / max(1e-6, fine_high - fine_low), 0.0, 1.0)
+    fine_detail = cv2.GaussianBlur(fine_detail.astype(np.float32), (0, 0), 1.15)
 
     nebula_mask = np.clip(broad * 0.36 + mid * 0.42 + color_signal * 0.28 + ridge * 0.30, 0.0, 1.0)
     nebula_mask = cv2.GaussianBlur((nebula_mask * support * (1.0 - star_protect * 0.70)).astype(np.float32), (0, 0), 4.0)
@@ -2204,6 +2217,35 @@ def compose_pixinsight_nebula_layers(
     bg_correction = bg_field - bg_median.reshape(1, 1, 3)
     gradient_mix = np.clip(clean_sky[..., None] * 0.82 + sky_mask[..., None] * (1.0 - nebula_mask[..., None]) * 0.30, 0.0, 0.92)
     calibrated = np.clip(calibrated - bg_correction * gradient_mix * 0.66, 0.0, 1.0)
+
+    color_calibrated = calibrated
+    if color_reference is not None:
+        ref_pixels = color_reference[clean_sky > 0.70]
+        if ref_pixels.size < 512:
+            ref_pixels = color_reference[fallback]
+        if ref_pixels.size < 512:
+            ref_pixels = color_reference.reshape(-1, 3)
+        ref_bg = np.median(ref_pixels, axis=0).astype(np.float32)
+        ref_neutral = float(np.mean(ref_bg))
+        ref_gains = np.clip(ref_neutral / np.maximum(ref_bg, 1e-5), 0.62, 1.48)
+        color_calibrated = np.clip(
+            color_reference * (1.0 - clean_sky[..., None] * 0.52)
+            + color_reference * ref_gains.reshape(1, 1, 3) * (clean_sky[..., None] * 0.52),
+            0.0,
+            1.0,
+        )
+        ref_bg_median = (
+            np.median(color_calibrated[clean_sky > 0.68], axis=0)
+            if np.count_nonzero(clean_sky > 0.68) > 512
+            else np.median(color_calibrated.reshape(-1, 3), axis=0)
+        )
+        ref_fill = color_calibrated.copy()
+        ref_fill[clean_sky <= 0.68] = ref_bg_median
+        ref_bg_field = np.stack(
+            [cv2.GaussianBlur(ref_fill[..., channel].astype(np.float32), (0, 0), 96.0) for channel in range(3)],
+            axis=2,
+        )
+        color_calibrated = np.clip(color_calibrated - (ref_bg_field - ref_bg_median.reshape(1, 1, 3)) * gradient_mix * 0.46, 0.0, 1.0)
 
     lum = _luminance(calibrated).astype(np.float32)
     sky_lum = lum[clean_sky > 0.68]
@@ -2250,9 +2292,9 @@ def compose_pixinsight_nebula_layers(
     ha_mean = 0.0
     oiii_mean = 0.0
     if separation_strength > 0.0:
-        red = calibrated[..., 0].astype(np.float32)
-        green = calibrated[..., 1].astype(np.float32)
-        blue = calibrated[..., 2].astype(np.float32)
+        red = color_calibrated[..., 0].astype(np.float32)
+        green = color_calibrated[..., 1].astype(np.float32)
+        blue = color_calibrated[..., 2].astype(np.float32)
         max_gb = np.maximum(green, blue)
         oiii_base = green * 0.48 + blue * 0.72
         ha_raw = np.clip(red - max_gb * 0.84, 0.0, 1.0)
@@ -2264,54 +2306,157 @@ def compose_pixinsight_nebula_layers(
         filament_snr = np.clip(local_snr * 0.42 + ridge * 0.38 + nebula_core * 0.34, 0.0, 1.0)
 
         signal_gate = np.clip(
-            (nebula_mask * 0.48 + nebula_core * 0.28 + ridge * 0.20 + color_signal * 0.12)
+            (nebula_mask * 0.58 + nebula_core * 0.16 + ridge * 0.18 + color_signal * 0.12)
             * support
-            * filament_snr
+            * (0.48 + filament_snr * 0.52)
             * (1.0 - clean_sky * 0.96)
             * (1.0 - star_protect * 0.86),
             0.0,
             1.0,
         )
-        signal_gate = cv2.GaussianBlur(signal_gate.astype(np.float32), (0, 0), 1.7)
+        signal_gate = cv2.GaussianBlur(signal_gate.astype(np.float32), (0, 0), 2.4)
 
         ha_values = ha_raw[signal_gate > 0.10]
         oiii_values = oiii_raw[signal_gate > 0.10]
         ha_high = _safe_percentile(ha_values, 98.8, float(np.percentile(ha_raw, 99.0))) if ha_values.size else 1e-6
         oiii_high = _safe_percentile(oiii_values, 98.8, float(np.percentile(oiii_raw, 99.0))) if oiii_values.size else 1e-6
-        ha = np.clip(ha_raw / max(ha_high, 1e-6), 0.0, 1.0) ** 0.92
-        oiii = np.clip(oiii_raw / max(oiii_high, 1e-6), 0.0, 1.0) ** 1.12
-
-        ha_mask = cv2.GaussianBlur((ha * signal_gate).astype(np.float32), (0, 0), 0.9)
-        oiii_gate = np.clip(signal_gate * (filament_snr ** 1.20) * (1.0 - clean_sky * 0.98), 0.0, 1.0)
-        oiii_mask = cv2.GaussianBlur((oiii * oiii_gate).astype(np.float32), (0, 0), 0.8)
-        ha_mask = np.clip(ha_mask * (1.0 - oiii_mask * 0.40), 0.0, 1.0)
-        oiii_mask = np.clip(oiii_mask * (1.0 - ha_mask * 0.72), 0.0, 1.0)
+        ha_mask = cv2.GaussianBlur((np.clip(ha_raw / max(ha_high, 1e-6), 0.0, 1.0) * signal_gate).astype(np.float32), (0, 0), 2.8)
+        oiii_mask = cv2.GaussianBlur((np.clip(oiii_raw / max(oiii_high, 1e-6), 0.0, 1.0) * signal_gate).astype(np.float32), (0, 0), 2.8)
         oiii_present = float(np.percentile(oiii_mask[signal_gate > 0.16], 96.0)) if np.count_nonzero(signal_gate > 0.16) > 128 else 0.0
         if oiii_present < 0.055:
-            oiii_mask *= 0.10
-
-        warm_palette = np.array([1.00, 0.36, 0.12], dtype=np.float32).reshape(1, 1, 3)
-        cool_palette = np.array([0.08, 0.54, 0.88], dtype=np.float32).reshape(1, 1, 3)
-        warm_mix = np.clip(ha_mask[..., None] * (0.045 + 0.030 * separation_strength) * separation_strength, 0.0, 0.075)
-        cool_mix = np.clip(oiii_mask[..., None] * (0.034 + 0.024 * separation_strength) * separation_strength, 0.0, 0.055)
-
-        colorized = np.clip(output + warm_palette * warm_mix + cool_palette * cool_mix, 0.0, 1.0)
-        colorized_lum = _luminance(colorized).astype(np.float32)
-        output_lum = _luminance(output).astype(np.float32)
-        colorized = np.clip(colorized * (output_lum / np.maximum(colorized_lum, 1e-5))[..., None], 0.0, 1.0)
-        blend_mask = np.clip((ha_mask + oiii_mask) * signal_gate * (0.34 + 0.18 * separation_strength), 0.0, 0.46)
-        output = np.clip(output * (1.0 - blend_mask[..., None]) + colorized * blend_mask[..., None], 0.0, 1.0)
+            oiii_mask *= 0.18
 
         output_lum = _luminance(output).astype(np.float32)
+        measured_lum = _luminance(color_calibrated).astype(np.float32)
+        linear_chroma = np.clip(color_calibrated - measured_lum[..., None], -1.0, 1.0)
+        soft_color = cv2.GaussianBlur(color_calibrated.astype(np.float32), (0, 0), 1.6)
+        soft_lum = _luminance(soft_color).astype(np.float32)
+        soft_chroma = np.clip(soft_color - soft_lum[..., None], -1.0, 1.0)
+        broad_color = cv2.GaussianBlur(color_calibrated.astype(np.float32), (0, 0), 5.5)
+        broad_lum = _luminance(broad_color).astype(np.float32)
+        broad_chroma = np.clip(broad_color - broad_lum[..., None], -1.0, 1.0)
+        measured_chroma = np.clip(linear_chroma * 0.68 + soft_chroma * 0.26 + broad_chroma * 0.06, -1.0, 1.0)
+
+        color_permission = np.clip(
+            (nebula_mask * 0.30 + ridge * 0.30 + fine_detail * 0.24 + color_signal * 0.24)
+            * support
+            * (0.58 + filament_snr * 0.42)
+            * (1.0 - clean_sky * 0.98)
+            * (1.0 - star_protect * 0.90),
+            0.0,
+            1.0,
+        )
+        color_permission = cv2.GaussianBlur(color_permission.astype(np.float32), (0, 0), 2.1)
+
+        colorfulness = np.max(np.abs(measured_chroma), axis=2)
+        color_floor = _safe_percentile(colorfulness[color_permission > 0.10], 42.0, float(np.percentile(colorfulness, 55.0))) if np.count_nonzero(color_permission > 0.10) else float(np.percentile(colorfulness, 55.0))
+        color_ceiling = _safe_percentile(colorfulness[color_permission > 0.10], 99.4, float(np.percentile(colorfulness, 99.4))) if np.count_nonzero(color_permission > 0.10) else float(np.percentile(colorfulness, 99.4))
+        chroma_snr = np.clip((colorfulness - color_floor) / max(1e-6, color_ceiling - color_floor), 0.0, 1.0)
+        chroma_snr = cv2.GaussianBlur(chroma_snr.astype(np.float32), (0, 0), 1.2)
+
+        saturation_mask = np.clip(
+            color_permission
+            * (0.52 + chroma_snr * 0.48)
+            * (1.0 - clean_sky * 0.94)
+            * (1.0 - star_protect * 0.92),
+            0.0,
+            1.0,
+        )
+        texture_gate = np.clip(
+            0.34
+            + ridge * 0.44
+            + fine_detail * 0.48
+            + color_signal * 0.20
+            + nebula_core * 0.12,
+            0.28,
+            1.0,
+        )
+        texture_gate = cv2.GaussianBlur(texture_gate.astype(np.float32), (0, 0), 1.4)
+        saturation_mask = np.clip(saturation_mask * texture_gate, 0.0, 1.0)
+
+        saturation_gain = 1.0 + saturation_mask[..., None] * (1.55 + separation_strength * 3.75)
+        enhanced_chroma = measured_chroma * saturation_gain
+        chroma_extent = np.max(np.abs(enhanced_chroma), axis=2)
+        chroma_limit = np.clip(
+            0.072
+            + nebula_mask * 0.185
+            + ridge * 0.170
+            + fine_detail * 0.130
+            + chroma_snr * 0.135,
+            0.075,
+            0.520,
+        )
+        chroma_limit = cv2.GaussianBlur(chroma_limit.astype(np.float32), (0, 0), 2.1)
+        chroma_rolloff = np.tanh(chroma_extent / np.maximum(chroma_limit, 1e-5)) * chroma_limit / np.maximum(chroma_extent, 1e-5)
+        enhanced_chroma *= chroma_rolloff[..., None]
+
+        base_chroma = output - output_lum[..., None]
+        composite_chroma = np.clip(base_chroma * 0.34 + enhanced_chroma * 0.66, -1.0, 1.0)
+        target = np.clip(output_lum[..., None] + composite_chroma, 0.0, 1.0)
+        target_lum = _luminance(target).astype(np.float32)
+        target = np.clip(target * (output_lum / np.maximum(target_lum, 1e-5))[..., None], 0.0, 1.0)
+        blend_mask = np.clip(saturation_mask * (0.76 + separation_strength * 0.56), 0.0, 0.95)
+        output = np.clip(output * (1.0 - blend_mask[..., None]) + target * blend_mask[..., None], 0.0, 1.0)
+
+        output_lum = _luminance(output).astype(np.float32)
+        hsv = cv2.cvtColor(output.astype(np.float32), cv2.COLOR_RGB2HSV)
+        hue = hsv[..., 0]
+        sat = hsv[..., 1]
+        val = hsv[..., 2]
+        vibrance_mask = np.clip(
+            saturation_mask
+            * (0.38 + fine_detail * 0.30 + ridge * 0.22 + chroma_snr * 0.22)
+            * (1.0 - clean_sky * 0.96)
+            * (1.0 - star_protect * 0.92),
+            0.0,
+            1.0,
+        )
+        vibrance_mask = cv2.GaussianBlur(vibrance_mask.astype(np.float32), (0, 0), 1.6)
+        vibrance_strength = np.clip(0.58 + separation_strength * 1.70, 0.58, 1.90)
+        sat_boost = np.clip((1.0 - sat) * vibrance_mask * vibrance_strength, 0.0, 0.32)
+        sat = np.clip(sat + sat_boost, 0.0, 1.0)
+        val = np.clip(val + (1.0 - val) * vibrance_mask * (0.018 + separation_strength * 0.026), 0.0, 1.0)
+        output = cv2.cvtColor(np.dstack([hue, sat, val]).astype(np.float32), cv2.COLOR_HSV2RGB)
+        vib_lum = _luminance(output).astype(np.float32)
+        output = np.clip(output * (output_lum / np.maximum(vib_lum, 1e-5))[..., None], 0.0, 1.0)
+        output_lum = _luminance(output).astype(np.float32)
+        output_chroma = output - output_lum[..., None]
         sky_desat = np.clip(clean_sky * (1.0 - nebula_mask * 0.92) * (0.24 + 0.10 * separation_strength), 0.0, 0.42)
         output = np.clip(output_lum[..., None] + (output - output_lum[..., None]) * (1.0 - sky_desat[..., None]), 0.0, 1.0)
+        if separation_strength >= 0.64:
+            output_lum = _luminance(output).astype(np.float32)
+            highpass_fine = output_lum - cv2.GaussianBlur(output_lum, (0, 0), 1.05)
+            highpass_small = cv2.GaussianBlur(output_lum, (0, 0), 1.8) - cv2.GaussianBlur(output_lum, (0, 0), 5.8)
+            highpass_mid = cv2.GaussianBlur(output_lum, (0, 0), 4.8) - cv2.GaussianBlur(output_lum, (0, 0), 15.0)
+            structure_pop = np.clip(
+                (ridge * 0.46 + fine_detail * 0.42 + nebula_core * 0.32 + color_signal * 0.18)
+                * support
+                * (1.0 - clean_sky * 0.98)
+                * (1.0 - star_protect * 0.94),
+                0.0,
+                1.0,
+            )
+            structure_pop = cv2.GaussianBlur(structure_pop.astype(np.float32), (0, 0), 0.9)
+            sharpened_lum = np.clip(
+                output_lum
+                + highpass_fine * structure_pop * 0.22
+                + highpass_small * structure_pop * 0.62
+                + highpass_mid * nebula_mask * (1.0 - clean_sky * 0.95) * 0.26,
+                0.0,
+                1.0,
+            )
+            # Keep the sharpened nebula from turning crunchy by rolling off the strongest highlights.
+            highlight_guard = np.clip((output_lum - 0.58) / 0.32, 0.0, 1.0)
+            sharpened_lum = np.clip(sharpened_lum * (1.0 - highlight_guard * 0.10) + output_lum * (highlight_guard * 0.10), 0.0, 1.0)
+            output = np.clip(output * (sharpened_lum / np.maximum(output_lum, 1e-5))[..., None], 0.0, 1.0)
+
         ha_mean = float(np.mean(ha_mask * signal_gate))
         oiii_mean = float(np.mean(oiii_mask * signal_gate))
 
         if _is_showcase_hoo_mode(color_separation):
             output, ha_mean, oiii_mean = _apply_showcase_hoo_nebula_grade(
                 output,
-                calibrated,
+                color_calibrated,
                 nebula_mask,
                 nebula_core,
                 ridge,
@@ -2339,6 +2484,10 @@ def compose_pixinsight_nebula_layers(
         sky_target = np.array([0.044, 0.056, 0.064], dtype=np.float32).reshape(1, 1, 3)
         sky_darken_strength = 0.05
         edge_darken_strength = 0.24
+    elif separation_strength >= 0.64:
+        sky_target = np.array([0.024, 0.029, 0.034], dtype=np.float32).reshape(1, 1, 3)
+        sky_darken_strength = 0.13
+        edge_darken_strength = 0.36
     else:
         sky_target = np.array([0.018, 0.018, 0.019], dtype=np.float32).reshape(1, 1, 3)
         sky_darken_strength = 0.24
