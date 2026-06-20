@@ -2130,6 +2130,7 @@ def compose_pixinsight_nebula_layers(
     star_strength: float = 0.70,
     color_separation: str = "Balanced",
     color_reference_image: np.ndarray | None = None,
+    color_texture_reference_image: np.ndarray | None = None,
 ) -> np.ndarray:
     """Controlled nebula composer: process starless signal and stars separately."""
     starless = _to_float01(starless_image)
@@ -2139,6 +2140,11 @@ def compose_pixinsight_nebula_layers(
         candidate = _to_float01(color_reference_image)
         if candidate.ndim == 3 and candidate.shape[-1] >= 3 and candidate.shape[:2] == starless.shape[:2]:
             color_reference = candidate[..., :3]
+    color_texture_reference = None
+    if color_texture_reference_image is not None:
+        candidate = _to_float01(color_texture_reference_image)
+        if candidate.ndim == 3 and candidate.shape[-1] >= 3 and candidate.shape[:2] == starless.shape[:2]:
+            color_texture_reference = candidate[..., :3]
     if starless.ndim != 3 or starless.shape[-1] < 3:
         return _to_uint16(starless)
     if stars.ndim != 3 or stars.shape[-1] < 3 or stars.shape[:2] != starless.shape[:2]:
@@ -2219,6 +2225,7 @@ def compose_pixinsight_nebula_layers(
     calibrated = np.clip(calibrated - bg_correction * gradient_mix * 0.66, 0.0, 1.0)
 
     color_calibrated = calibrated
+    color_direction_calibrated = None
     if color_reference is not None:
         ref_pixels = color_reference[clean_sky > 0.70]
         if ref_pixels.size < 512:
@@ -2246,6 +2253,37 @@ def compose_pixinsight_nebula_layers(
             axis=2,
         )
         color_calibrated = np.clip(color_calibrated - (ref_bg_field - ref_bg_median.reshape(1, 1, 3)) * gradient_mix * 0.46, 0.0, 1.0)
+    if color_texture_reference is not None:
+        tex_pixels = color_texture_reference[clean_sky > 0.70]
+        if tex_pixels.size < 512:
+            tex_pixels = color_texture_reference[fallback]
+        if tex_pixels.size < 512:
+            tex_pixels = color_texture_reference.reshape(-1, 3)
+        tex_bg = np.median(tex_pixels, axis=0).astype(np.float32)
+        tex_neutral = float(np.mean(tex_bg))
+        tex_gains = np.clip(tex_neutral / np.maximum(tex_bg, 1e-5), 0.62, 1.48)
+        color_direction_calibrated = np.clip(
+            color_texture_reference * (1.0 - clean_sky[..., None] * 0.52)
+            + color_texture_reference * tex_gains.reshape(1, 1, 3) * (clean_sky[..., None] * 0.52),
+            0.0,
+            1.0,
+        )
+        tex_bg_median = (
+            np.median(color_direction_calibrated[clean_sky > 0.68], axis=0)
+            if np.count_nonzero(clean_sky > 0.68) > 512
+            else np.median(color_direction_calibrated.reshape(-1, 3), axis=0)
+        )
+        tex_fill = color_direction_calibrated.copy()
+        tex_fill[clean_sky <= 0.68] = tex_bg_median
+        tex_bg_field = np.stack(
+            [cv2.GaussianBlur(tex_fill[..., channel].astype(np.float32), (0, 0), 96.0) for channel in range(3)],
+            axis=2,
+        )
+        color_direction_calibrated = np.clip(
+            color_direction_calibrated - (tex_bg_field - tex_bg_median.reshape(1, 1, 3)) * gradient_mix * 0.46,
+            0.0,
+            1.0,
+        )
 
     lum = _luminance(calibrated).astype(np.float32)
     sky_lum = lum[clean_sky > 0.68]
@@ -2327,15 +2365,17 @@ def compose_pixinsight_nebula_layers(
             oiii_mask *= 0.18
 
         output_lum = _luminance(output).astype(np.float32)
-        measured_lum = _luminance(color_calibrated).astype(np.float32)
-        linear_chroma = np.clip(color_calibrated - measured_lum[..., None], -1.0, 1.0)
-        soft_color = cv2.GaussianBlur(color_calibrated.astype(np.float32), (0, 0), 1.6)
+        direction_source = color_direction_calibrated if color_direction_calibrated is not None else color_calibrated
+        measured_lum = _luminance(direction_source).astype(np.float32)
+        linear_chroma = np.clip(direction_source - measured_lum[..., None], -1.0, 1.0)
+        soft_color = cv2.GaussianBlur(direction_source.astype(np.float32), (0, 0), 1.6)
         soft_lum = _luminance(soft_color).astype(np.float32)
         soft_chroma = np.clip(soft_color - soft_lum[..., None], -1.0, 1.0)
-        broad_color = cv2.GaussianBlur(color_calibrated.astype(np.float32), (0, 0), 5.5)
-        broad_lum = _luminance(broad_color).astype(np.float32)
-        broad_chroma = np.clip(broad_color - broad_lum[..., None], -1.0, 1.0)
-        measured_chroma = np.clip(linear_chroma * 0.68 + soft_chroma * 0.26 + broad_chroma * 0.06, -1.0, 1.0)
+        micro_chroma = np.clip(linear_chroma - soft_chroma, -1.0, 1.0)
+        measured_chroma = np.clip(linear_chroma * 0.84 + soft_chroma * 0.16, -1.0, 1.0)
+        strength_lum = _luminance(color_calibrated).astype(np.float32)
+        strength_chroma = np.clip(color_calibrated - strength_lum[..., None], -1.0, 1.0)
+        strength_colorfulness = np.sqrt(np.sum(strength_chroma * strength_chroma, axis=2))
 
         color_permission = np.clip(
             (nebula_mask * 0.30 + ridge * 0.30 + fine_detail * 0.24 + color_signal * 0.24)
@@ -2346,56 +2386,100 @@ def compose_pixinsight_nebula_layers(
             0.0,
             1.0,
         )
-        color_permission = cv2.GaussianBlur(color_permission.astype(np.float32), (0, 0), 2.1)
+        color_permission = np.clip(
+            color_permission * 0.72 + cv2.GaussianBlur(color_permission.astype(np.float32), (0, 0), 4.0) * 0.28,
+            0.0,
+            1.0,
+        )
 
-        colorfulness = np.max(np.abs(measured_chroma), axis=2)
+        colorfulness = np.sqrt(np.sum(measured_chroma * measured_chroma, axis=2))
+        colorfulness = np.maximum(colorfulness, strength_colorfulness * 0.72)
         color_floor = _safe_percentile(colorfulness[color_permission > 0.10], 42.0, float(np.percentile(colorfulness, 55.0))) if np.count_nonzero(color_permission > 0.10) else float(np.percentile(colorfulness, 55.0))
         color_ceiling = _safe_percentile(colorfulness[color_permission > 0.10], 99.4, float(np.percentile(colorfulness, 99.4))) if np.count_nonzero(color_permission > 0.10) else float(np.percentile(colorfulness, 99.4))
         chroma_snr = np.clip((colorfulness - color_floor) / max(1e-6, color_ceiling - color_floor), 0.0, 1.0)
-        chroma_snr = cv2.GaussianBlur(chroma_snr.astype(np.float32), (0, 0), 1.2)
+        chroma_snr = chroma_snr * chroma_snr * (3.0 - 2.0 * chroma_snr)
+        chroma_snr = np.clip(
+            chroma_snr * 0.78 + cv2.GaussianBlur(chroma_snr.astype(np.float32), (0, 0), 2.0) * 0.22,
+            0.0,
+            1.0,
+        )
 
         saturation_mask = np.clip(
             color_permission
-            * (0.52 + chroma_snr * 0.48)
+            * (0.78 + chroma_snr * 0.22)
             * (1.0 - clean_sky * 0.94)
             * (1.0 - star_protect * 0.92),
             0.0,
             1.0,
         )
         texture_gate = np.clip(
-            0.34
+            0.52
             + ridge * 0.44
             + fine_detail * 0.48
             + color_signal * 0.20
             + nebula_core * 0.12,
-            0.28,
+            0.45,
             1.0,
         )
-        texture_gate = cv2.GaussianBlur(texture_gate.astype(np.float32), (0, 0), 1.4)
+        texture_gate = np.clip(
+            texture_gate * 0.80 + cv2.GaussianBlur(texture_gate.astype(np.float32), (0, 0), 2.2) * 0.20,
+            0.0,
+            1.0,
+        )
         saturation_mask = np.clip(saturation_mask * texture_gate, 0.0, 1.0)
 
-        saturation_gain = 1.0 + saturation_mask[..., None] * (1.55 + separation_strength * 3.75)
-        enhanced_chroma = measured_chroma * saturation_gain
-        chroma_extent = np.max(np.abs(enhanced_chroma), axis=2)
-        chroma_limit = np.clip(
-            0.072
-            + nebula_mask * 0.185
-            + ridge * 0.170
-            + fine_detail * 0.130
-            + chroma_snr * 0.135,
-            0.075,
-            0.520,
+        saturation_gain = 1.0 + saturation_mask[..., None] * (1.60 + separation_strength * 4.05)
+        chroma_texture = micro_chroma * np.clip(0.28 + fine_detail * 0.48 + ridge * 0.30, 0.0, 0.68)[..., None]
+        chroma_direction = measured_chroma / np.maximum(colorfulness[..., None], 1e-5)
+        strength_floor = _safe_percentile(
+            strength_colorfulness[color_permission > 0.10],
+            52.0,
+            float(np.percentile(strength_colorfulness, 62.0)),
+        ) if np.count_nonzero(color_permission > 0.10) else float(np.percentile(strength_colorfulness, 62.0))
+        strength_ceiling = _safe_percentile(
+            strength_colorfulness[color_permission > 0.10],
+            99.2,
+            float(np.percentile(strength_colorfulness, 99.2)),
+        ) if np.count_nonzero(color_permission > 0.10) else float(np.percentile(strength_colorfulness, 99.2))
+        strength_weight = np.clip((strength_colorfulness - strength_floor) / max(1e-6, strength_ceiling - strength_floor), 0.0, 1.0)
+        strength_weight = np.clip(
+            strength_weight * 0.72 + cv2.GaussianBlur(strength_weight.astype(np.float32), (0, 0), 2.6) * 0.28,
+            0.0,
+            1.0,
         )
-        chroma_limit = cv2.GaussianBlur(chroma_limit.astype(np.float32), (0, 0), 2.1)
-        chroma_rolloff = np.tanh(chroma_extent / np.maximum(chroma_limit, 1e-5)) * chroma_limit / np.maximum(chroma_extent, 1e-5)
-        enhanced_chroma *= chroma_rolloff[..., None]
+        directional_lift = chroma_direction * saturation_mask[..., None] * (
+            0.018
+            + separation_strength * 0.044
+            + nebula_mask[..., None] * 0.018
+            + ridge[..., None] * 0.020
+            + fine_detail[..., None] * 0.014
+            + strength_weight[..., None] * (0.014 + separation_strength * 0.030)
+        )
+        enhanced_chroma = measured_chroma * saturation_gain + chroma_texture * saturation_mask[..., None] + directional_lift
+        chroma_extent = np.sqrt(np.sum(enhanced_chroma * enhanced_chroma, axis=2))
+        chroma_limit = np.clip(
+            0.105
+            + nebula_mask * 0.225
+            + ridge * 0.205
+            + fine_detail * 0.165
+            + chroma_snr * 0.185,
+            0.110,
+            0.680,
+        )
+        chroma_limit = np.clip(
+            chroma_limit * 0.84 + cv2.GaussianBlur(chroma_limit.astype(np.float32), (0, 0), 3.0) * 0.16,
+            0.0,
+            1.0,
+        )
+        chroma_over = np.clip((chroma_extent - chroma_limit) / np.maximum(chroma_limit * 1.8, 1e-5), 0.0, 1.0)
+        enhanced_chroma *= (1.0 / (1.0 + chroma_over * 0.38))[..., None]
 
         base_chroma = output - output_lum[..., None]
-        composite_chroma = np.clip(base_chroma * 0.34 + enhanced_chroma * 0.66, -1.0, 1.0)
+        composite_chroma = np.clip(base_chroma * 0.24 + enhanced_chroma * 0.76, -1.0, 1.0)
         target = np.clip(output_lum[..., None] + composite_chroma, 0.0, 1.0)
         target_lum = _luminance(target).astype(np.float32)
         target = np.clip(target * (output_lum / np.maximum(target_lum, 1e-5))[..., None], 0.0, 1.0)
-        blend_mask = np.clip(saturation_mask * (0.76 + separation_strength * 0.56), 0.0, 0.95)
+        blend_mask = np.clip(saturation_mask * (0.76 + separation_strength * 0.52), 0.0, 0.93)
         output = np.clip(output * (1.0 - blend_mask[..., None]) + target * blend_mask[..., None], 0.0, 1.0)
 
         output_lum = _luminance(output).astype(np.float32)
@@ -2412,8 +2496,8 @@ def compose_pixinsight_nebula_layers(
             1.0,
         )
         vibrance_mask = cv2.GaussianBlur(vibrance_mask.astype(np.float32), (0, 0), 1.6)
-        vibrance_strength = np.clip(0.58 + separation_strength * 1.70, 0.58, 1.90)
-        sat_boost = np.clip((1.0 - sat) * vibrance_mask * vibrance_strength, 0.0, 0.32)
+        vibrance_strength = np.clip(0.58 + separation_strength * 1.72, 0.58, 1.75)
+        sat_boost = np.clip((1.0 - sat) * vibrance_mask * vibrance_strength, 0.0, 0.30)
         sat = np.clip(sat + sat_boost, 0.0, 1.0)
         val = np.clip(val + (1.0 - val) * vibrance_mask * (0.018 + separation_strength * 0.026), 0.0, 1.0)
         output = cv2.cvtColor(np.dstack([hue, sat, val]).astype(np.float32), cv2.COLOR_HSV2RGB)

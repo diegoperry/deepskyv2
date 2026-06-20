@@ -1005,6 +1005,14 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stars, write_log, "stars.tif")
         if object_type == "nebula" and not green_duoband_raw:
             color_separation = str(getattr(settings, "nebula_color_separation", "Balanced") or "Balanced")
+            nebula_color_reference = job_folder / "siril_calibrated.tif"
+            nebula_texture_reference = nebula_color_reference
+            if nebula_color_reference.exists():
+                write_log("Using Siril-calibrated image as nebula chroma reference.")
+            else:
+                nebula_color_reference = calibrated
+                nebula_texture_reference = working
+                write_log("Using calibrated image for nebula color strength and original working image for hue texture.")
             write_log("Nebula Color: Enhanced")
             write_log(f"DeepSky color separation: {color_separation}")
             if starless_only_requested:
@@ -1015,7 +1023,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                     write_log,
                     star_strength=0.0,
                     color_separation=color_separation,
-                    color_reference_image=load_image(calibrated, write_log),
+                    color_reference_image=load_image(nebula_color_reference, write_log),
+                    color_texture_reference_image=load_image(nebula_texture_reference, write_log),
                 )
             else:
                 star_strength = 0.64 if starless_test_requested else 0.78
@@ -1026,7 +1035,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                     write_log,
                     star_strength=star_strength,
                     color_separation=color_separation,
-                    color_reference_image=load_image(calibrated, write_log),
+                    color_reference_image=load_image(nebula_color_reference, write_log),
+                    color_texture_reference_image=load_image(nebula_texture_reference, write_log),
                 )
             save_tiff(final, composed_nebula, write_log)
             _log_existing_image(final, write_log, "final.tif")
