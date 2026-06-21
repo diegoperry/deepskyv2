@@ -2589,26 +2589,14 @@ def compose_pixinsight_nebula_layers(
     else:
         star_weight = np.clip((star_norm - 0.055) / 0.945, 0.0, 1.0) ** 0.86
     star_color = np.clip(stars / np.maximum(star_lum[..., None], 1e-5), 0.58, 1.62)
-    star_neutral = np.array([1.02, 1.00, 0.98], dtype=np.float32).reshape(1, 1, 3)
-    bright_core = np.clip((star_norm - 0.30) / 0.70, 0.0, 1.0) ** 1.35
-    star_color_mix = np.clip(
-        star_weight[..., None] * 0.14 + bright_core[..., None] * 0.24,
-        0.0,
-        0.38,
-    )
-    star_color = np.clip(
-        star_color * (1.0 - star_color_mix) + star_neutral * star_color_mix,
-        0.62,
-        1.48,
-    )
-
-    # Concentrate each star into a smaller, brighter core without expanding its halo.
-    compact_lum = np.power(np.clip(star_lum, 0.0, 1.0), 1.10)
-    compact_lum = np.clip(compact_lum * (1.0 + bright_core * 0.14), 0.0, 1.0)
-    soft_lum = cv2.GaussianBlur(compact_lum.astype(np.float32), (0, 0), 0.34)
-    processed_star_lum = np.clip(compact_lum * 0.94 + soft_lum * 0.06, 0.0, 1.0) * star_weight
+    star_neutral = np.array([1.04, 0.99, 0.94], dtype=np.float32).reshape(1, 1, 3)
+    star_color_mix = np.clip(star_weight[..., None] * 0.22, 0.0, 0.24)
+    star_color = np.clip(star_color * (1.0 - star_color_mix) + star_neutral * star_color_mix, 0.58, 1.55)
+    soft_lum = cv2.GaussianBlur(star_lum.astype(np.float32), (0, 0), 0.48)
+    core_lum = np.minimum(star_lum, np.arcsinh(star_lum * 4.5) / np.arcsinh(4.5))
+    processed_star_lum = np.clip(core_lum * 0.82 + soft_lum * 0.18, 0.0, 1.0) * star_weight
     processed_stars = np.clip(processed_star_lum[..., None] * star_color, 0.0, 1.0)
-    processed_stars = cv2.GaussianBlur(processed_stars.astype(np.float32), (0, 0), 0.14)
+    processed_stars = cv2.GaussianBlur(processed_stars.astype(np.float32), (0, 0), 0.22)
     star_strength = float(np.clip(star_strength, 0.0, 1.0))
     if _is_showcase_hoo_mode(color_separation):
         star_strength *= 0.74
