@@ -1739,8 +1739,8 @@ def _html() -> str:
           Color Separation
           <select id="nebulaColorSeparation">
             <option value="Natural">Natural</option>
-            <option value="Balanced" selected>Balanced</option>
-            <option value="Strong">Strong</option>
+            <option value="Balanced">Balanced</option>
+            <option value="Strong" selected>Strong</option>
           </select>
         </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
@@ -2691,10 +2691,15 @@ def _html() -> str:
       } else {
         data.append("file", selectedFile);
       }
-      data.append("object_type", objectType.value);
+      const selectedObjectType = objectType.value;
+      const selectedNebulaColorSeparation =
+        selectedObjectType === "Nebula" && nebulaColorSeparation
+          ? nebulaColorSeparation.value
+          : "Balanced";
+      data.append("object_type", selectedObjectType);
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
-      data.append("nebula_color_separation", nebulaColorSeparation ? nebulaColorSeparation.value : "Balanced");
+      data.append("nebula_color_separation", selectedNebulaColorSeparation);
       data.append("siril_deconvolution", sirilDeconvolution.checked ? "true" : "false");
       data.append("star_setting", "Slight Star Reduction");
       data.append("starless_test", "true");
@@ -2932,7 +2937,7 @@ def _run_job(
     object_type: str = "Nebula",
     input_mode: str = "Auto",
     stretch_level: str = "Standard",
-    nebula_color_separation: str = "Balanced",
+    nebula_color_separation: str = "Strong",
     siril_deconvolution: bool = False,
     starless_test: bool = False,
     star_setting: str = "Slight Star Reduction",
@@ -2977,11 +2982,14 @@ def _run_job(
         settings.prestretched_input = mode == "Pre-stretched"
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
-        settings.nebula_color_separation = (
-            nebula_color_separation
-            if nebula_color_separation in {"Natural", "Balanced", "Strong"}
-            else "Balanced"
-        )
+        if settings.object_type == "Nebula":
+            settings.nebula_color_separation = (
+                nebula_color_separation
+                if nebula_color_separation in {"Natural", "Balanced", "Strong"}
+                else "Strong"
+            )
+        else:
+            settings.nebula_color_separation = "Balanced"
         settings.siril_deconvolution_enabled = bool(siril_deconvolution)
         settings.star_handling_mode = "Slight Star Reduction"
         settings.starless_test_enabled = True
@@ -3279,13 +3287,21 @@ async def create_job(
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
-    nebula_color_separation: str = Form("Balanced"),
+    nebula_color_separation: str = Form("Strong"),
     siril_deconvolution: bool = Form(False),
     starless_test: bool = Form(True),
     star_setting: str = Form(""),
     user: AuthUser = Depends(require_user),
 ) -> dict[str, str]:
     _cleanup_old_temp_files()
+    selected_object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
+    selected_nebula_color_separation = "Balanced"
+    if selected_object_type == "Nebula":
+        selected_nebula_color_separation = (
+            nebula_color_separation
+            if nebula_color_separation in {"Natural", "Balanced", "Strong"}
+            else "Strong"
+        )
     staged = _require_completed_staged_upload(upload_id, user) if upload_id else None
     filename = staged.filename if staged else Path((file.filename if file else "") or "").name
     suffix = Path(filename).suffix.lower()
@@ -3342,19 +3358,19 @@ async def create_job(
         jobs[job_id].warnings.append(
             "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
         )
-        if object_type == "Nebula":
+        if selected_object_type == "Nebula":
             jobs[job_id].warnings.append(
-                f"Nebula color separation is set to {nebula_color_separation if nebula_color_separation in {'Natural', 'Balanced', 'Strong'} else 'Balanced'}."
+                f"Nebula color separation is set to {selected_nebula_color_separation}."
             )
     executor.submit(
         _run_job,
         job_id,
         input_path,
         pre_stretched,
-        object_type,
+        selected_object_type,
         input_mode,
         stretch_level,
-        nebula_color_separation,
+        selected_nebula_color_separation,
         siril_deconvolution,
         starless_test,
         star_setting,

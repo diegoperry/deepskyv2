@@ -1769,6 +1769,135 @@ def _is_showcase_hoo_mode(mode: str) -> bool:
     return normalized in {"showcase", "hoo", "showcase hoo"}
 
 
+def _apply_warm_gray_nebula_reference_grade(
+    output: np.ndarray,
+    calibrated: np.ndarray | None,
+    clean_sky: np.ndarray,
+    nebula_mask: np.ndarray,
+    nebula_core: np.ndarray,
+    ridge: np.ndarray,
+    fine_detail: np.ndarray,
+    star_protect: np.ndarray,
+    support: np.ndarray,
+) -> np.ndarray:
+    """Final natural-color nebula grade with warm gray sky and cream/cyan gas."""
+    graded = np.clip(output.astype(np.float32), 0.0, 1.0)
+    lum = _luminance(graded).astype(np.float32)
+
+    sky = np.clip(clean_sky * (1.0 - nebula_mask * 0.82) * (1.0 - star_protect * 0.88) * support, 0.0, 1.0)
+    sky_texture = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 4.0)
+    sky_low = float(np.percentile(sky_texture, 8.0))
+    sky_high = float(np.percentile(sky_texture, 96.0))
+    sky_texture = np.clip((sky_texture - sky_low) / max(1e-6, sky_high - sky_low), 0.0, 1.0)
+    warm_gray = np.array([0.066, 0.063, 0.056], dtype=np.float32).reshape(1, 1, 3)
+    warm_gray_field = warm_gray * (0.78 + sky_texture[..., None] * 0.34)
+    sky_lift = np.clip(sky[..., None] * 0.64, 0.0, 0.64)
+    graded = np.clip(graded * (1.0 - sky_lift) + warm_gray_field * sky_lift, 0.0, 1.0)
+
+    lum = _luminance(graded).astype(np.float32)
+    smooth_lum = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 7.0)
+    texture = np.clip(lum / np.maximum(smooth_lum, 1e-5), 0.72, 1.32)
+    lum_low = float(np.percentile(lum, 1.0))
+    lum_high = float(np.percentile(lum, 99.85))
+    lum_norm = np.clip((lum - lum_low) / max(1e-6, lum_high - lum_low), 0.0, 1.0)
+
+    body = cv2.GaussianBlur(
+        np.clip((nebula_core * 0.82 + nebula_mask * 0.34) * (1.0 - star_protect * 0.78) * support, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        9.0,
+    )
+    outer = cv2.GaussianBlur(
+        np.clip((nebula_mask - nebula_core * 0.34 + ridge * 0.16) * (1.0 - star_protect * 0.76) * support, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        18.0,
+    )
+
+    body_lum = np.clip(0.15 + 0.76 * (lum_norm**0.56), 0.0, 0.94) * (0.84 + texture * 0.20)
+    pale_cyan = np.array([0.80, 0.92, 0.90], dtype=np.float32).reshape(1, 1, 3)
+    warm_white = np.array([0.97, 0.97, 0.90], dtype=np.float32).reshape(1, 1, 3)
+    body_color = pale_cyan * (1.0 - nebula_core[..., None] * 0.35) + warm_white * (nebula_core[..., None] * 0.35)
+    body_target = np.clip(body_color * body_lum[..., None], 0.0, 1.0)
+    body_mix = np.clip(body[..., None] * 0.48, 0.0, 0.48)
+    graded = np.clip(graded * (1.0 - body_mix) + body_target * body_mix, 0.0, 1.0)
+
+    yellow_lum = np.clip(0.15 + 0.65 * (lum_norm**0.70), 0.0, 0.82) * (0.84 + texture * 0.20)
+    cream_yellow = np.array([0.95, 0.82, 0.48], dtype=np.float32).reshape(1, 1, 3)
+    yellow_target = np.clip(cream_yellow * yellow_lum[..., None], 0.0, 1.0)
+    yellow_mix = np.clip(outer[..., None] * (1.0 - nebula_core[..., None] * 0.45) * 0.38, 0.0, 0.38)
+    graded = np.clip(graded * (1.0 - yellow_mix) + yellow_target * yellow_mix, 0.0, 1.0)
+
+    if calibrated is not None and calibrated.shape[:2] == graded.shape[:2]:
+        calibrated = np.clip(calibrated.astype(np.float32), 0.0, 1.0)
+        cal_lum = _luminance(calibrated).astype(np.float32)
+        sky_for_bg = clean_sky > 0.68
+        if np.count_nonzero(sky_for_bg) > 512:
+            bg = np.median(calibrated[sky_for_bg], axis=0).astype(np.float32)
+        else:
+            bg = np.percentile(calibrated.reshape(-1, 3), 35.0, axis=0).astype(np.float32)
+        signal = np.clip(calibrated - bg.reshape(1, 1, 3), 0.0, 1.0)
+        sr, sg, sb = signal[..., 0], signal[..., 1], signal[..., 2]
+        signal_lum = np.clip(sr * 0.34 + sg * 0.46 + sb * 0.20, 0.0, 1.0)
+        signal_hi = (
+            max(1e-6, float(np.percentile(signal_lum[nebula_mask > 0.08], 99.2)))
+            if np.count_nonzero(nebula_mask > 0.08)
+            else max(1e-6, float(np.percentile(signal_lum, 99.2)))
+        )
+        signal_weight = np.clip(signal_lum / signal_hi, 0.0, 1.0)
+        yellow_conf = np.clip((np.minimum(sr, sg) - sb * 0.74) / max(signal_hi * 0.34, 1e-6), 0.0, 1.0)
+        green_conf = np.clip((sg - np.maximum(sr, sb) * 0.86) / max(signal_hi * 0.24, 1e-6), 0.0, 1.0)
+        warm_conf = np.clip(yellow_conf * 0.86 + green_conf * 0.42, 0.0, 1.0)
+        warm_conf = np.clip(
+            warm_conf
+            * signal_weight
+            * (nebula_mask * 0.62 + ridge * 0.30 + nebula_core * 0.16)
+            * (1.0 - clean_sky * 0.96)
+            * (1.0 - star_protect * 0.96)
+            * support,
+            0.0,
+            1.0,
+        )
+        warm_conf = np.clip(
+            cv2.GaussianBlur(warm_conf.astype(np.float32), (0, 0), 3.6) * 0.72
+            + warm_conf * 0.28,
+            0.0,
+            1.0,
+        )
+        measured_chroma = calibrated - cal_lum[..., None]
+        graded_lum = _luminance(graded).astype(np.float32)
+        warmed_chroma = np.clip(
+            measured_chroma * (1.0 + warm_conf[..., None] * 2.2)
+            + np.array([0.026, 0.017, -0.018], dtype=np.float32).reshape(1, 1, 3) * warm_conf[..., None],
+            -0.18,
+            0.18,
+        )
+        warm_target = np.clip(graded_lum[..., None] + warmed_chroma, 0.0, 1.0)
+        warm_target_lum = _luminance(warm_target).astype(np.float32)
+        warm_target = np.clip(warm_target * (graded_lum / np.maximum(warm_target_lum, 1e-5))[..., None], 0.0, 1.0)
+        warm_mix = np.clip(warm_conf[..., None] * 0.36, 0.0, 0.36)
+        graded = np.clip(graded * (1.0 - warm_mix) + warm_target * warm_mix, 0.0, 1.0)
+
+    hsv = cv2.cvtColor(graded.astype(np.float32), cv2.COLOR_RGB2HSV)
+    hue = hsv[..., 0]
+    greenish = ((hue > 70.0) & (hue < 165.0)).astype(np.float32)
+    greenish = cv2.GaussianBlur((greenish * nebula_mask * (1.0 - star_protect * 0.75)).astype(np.float32), (0, 0), 3.5)
+    hsv[..., 1] = np.clip(hsv[..., 1] * (1.0 - greenish * 0.28 - sky * 0.14), 0.0, 1.0)
+    hsv[..., 2] = np.clip(hsv[..., 2] * (1.0 + nebula_mask * 0.035), 0.0, 1.0)
+    graded = np.clip(cv2.cvtColor(hsv.astype(np.float32), cv2.COLOR_HSV2RGB), 0.0, 1.0)
+
+    dust = np.clip((cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 12.0) - lum) * nebula_mask, 0.0, 1.0)
+    dust_high = max(1e-6, float(np.percentile(dust, 99.45)))
+    dust = cv2.GaussianBlur(np.clip(dust / dust_high, 0.0, 1.0).astype(np.float32), (0, 0), 2.8)
+    graded = np.clip(graded * (1.0 - dust[..., None] * 0.14), 0.0, 1.0)
+
+    detail = np.clip((fine_detail * 0.40 + ridge * 0.28) * nebula_mask * (1.0 - star_protect * 0.90), 0.0, 1.0)
+    detail = cv2.GaussianBlur(detail.astype(np.float32), (0, 0), 1.1)
+    detail_lum = _luminance(graded).astype(np.float32)
+    highpass = detail_lum - cv2.GaussianBlur(detail_lum.astype(np.float32), (0, 0), 2.0)
+    sharpened_lum = np.clip(detail_lum + highpass * detail * 0.12, 0.0, 1.0)
+    graded = np.clip(graded * (sharpened_lum / np.maximum(detail_lum, 1e-5))[..., None], 0.0, 1.0)
+    return graded
+
+
 def _apply_showcase_hoo_nebula_grade(
     output: np.ndarray,
     calibrated: np.ndarray,
@@ -2131,6 +2260,7 @@ def compose_pixinsight_nebula_layers(
     color_separation: str = "Balanced",
     color_reference_image: np.ndarray | None = None,
     color_texture_reference_image: np.ndarray | None = None,
+    star_color_reference_image: np.ndarray | None = None,
 ) -> np.ndarray:
     """Controlled nebula composer: process starless signal and stars separately."""
     starless = _to_float01(starless_image)
@@ -2145,6 +2275,11 @@ def compose_pixinsight_nebula_layers(
         candidate = _to_float01(color_texture_reference_image)
         if candidate.ndim == 3 and candidate.shape[-1] >= 3 and candidate.shape[:2] == starless.shape[:2]:
             color_texture_reference = candidate[..., :3]
+    star_color_reference = None
+    if star_color_reference_image is not None:
+        candidate = _to_float01(star_color_reference_image)
+        if candidate.ndim == 3 and candidate.shape[-1] >= 3 and candidate.shape[:2] == starless.shape[:2]:
+            star_color_reference = candidate[..., :3]
     if starless.ndim != 3 or starless.shape[-1] < 3:
         return _to_uint16(starless)
     if stars.ndim != 3 or stars.shape[-1] < 3 or stars.shape[:2] != starless.shape[:2]:
@@ -2158,6 +2293,11 @@ def compose_pixinsight_nebula_layers(
     chroma = np.max(starless, axis=2) - np.min(starless, axis=2)
 
     star_lum = np.max(stars, axis=2).astype(np.float32)
+    star_core_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    star_lum = np.maximum(
+        star_lum,
+        cv2.morphologyEx(star_lum.astype(np.float32), cv2.MORPH_CLOSE, star_core_kernel) * 0.92,
+    )
     safe_star_lum = star_lum[safe] if np.any(safe) else star_lum.reshape(-1)
     star_low = _safe_percentile(safe_star_lum, 92.0, float(np.percentile(star_lum, 92.0)))
     star_high = _safe_percentile(safe_star_lum, 99.9, float(np.percentile(star_lum, 99.9)))
@@ -2569,9 +2709,9 @@ def compose_pixinsight_nebula_layers(
         sky_darken_strength = 0.05
         edge_darken_strength = 0.24
     elif separation_strength >= 0.64:
-        sky_target = np.array([0.024, 0.029, 0.034], dtype=np.float32).reshape(1, 1, 3)
-        sky_darken_strength = 0.13
-        edge_darken_strength = 0.36
+        sky_target = np.array([0.066, 0.063, 0.056], dtype=np.float32).reshape(1, 1, 3)
+        sky_darken_strength = 0.08
+        edge_darken_strength = 0.24
     else:
         sky_target = np.array([0.018, 0.018, 0.019], dtype=np.float32).reshape(1, 1, 3)
         sky_darken_strength = 0.24
@@ -2581,6 +2721,18 @@ def compose_pixinsight_nebula_layers(
     sky_smooth = cv2.GaussianBlur(output.astype(np.float32), (0, 0), 2.8)
     sky_smooth_mix = np.clip(clean_sky * (1.0 - nebula_mask * 0.90) * (1.0 - star_protect * 0.86) * 0.42, 0.0, 0.42)
     output = np.clip(output * (1.0 - sky_smooth_mix[..., None]) + sky_smooth * sky_smooth_mix[..., None], 0.0, 1.0)
+    if separation_strength >= 0.64 and not _is_showcase_hoo_mode(color_separation):
+        output = _apply_warm_gray_nebula_reference_grade(
+            output,
+            color_calibrated,
+            clean_sky,
+            nebula_mask,
+            nebula_core,
+            ridge,
+            fine_detail,
+            star_protect,
+            support,
+        )
 
     star_high = max(float(np.percentile(star_lum, 99.92)), 1e-6)
     star_norm = np.clip(star_lum / star_high, 0.0, 1.0)
@@ -2588,10 +2740,16 @@ def compose_pixinsight_nebula_layers(
         star_weight = np.clip((star_norm - 0.095) / 0.905, 0.0, 1.0) ** 1.06
     else:
         star_weight = np.clip((star_norm - 0.055) / 0.945, 0.0, 1.0) ** 0.86
-    star_color = np.clip(stars / np.maximum(star_lum[..., None], 1e-5), 0.58, 1.62)
-    star_neutral = np.array([1.04, 0.99, 0.94], dtype=np.float32).reshape(1, 1, 3)
-    star_color_mix = np.clip(star_weight[..., None] * 0.22, 0.0, 0.24)
-    star_color = np.clip(star_color * (1.0 - star_color_mix) + star_neutral * star_color_mix, 0.58, 1.55)
+    star_color_source = star_color_reference if star_color_reference is not None else stars
+    star_color_lum = np.maximum(_luminance(star_color_source).astype(np.float32), 1e-5)
+    star_color = np.clip(star_color_source / star_color_lum[..., None], 0.50, 1.72)
+    star_color = np.clip(star_color * 0.78 + cv2.GaussianBlur(star_color.astype(np.float32), (0, 0), 0.75) * 0.22, 0.50, 1.72)
+    source_high = max(float(np.percentile(star_color_lum, 99.88)), 1e-6)
+    source_norm = np.clip(star_color_lum / source_high, 0.0, 1.0)
+    core_color_conf = np.clip((source_norm - 0.14) / 0.66, 0.0, 1.0) ** 0.84
+    core_color_conf *= np.clip((star_weight - 0.18) / 0.64, 0.0, 1.0) ** 0.72
+    star_chroma = np.clip(star_color - 1.0, -0.34, 0.34)
+    star_color = np.clip(1.0 + star_chroma * core_color_conf[..., None] * 0.32, 0.88, 1.12)
     soft_lum = cv2.GaussianBlur(star_lum.astype(np.float32), (0, 0), 0.48)
     core_lum = np.minimum(star_lum, np.arcsinh(star_lum * 4.5) / np.arcsinh(4.5))
     processed_star_lum = np.clip(core_lum * 0.82 + soft_lum * 0.18, 0.0, 1.0) * star_weight

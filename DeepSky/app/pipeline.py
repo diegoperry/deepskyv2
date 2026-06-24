@@ -871,9 +871,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             optional_pixel_size=settings.siril_pixel_size.strip() or None,
         )
         if nebula_auto_pcc_command:
-            write_log(f"Nebula auto Siril PCC available: {nebula_auto_pcc_command}")
+            write_log(f"Nebula Siril PCC available and will be used: {nebula_auto_pcc_command}")
         else:
-            write_log("Nebula auto Siril PCC unavailable; using existing local nebula color path.")
+            write_log("Nebula Siril PCC unavailable; FITS is missing usable WCS/plate-solve metadata for catalog calibration.")
 
     should_use_siril_calibration = settings.color_calibration_mode != "Off" and (
         mode == PipelineMode.SIRIL
@@ -888,7 +888,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         original_color_mode = settings.color_calibration_mode
         if nebula_auto_pcc_command and mode == PipelineMode.FULL and object_type == "nebula":
             settings.color_calibration_mode = "Siril Photometric"
-            write_log("Nebula mode: routing through Siril color calibration before DeepSky nebula color enhancement.")
+            write_log("Nebula mode: forcing Siril PCC before DeepSky strong nebula color separation.")
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
         try:
             _run_siril_calibration(
@@ -1025,6 +1025,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                     color_separation=color_separation,
                     color_reference_image=load_image(nebula_color_reference, write_log),
                     color_texture_reference_image=load_image(nebula_texture_reference, write_log),
+                    star_color_reference_image=load_image(stretched, write_log),
                 )
             else:
                 star_strength = 0.64 if starless_test_requested else 0.78
@@ -1037,6 +1038,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                     color_separation=color_separation,
                     color_reference_image=load_image(nebula_color_reference, write_log),
                     color_texture_reference_image=load_image(nebula_texture_reference, write_log),
+                    star_color_reference_image=load_image(stretched, write_log),
                 )
             save_tiff(final, composed_nebula, write_log)
             _log_existing_image(final, write_log, "final.tif")
