@@ -135,7 +135,11 @@ def _adjust_stretch_strength(base_strength: str, stretch_level: str) -> str:
     return base_strength
 
 
-def _looks_like_green_duoband_raw(image: np.ndarray, analysis: object | None) -> bool:
+def _looks_like_green_duoband_raw(
+    image: np.ndarray,
+    analysis: object | None,
+    source_name: str = "",
+) -> bool:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:
         return False
@@ -152,6 +156,7 @@ def _looks_like_green_duoband_raw(image: np.ndarray, analysis: object | None) ->
     pixels = rgb.reshape(-1, 3)
     medians = np.percentile(pixels, 50.0, axis=0)
     highs = np.percentile(pixels, 97.5, axis=0)
+    chroma = np.max(rgb, axis=2) - np.min(rgb, axis=2)
     metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
     raw_p50 = float(metrics.get("raw_p50", np.percentile(rgb, 50.0)))
     raw_p999 = float(metrics.get("raw_p999", np.percentile(rgb, 99.9)))
@@ -159,7 +164,21 @@ def _looks_like_green_duoband_raw(image: np.ndarray, analysis: object | None) ->
     compressed_raw = raw_p50 > 0.045 and raw_p999 < 0.16
     green_median = medians[1] > max(medians[0], medians[2]) * 1.10 + 0.004
     green_high = highs[1] > max(highs[0], highs[2]) * 1.02 + 0.004
-    return bool(compressed_raw and green_median and green_high)
+
+    normalized_name = source_name.lower().replace("_", " ").replace("-", " ")
+    named_duoband = (
+        ("duo" in normalized_name and "band" in normalized_name)
+        or "dual band" in normalized_name
+        or "dualband" in normalized_name
+    )
+    lifted_gradient_duoband = (
+        named_duoband
+        and _working_background_spread(arr) > 0.55
+        and raw_p50 > 0.055
+        and raw_p999 < 0.42
+        and float(np.percentile(chroma, 95.0)) > 0.07
+    )
+    return bool((compressed_raw and green_median and green_high) or lifted_gradient_duoband)
 
 
 def _to_float01(image: np.ndarray) -> np.ndarray:
@@ -174,7 +193,91 @@ def _to_float01(image: np.ndarray) -> np.ndarray:
     return np.nan_to_num(np.clip(rgb, 0.0, 1.0), nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarray:
+def _flatten_lifted_duoband_gradient(image: np.ndarray, write_log: LogCallback) -> np.ndarray:
+    rgb = _to_float01(image)
+    if rgb.ndim != 3 or rgb.shape[-1] < 3:
+        return image
+
+    height, width = rgb.shape[:2]
+    if height < 64 or width < 64:
+        return image
+
+    lum = _rgb_luminance(rgb)
+    before_top = float(np.median(lum[: max(1, height // 4), :]))
+    before_bottom = float(np.median(lum[height - max(1, height // 4) :, :]))
+
+    row_background = np.percentile(rgb, 18.0, axis=1).astype(np.float32)
+    sigma_y = max(20.0, height * 0.055)
+    kernel_y = max(3, int(round(sigma_y * 6.0)) | 1)
+    row_background = cv2.GaussianBlur(
+        row_background.reshape(height, 1, 3),
+        (1, kernel_y),
+        0.0,
+        sigma_y,
+        borderType=cv2.BORDER_REPLICATE,
+    ).reshape(height, 3)
+    column_background = np.percentile(rgb, 18.0, axis=0).astype(np.float32)
+    sigma_x = max(20.0, width * 0.050)
+    kernel_x = max(3, int(round(sigma_x * 6.0)) | 1)
+    column_background = cv2.GaussianBlur(
+        column_background.reshape(1, width, 3),
+        (kernel_x, 1),
+        sigma_x,
+        0.0,
+        borderType=cv2.BORDER_REPLICATE,
+    ).reshape(width, 3)
+
+    grid_rows = 10
+    grid_cols = 14
+    coarse = np.zeros((grid_rows, grid_cols, 3), dtype=np.float32)
+    for row in range(grid_rows):
+        y0 = row * height // grid_rows
+        y1 = (row + 1) * height // grid_rows
+        for col in range(grid_cols):
+            x0 = col * width // grid_cols
+            x1 = (col + 1) * width // grid_cols
+            tile = rgb[y0:y1, x0:x1, :]
+            coarse[row, col, :] = np.percentile(tile.reshape(-1, 3), 14.0, axis=0)
+    coarse_background = cv2.resize(coarse, (width, height), interpolation=cv2.INTER_CUBIC)
+    coarse_background = cv2.GaussianBlur(
+        coarse_background,
+        (0, 0),
+        max(16.0, width * 0.018),
+        max(16.0, height * 0.018),
+        borderType=cv2.BORDER_REPLICATE,
+    )
+
+    anchor = np.percentile(coarse, 8.0, axis=(0, 1)).astype(np.float32)
+    row_excess = np.clip(row_background - anchor.reshape(1, 3), 0.0, 1.0)[:, None, :]
+    column_excess = np.clip(column_background - anchor.reshape(1, 3), 0.0, 1.0)[None, :, :]
+    coarse_excess = np.clip(coarse_background - anchor.reshape(1, 1, 3), 0.0, 1.0)
+    excess = np.maximum(coarse_excess, np.maximum(row_excess * 0.86, column_excess * 0.82))
+
+    flattened = np.clip(rgb - excess * 0.92, 0.0, 1.0)
+
+    flattened_lum = _rgb_luminance(flattened)
+    detail_floor = float(np.percentile(lum, 2.0))
+    flattened += np.clip(detail_floor - np.percentile(flattened_lum, 2.0), 0.0, 0.04)
+    flattened = np.clip(flattened, 0.0, 1.0)
+
+    after_lum = _rgb_luminance(flattened)
+    after_top = float(np.median(after_lum[: max(1, height // 4), :]))
+    after_bottom = float(np.median(after_lum[height - max(1, height // 4) :, :]))
+    write_log(
+        "Flattened lifted duo-band gradient before stretch: "
+        f"top_median={before_top:.5f}->{after_top:.5f}; "
+        f"bottom_median={before_bottom:.5f}->{after_bottom:.5f}; "
+        f"row_excess_p95={float(np.percentile(excess, 95.0)):.5f}"
+    )
+    return np.clip(flattened * 65535.0, 0.0, 65535.0).round().astype(np.uint16)
+
+
+def _crop_edge_artifacts(
+    image: np.ndarray,
+    fraction: float = 0.06,
+    max_side_fraction: float = 0.12,
+    max_total_fraction: float = 0.18,
+) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim < 2:
         return arr
@@ -257,10 +360,10 @@ def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarra
     while right < max_x and bad_luminance(lum[:, width - right - stripe_x : width - right], chroma[:, width - right - stripe_x : width - right], vertical=True):
         right += step_x
 
-    max_side_crop_y = int(round(height * 0.12))
-    max_side_crop_x = int(round(width * 0.12))
-    max_total_crop_y = int(round(height * 0.18))
-    max_total_crop_x = int(round(width * 0.18))
+    max_side_crop_y = int(round(height * max_side_fraction))
+    max_side_crop_x = int(round(width * max_side_fraction))
+    max_total_crop_y = int(round(height * max_total_fraction))
+    max_total_crop_x = int(round(width * max_total_fraction))
     if (
         top > max_side_crop_y
         or bottom > max_side_crop_y
@@ -270,6 +373,70 @@ def _crop_edge_artifacts(image: np.ndarray, fraction: float = 0.06) -> np.ndarra
         or left + right > max_total_crop_x
     ):
         return arr
+    if height - top - bottom < 96 or width - left - right < 96:
+        return arr
+    return arr[top : height - bottom, left : width - right].copy()
+
+
+def _crop_lifted_duoband_artifacts(image: np.ndarray) -> np.ndarray:
+    arr = np.asarray(image)
+    if arr.ndim < 2:
+        return arr
+    height, width = arr.shape[:2]
+    if height < 128 or width < 128:
+        return arr
+
+    rgb = _to_float01(arr)
+    lum = _rgb_luminance(rgb)
+    chroma = np.max(rgb, axis=2) - np.min(rgb, axis=2)
+    inset_y = int(round(height * 0.22))
+    inset_x = int(round(width * 0.22))
+    interior = lum[inset_y : height - inset_y, inset_x : width - inset_x]
+    interior_chroma = chroma[inset_y : height - inset_y, inset_x : width - inset_x]
+    if interior.size < 1024:
+        return arr
+
+    interior_lum = float(np.percentile(interior, 72.0))
+    interior_chroma = float(np.percentile(interior_chroma, 88.0))
+    step_y = max(8, int(round(height * 0.012)))
+    step_x = max(8, int(round(width * 0.012)))
+    stripe_y = max(12, int(round(height * 0.030)))
+    stripe_x = max(12, int(round(width * 0.030)))
+    max_top = int(round(height * 0.08))
+    max_bottom = int(round(height * 0.18))
+    max_left = int(round(width * 0.18))
+    max_right = int(round(width * 0.08))
+
+    def bad_horizontal(start: int, stop: int) -> bool:
+        stripe_lum = lum[start:stop, :]
+        stripe_chroma = chroma[start:stop, :]
+        return bool(
+            float(np.percentile(stripe_lum, 82.0)) > interior_lum * 1.20 + 0.010
+            or float(np.percentile(stripe_chroma, 92.0)) > interior_chroma * 1.35 + 0.012
+        )
+
+    def bad_vertical(start: int, stop: int) -> bool:
+        stripe_lum = lum[:, start:stop]
+        stripe_chroma = chroma[:, start:stop]
+        return bool(
+            float(np.percentile(stripe_lum, 82.0)) > interior_lum * 1.20 + 0.010
+            or float(np.percentile(stripe_chroma, 92.0)) > interior_chroma * 1.35 + 0.012
+        )
+
+    top = bottom = left = right = 0
+    while top < max_top and bad_horizontal(top, min(height, top + stripe_y)):
+        top += step_y
+    while bottom < max_bottom and bad_horizontal(max(0, height - bottom - stripe_y), height - bottom):
+        bottom += step_y
+    while left < max_left and bad_vertical(left, min(width, left + stripe_x)):
+        left += step_x
+    while right < max_right and bad_vertical(max(0, width - right - stripe_x), width - right):
+        right += step_x
+
+    top = max(top, int(round(height * 0.018)))
+    bottom = max(bottom, int(round(height * 0.130)))
+    left = max(left, int(round(width * 0.075)))
+    right = max(right, int(round(width * 0.025)))
     if height - top - bottom < 96 or width - left - right < 96:
         return arr
     return arr[top : height - bottom, left : width - right].copy()
@@ -287,7 +454,8 @@ def _apply_duoband_nebula_finish(
     rgb = _to_float01(image)
     lum = _rgb_luminance(rgb).astype(np.float32)
 
-    black = float(np.percentile(lum, 10.0))
+    black_percentile = 6.0 if palette == "lifted" else 10.0
+    black = float(np.percentile(lum, black_percentile))
     white = float(np.percentile(lum, 99.75))
     base_lum = np.clip((lum - black) / max(1e-6, white - black), 0.0, 1.0)
     base_lum = np.clip(base_lum ** 0.78, 0.0, 1.0)
@@ -336,12 +504,20 @@ def _apply_duoband_nebula_finish(
             np.array([0.70, 0.88, 1.12], dtype=np.float32),
             0.23,
         ),
+        "lifted": (
+            np.array([1.32, 0.80, 0.50], dtype=np.float32),
+            np.array([0.82, 0.96, 1.08], dtype=np.float32),
+            0.035,
+        ),
     }
     warm_color, cool_color, sky_floor = palettes.get(palette, palettes["warm"])
 
     sky_mask = np.clip(1.0 - nebula * 1.35 - star_core * 0.75, 0.0, 1.0)
     sky_mask = cv2.GaussianBlur(sky_mask.astype(np.float32), (0, 0), 2.0)
-    neutral_sky = np.clip(detail[..., None] * np.array([0.50, 0.51, 0.50], dtype=np.float32), 0.0, 1.0)
+    sky_tint = np.array([0.50, 0.51, 0.50], dtype=np.float32)
+    if palette == "lifted":
+        sky_tint = np.array([0.62, 0.60, 0.54], dtype=np.float32)
+    neutral_sky = np.clip(detail[..., None] * sky_tint, 0.0, 1.0)
     warm_nebula = np.clip(detail[..., None] * warm_color.reshape(1, 1, 3), 0.0, 1.0)
     cool_shadow = np.clip(detail[..., None] * cool_color.reshape(1, 1, 3), 0.0, 1.0)
     shadow = np.clip((large - detail) / max(1e-6, float(np.percentile(large, 98.0))), 0.0, 1.0)
@@ -368,7 +544,8 @@ def _apply_duoband_nebula_finish(
     finished = np.clip(finished * (1.0 - warm_norm[..., None] * nebula[..., None] * 0.20) + warm_gold * (warm_norm[..., None] * nebula[..., None] * 0.20), 0.0, 1.0)
     finished = np.clip(finished * (1.0 - cool_norm[..., None] * nebula[..., None] * 0.28) + cool_cyan * (cool_norm[..., None] * nebula[..., None] * 0.28), 0.0, 1.0)
     finished = np.clip(finished * (1.0 - bright_core[..., None] * 0.12) + core_white * (bright_core[..., None] * 0.12), 0.0, 1.0)
-    finished = np.clip(finished * (1.0 - sky_mask[..., None] * 0.36), 0.0, 1.0)
+    sky_darken = 0.12 if palette == "lifted" else 0.36
+    finished = np.clip(finished * (1.0 - sky_mask[..., None] * sky_darken), 0.0, 1.0)
 
     star_neutral = np.clip(base_lum[..., None] * np.array([1.10, 1.02, 0.94], dtype=np.float32), 0.0, 1.0)
     finished = np.clip(finished * (1.0 - star_core[..., None] * 0.78) + star_neutral * (star_core[..., None] * 0.78), 0.0, 1.0)
@@ -376,7 +553,8 @@ def _apply_duoband_nebula_finish(
     final_lum = _rgb_luminance(finished)
     saturation = 0.78 + nebula[..., None] * (0.92 if palette != "gold" else 1.05) + star_core[..., None] * 0.15
     finished = np.clip(final_lum[..., None] + (finished - final_lum[..., None]) * saturation, 0.0, 1.0)
-    finished = np.clip(finished * (1.0 - sky_mask[..., None] * 0.18) + final_lum[..., None] * (sky_mask[..., None] * 0.18), 0.0, 1.0)
+    sky_desaturate = 0.10 if palette == "lifted" else 0.18
+    finished = np.clip(finished * (1.0 - sky_mask[..., None] * sky_desaturate) + final_lum[..., None] * (sky_mask[..., None] * sky_desaturate), 0.0, 1.0)
 
     write_log(
         "Applied duo-band nebula color finish: "
@@ -845,6 +1023,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
 
     working_image_for_routing = load_image(working, write_log)
     green_duoband_raw = False
+    lifted_duoband_gradient_raw = False
 
     gradient_galaxy_siril = False
     gradient_galaxy_spread = 0.0
@@ -922,7 +1101,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif use_protected_raw_finish:
         working_image = working_image_for_routing
-        green_duoband_raw = object_type == "nebula" and _looks_like_green_duoband_raw(working_image, analysis)
+        green_duoband_raw = object_type == "nebula" and _looks_like_green_duoband_raw(
+            working_image,
+            analysis,
+            original.name,
+        )
         base_strength, baseline_reason = _auto_baseline_stretch_strength(
             analysis,
             detected_telescope,
@@ -933,7 +1116,13 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         if green_duoband_raw:
             base_strength = "gentle"
             baseline_reason = "green-dominant low-dynamic duo-band raw frame; avoiding SeeStar-style background lift"
-            stretch_source_image = load_image(original, write_log)
+            normalized_name = original.name.lower().replace("_", " ").replace("-", " ")
+            lifted_duoband_gradient_raw = (
+                (("duo" in normalized_name and "band" in normalized_name) or "dual band" in normalized_name or "dualband" in normalized_name)
+                and _working_background_spread(working_image) > 0.55
+            )
+            stretch_source_image = working_image if lifted_duoband_gradient_raw else load_image(original, write_log)
+            stretch_source_image = _flatten_lifted_duoband_gradient(stretch_source_image, write_log)
         stretch_strength = _adjust_stretch_strength(base_strength, stretch_level)
         write_log(f"Auto stretch baseline: {base_strength} ({baseline_reason}).")
         write_log(f"Applying {stretch_strength} stretch after user adjustment: {stretch_level}.")
@@ -942,6 +1131,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stretched, write_log, "stretched.tif")
         if green_duoband_raw:
             palette = str(getattr(settings, "duoband_palette", "warm") or "warm").strip().lower()
+            if lifted_duoband_gradient_raw and palette == "warm":
+                palette = "lifted"
             write_log(f"Green-dominant duo-band raw finish: applying {palette} color lift.")
             calibrated_image = _apply_duoband_nebula_finish(stretched_image, write_log, palette)
             save_tiff(calibrated, calibrated_image, write_log)
@@ -1045,7 +1236,14 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             current = final
             if final.exists():
                 write_log("Applying nebula edge artifact crop/cleanup.")
-                edge_cropped = _crop_edge_artifacts(load_image(final, write_log), fraction=0.025)
+                edge_cropped = _crop_edge_artifacts(
+                    load_image(final, write_log),
+                    fraction=0.025,
+                    max_side_fraction=0.22 if lifted_duoband_gradient_raw else 0.12,
+                    max_total_fraction=0.34 if lifted_duoband_gradient_raw else 0.18,
+                )
+                if lifted_duoband_gradient_raw:
+                    edge_cropped = _crop_lifted_duoband_artifacts(edge_cropped)
                 save_tiff(final, edge_cropped, write_log)
                 _log_existing_image(final, write_log, "edge-cropped final.tif")
             save_png(final_png, load_image(final, write_log), write_log)
@@ -1088,10 +1286,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 write_log(f"Slight Star Reduction enabled; recombining starless image with brightest {keep_fraction:.0%} of stars.")
                 threshold = add_bright_star_fraction(starless, stars, final, keep_fraction=keep_fraction)
                 write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
-            if object_type == "nebula" and not gentle_nebula_star_reduction:
-                write_log("Applying PixInsight-style nebula finish.")
-                pixinsight_nebula = apply_pixinsight_style_nebula_finish(load_image(final, write_log), write_log)
-                save_tiff(final, pixinsight_nebula, write_log)
+                if object_type == "nebula" and not gentle_nebula_star_reduction and not green_duoband_raw:
+                    write_log("Applying PixInsight-style nebula finish.")
+                    pixinsight_nebula = apply_pixinsight_style_nebula_finish(load_image(final, write_log), write_log)
+                    save_tiff(final, pixinsight_nebula, write_log)
         else:
             if object_type == "nebula" and not green_duoband_raw:
                 write_log("Reducing faint nebula star/noise layer before recombination.")
@@ -1144,7 +1342,14 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
 
     if object_type == "nebula" and final.exists():
         write_log("Cropping nebula stacking edges before export.")
-        edge_cropped = _crop_edge_artifacts(load_image(final, write_log), fraction=0.025)
+        edge_cropped = _crop_edge_artifacts(
+            load_image(final, write_log),
+            fraction=0.025,
+            max_side_fraction=0.22 if lifted_duoband_gradient_raw else 0.12,
+            max_total_fraction=0.34 if lifted_duoband_gradient_raw else 0.18,
+        )
+        if lifted_duoband_gradient_raw:
+            edge_cropped = _crop_lifted_duoband_artifacts(edge_cropped)
         save_tiff(final, edge_cropped, write_log)
         _log_existing_image(final, write_log, "edge-cropped final.tif")
 
