@@ -1735,14 +1735,6 @@ def _html() -> str:
             <option value="Aggressive">Aggressive</option>
           </select>
         </label>
-        <label class="select" id="nebulaColorSeparationField">
-          Color Separation
-          <select id="nebulaColorSeparation">
-            <option value="Natural">Natural</option>
-            <option value="Balanced">Balanced</option>
-            <option value="Strong" selected>Strong</option>
-          </select>
-        </label>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div class="pipeline-labels" id="nebulaPipelineLabels">
@@ -1750,7 +1742,7 @@ def _html() -> str:
         <span><b>Background Extraction:</b> Siril</span>
         <span><b>Nebula Color:</b> Enhanced</span>
       </div>
-      <div class="detail-option">
+      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
         <h3>Want to add more detail? Test out deconvolution</h3>
         <p>Deconvolution can sharpen galaxy arms and dust lanes when the data is clean. On noisy or faint images it can also make the background look grainy, so compare both versions.</p>
         <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
@@ -1838,9 +1830,8 @@ def _html() -> str:
     const objectType = document.getElementById("objectType");
     const inputMode = document.getElementById("inputMode");
     const stretchLevel = document.getElementById("stretchLevel");
-    const nebulaColorSeparation = document.getElementById("nebulaColorSeparation");
-    const nebulaColorSeparationField = document.getElementById("nebulaColorSeparationField");
     const nebulaPipelineLabels = document.getElementById("nebulaPipelineLabels");
+    const galaxyDeconvolutionOption = document.getElementById("galaxyDeconvolutionOption");
     const sirilDeconvolution = document.getElementById("sirilDeconvolution");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
@@ -1902,8 +1893,10 @@ def _html() -> str:
 
     function syncObjectControls() {
       const isNebula = objectType.value === "Nebula";
-      if (nebulaColorSeparationField) nebulaColorSeparationField.hidden = !isNebula;
+      const isGalaxy = objectType.value === "Galaxy";
       if (nebulaPipelineLabels) nebulaPipelineLabels.hidden = !isNebula;
+      if (galaxyDeconvolutionOption) galaxyDeconvolutionOption.hidden = !isGalaxy;
+      if (!isGalaxy && sirilDeconvolution) sirilDeconvolution.checked = false;
     }
 
     function setAuthMessage(message) {
@@ -2692,15 +2685,14 @@ def _html() -> str:
         data.append("file", selectedFile);
       }
       const selectedObjectType = objectType.value;
-      const selectedNebulaColorSeparation =
-        selectedObjectType === "Nebula" && nebulaColorSeparation
-          ? nebulaColorSeparation.value
-          : "Balanced";
       data.append("object_type", selectedObjectType);
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
-      data.append("nebula_color_separation", selectedNebulaColorSeparation);
-      data.append("siril_deconvolution", sirilDeconvolution.checked ? "true" : "false");
+      data.append("nebula_color_separation", selectedObjectType === "Nebula" ? "Strong" : "Balanced");
+      data.append(
+        "siril_deconvolution",
+        selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
+      );
       data.append("star_setting", "Slight Star Reduction");
       data.append("starless_test", "true");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
@@ -2982,15 +2974,16 @@ def _run_job(
         settings.prestretched_input = mode == "Pre-stretched"
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
+        settings.siril_deconvolution_enabled = settings.object_type == "Galaxy" and bool(siril_deconvolution)
+        settings.color_calibration_mode = (
+            "Basic"
+            if settings.object_type == "Nebula" or settings.siril_deconvolution_enabled
+            else "Off"
+        )
         if settings.object_type == "Nebula":
-            settings.nebula_color_separation = (
-                nebula_color_separation
-                if nebula_color_separation in {"Natural", "Balanced", "Strong"}
-                else "Strong"
-            )
+            settings.nebula_color_separation = "Strong"
         else:
             settings.nebula_color_separation = "Balanced"
-        settings.siril_deconvolution_enabled = bool(siril_deconvolution)
         settings.star_handling_mode = "Slight Star Reduction"
         settings.starless_test_enabled = True
         write_log(f"Selected object type: {settings.object_type}")
@@ -3000,6 +2993,10 @@ def _run_job(
             write_log("Color Calibration: Siril")
             write_log("Background Extraction: Siril")
             write_log(f"Selected color separation: {settings.nebula_color_separation}")
+        elif settings.siril_deconvolution_enabled:
+            write_log("Galaxy color calibration: Siril (enabled with deconvolution)")
+        else:
+            write_log(f"Color calibration disabled for {settings.object_type} without galaxy deconvolution.")
         write_log(f"Siril deconvolution test: {'enabled' if settings.siril_deconvolution_enabled else 'disabled'}")
         write_log(f"Star settings: {settings.star_handling_mode}")
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
@@ -3295,13 +3292,8 @@ async def create_job(
 ) -> dict[str, str]:
     _cleanup_old_temp_files()
     selected_object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
-    selected_nebula_color_separation = "Balanced"
-    if selected_object_type == "Nebula":
-        selected_nebula_color_separation = (
-            nebula_color_separation
-            if nebula_color_separation in {"Natural", "Balanced", "Strong"}
-            else "Strong"
-        )
+    selected_nebula_color_separation = "Strong" if selected_object_type == "Nebula" else "Balanced"
+    selected_siril_deconvolution = selected_object_type == "Galaxy" and bool(siril_deconvolution)
     staged = _require_completed_staged_upload(upload_id, user) if upload_id else None
     filename = staged.filename if staged else Path((file.filename if file else "") or "").name
     suffix = Path(filename).suffix.lower()
@@ -3351,7 +3343,7 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."
             )
-        if siril_deconvolution:
+        if selected_siril_deconvolution:
             jobs[job_id].warnings.append(
                 "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
             )
@@ -3371,7 +3363,7 @@ async def create_job(
         input_mode,
         stretch_level,
         selected_nebula_color_separation,
-        siril_deconvolution,
+        selected_siril_deconvolution,
         starless_test,
         star_setting,
     )
