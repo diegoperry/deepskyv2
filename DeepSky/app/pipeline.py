@@ -851,16 +851,11 @@ def _run_siril_calibration(
                 write_log("Siril deconvolution layer completed but did not create output; continuing without it.")
 
     siril_image = load_image(siril_output_fit, write_log)
-    if object_type == "nebula":
-        write_log("Preserving Siril FITS orientation for nebula output.")
-    else:
-        siril_image = np.flipud(siril_image)
-        write_log("Corrected Siril FITS orientation with vertical flip.")
+    write_log(f"Preserving Siril FITS orientation for {object_type} output.")
     deconvolution_image = None
     if use_deconvolution_layer and deconvolved_output_fit.exists():
         deconvolution_image = load_image(deconvolved_output_fit, write_log)
-        if object_type != "nebula":
-            deconvolution_image = np.flipud(deconvolution_image)
+        write_log("Preserving Siril deconvolution layer orientation for galaxy output.")
     raw_siril = job_folder / "siril_calibrated.tif"
     save_tiff(raw_siril, siril_image, write_log)
     _log_existing_image(raw_siril, write_log, "siril_calibrated.tif")
