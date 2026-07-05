@@ -801,6 +801,199 @@ def apply_broadband_look(image: np.ndarray, log: LogCallback | None = None) -> n
     return _to_uint16(rgb)
 
 
+def apply_pcc_galaxy_look(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+    """Stretch PCC-calibrated galaxy data while preserving measured pixel hue."""
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+
+    rgb = _to_float01(arr)
+    height, width = rgb.shape[:2]
+    border = max(8, int(round(min(height, width) * 0.04)))
+    sample = rgb[border : height - border, border : width - border]
+    if sample.size == 0:
+        sample = rgb
+
+    sample_lum = _luminance(sample)
+    sample_chroma = np.max(sample, axis=2) - np.min(sample, axis=2)
+    sky_mask = (sample_lum <= np.percentile(sample_lum, 42.0)) & (
+        sample_chroma <= np.percentile(sample_chroma, 62.0)
+    )
+    if int(np.count_nonzero(sky_mask)) < 512:
+        sky_mask = sample_lum <= np.percentile(sample_lum, 32.0)
+    sky = np.median(sample[sky_mask], axis=0)
+    sky_neutral = float(np.mean(sky))
+    gains = np.clip(sky_neutral / np.maximum(sky, 1e-5), 0.72, 1.38)
+    balanced = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
+    balanced_sky = sky * gains
+    balanced = np.clip(balanced - balanced_sky.reshape(1, 1, 3) * 0.88, 0.0, 1.0)
+
+    linear_lum = _luminance(balanced).astype(np.float32)
+    black = float(np.percentile(linear_lum, 0.8))
+    white = float(np.percentile(linear_lum, 99.92))
+    normalized = np.clip((linear_lum - black) / max(1e-6, white - black), 0.0, 1.0)
+    stretch = np.arcsinh(normalized * 18.0) / np.arcsinh(18.0)
+    stretch = np.clip(stretch, 0.0, 1.0) ** 0.88
+    stretched = np.clip(
+        balanced * (stretch / np.maximum(linear_lum, 1e-6))[..., None],
+        0.0,
+        1.0,
+    )
+
+    lum = _luminance(stretched).astype(np.float32)
+    broad = cv2.GaussianBlur(lum, (0, 0), 28.0)
+    compact = cv2.GaussianBlur(lum, (0, 0), 8.0)
+    extended = broad * 0.46 + compact * 0.54
+    low = float(np.percentile(extended, 70.0))
+    high = float(np.percentile(extended, 99.72))
+    galaxy_mask = np.clip((extended - low) / max(1e-6, high - low), 0.0, 1.0) ** 0.70
+    galaxy_mask = cv2.GaussianBlur(galaxy_mask.astype(np.float32), (0, 0), 7.0)
+
+    local_peak = lum - cv2.GaussianBlur(lum, (0, 0), 2.0)
+    star_threshold = float(np.percentile(local_peak, 99.25))
+    star_mask = np.clip(local_peak / max(1e-6, star_threshold), 0.0, 1.0) ** 1.7
+    star_mask = cv2.GaussianBlur(star_mask.astype(np.float32), (0, 0), 0.8)
+
+    core_mask = np.clip(
+        (extended - np.percentile(extended, 96.0))
+        / max(1e-6, np.percentile(extended, 99.88) - np.percentile(extended, 96.0)),
+        0.0,
+        1.0,
+    ) ** 0.78
+    core_mask = cv2.GaussianBlur(core_mask.astype(np.float32), (0, 0), 3.2)
+
+    arm_mask = np.clip(galaxy_mask * (1.0 - core_mask * 0.82), 0.0, 1.0)
+    chroma = stretched - lum[..., None]
+    chroma_distance = np.sqrt(np.sum(chroma * chroma, axis=2)).astype(np.float32)
+    chroma_low = float(np.percentile(chroma_distance, 58.0))
+    chroma_high = float(np.percentile(chroma_distance, 99.55))
+    chroma_confidence = np.clip(
+        (chroma_distance - chroma_low) / max(1e-6, chroma_high - chroma_low),
+        0.0,
+        1.0,
+    ) ** 0.62
+    chroma_confidence = cv2.GaussianBlur(chroma_confidence.astype(np.float32), (0, 0), 1.15)
+    chroma_gain = (
+        0.66
+        + arm_mask[..., None] * (1.42 + chroma_confidence[..., None] * 2.72)
+        + galaxy_mask[..., None] * 0.52
+        - core_mask[..., None] * 0.18
+    )
+    chroma_gain = 1.0 + (chroma_gain - 1.0) * (1.0 - star_mask[..., None] * 0.94)
+    colored = np.clip(lum[..., None] + chroma * np.clip(chroma_gain, 0.62, 5.20), 0.0, 1.0)
+
+    core_lum = _luminance(colored).astype(np.float32)
+    gold_bulge = np.clip(
+        core_lum[..., None] * np.array([1.18, 1.035, 0.74], dtype=np.float32).reshape(1, 1, 3),
+        0.0,
+        1.0,
+    )
+    gold_mix = np.clip(core_mask[..., None] * 0.66, 0.0, 0.66)
+    colored = np.clip(colored * (1.0 - gold_mix) + gold_bulge * gold_mix, 0.0, 1.0)
+
+    nucleus = np.clip(
+        (core_lum - np.percentile(core_lum, 99.18))
+        / max(1e-6, np.percentile(core_lum, 99.985) - np.percentile(core_lum, 99.18)),
+        0.0,
+        1.0,
+    ) ** 0.80
+    nucleus = cv2.GaussianBlur((nucleus * core_mask).astype(np.float32), (0, 0), 1.8)
+    ivory = np.clip(
+        _luminance(colored)[..., None]
+        * np.array([1.035, 1.015, 0.965], dtype=np.float32).reshape(1, 1, 3),
+        0.0,
+        1.0,
+    )
+    nucleus_mix = np.clip(nucleus[..., None] * 0.58, 0.0, 0.58)
+    colored = np.clip(colored * (1.0 - nucleus_mix) + ivory * nucleus_mix, 0.0, 1.0)
+
+    # Inpaint only anomalous dark nucleus pits; preserve the natural core gradient.
+    current_core_lum = _luminance(colored).astype(np.float32)
+    local_core_lum = cv2.GaussianBlur(current_core_lum, (0, 0), 2.8)
+    pit_ratio = (local_core_lum - current_core_lum) / np.maximum(local_core_lum, 1e-5)
+    pit_mask = ((pit_ratio > 0.055) & (core_mask > 0.42)).astype(np.uint8) * 255
+    pit_mask = cv2.morphologyEx(
+        pit_mask,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    )
+    pit_mask = cv2.dilate(
+        pit_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+        iterations=1,
+    )
+    if int(np.count_nonzero(pit_mask)) > 0:
+        inpainted = cv2.inpaint(
+            np.clip(colored * 255.0, 0, 255).astype(np.uint8),
+            pit_mask,
+            7.0,
+            cv2.INPAINT_TELEA,
+        ).astype(np.float32) / 255.0
+        pit_blend = cv2.GaussianBlur(pit_mask.astype(np.float32) / 255.0, (0, 0), 0.9)[..., None]
+        repaired_lum = _luminance(inpainted).astype(np.float32)
+        local_core_color = cv2.GaussianBlur(colored, (0, 0), 4.2)
+        local_core_chroma = local_core_color - _luminance(local_core_color)[..., None]
+        repaired_core = np.clip(repaired_lum[..., None] + local_core_chroma, 0.0, 1.0)
+        colored = np.clip(colored * (1.0 - pit_blend) + repaired_core * pit_blend, 0.0, 1.0)
+
+    # The brightest nucleus should roll off smoothly, without a tiny deconvolution ring.
+    nucleus_polish = cv2.GaussianBlur((nucleus**1.8).astype(np.float32), (0, 0), 1.6)
+    nucleus_polish = np.clip(nucleus_polish[..., None] * 0.94, 0.0, 0.94)
+    polished_lum = cv2.GaussianBlur(_luminance(colored).astype(np.float32), (0, 0), 6.0)
+    local_core_color = cv2.GaussianBlur(colored, (0, 0), 4.2)
+    local_core_chroma = local_core_color - _luminance(local_core_color)[..., None]
+    polished_core = np.clip(polished_lum[..., None] + local_core_chroma, 0.0, 1.0)
+    colored = np.clip(
+        colored * (1.0 - nucleus_polish) + polished_core * nucleus_polish,
+        0.0,
+        1.0,
+    )
+
+    pcc_star_lum = _luminance(stretched).astype(np.float32)
+    preserved_star_color = pcc_star_lum[..., None] + np.clip(
+        stretched - pcc_star_lum[..., None], -0.065, 0.065
+    )
+    star_mix = np.clip(
+        star_mask[..., None] * (1.0 - core_mask[..., None] * 0.995) * 0.88,
+        0.0,
+        0.88,
+    )
+    colored = np.clip(colored * (1.0 - star_mix) + preserved_star_color * star_mix, 0.0, 1.0)
+
+    colored_lum = _luminance(colored).astype(np.float32)
+    fine = colored_lum - cv2.GaussianBlur(colored_lum, (0, 0), 1.35)
+    medium = colored_lum - cv2.GaussianBlur(colored_lum, (0, 0), 7.0)
+    detail_mask = np.clip(galaxy_mask * (1.0 - star_mask * 0.92), 0.0, 0.78)
+    detailed_lum = np.clip(
+        colored_lum + fine * detail_mask * 0.16 + medium * detail_mask * 0.055,
+        0.0,
+        1.0,
+    )
+    colored = np.clip(
+        colored * (detailed_lum / np.maximum(colored_lum, 1e-5))[..., None],
+        0.0,
+        1.0,
+    )
+
+    final_lum = _luminance(colored).astype(np.float32)
+    background = np.clip(1.0 - galaxy_mask - star_mask * 0.85, 0.0, 1.0)
+    smooth = cv2.GaussianBlur(colored.astype(np.float32), (0, 0), 0.75)
+    noise_mix = np.clip(background[..., None] * 0.16, 0.0, 0.16)
+    colored = np.clip(colored * (1.0 - noise_mix) + smooth * noise_mix, 0.0, 1.0)
+
+    if log:
+        log(
+            "Applied PCC galaxy look with measured chroma: "
+            f"sky_RGB={sky[0]:.6f}, {sky[1]:.6f}, {sky[2]:.6f}, "
+            f"gains={gains[0]:.3f}, {gains[1]:.3f}, {gains[2]:.3f}, "
+            f"black={black:.6f}, white={white:.6f}, "
+            f"galaxy_mask_mean={float(np.mean(galaxy_mask)):.5f}, "
+            f"chroma_confidence_mean={float(np.mean(chroma_confidence)):.5f}, "
+            f"chroma_p95={chroma_percentile(colored, 95.0):.5f}"
+        )
+    return _to_uint16(colored)
+
+
 def apply_prestretched_broadband_look(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:

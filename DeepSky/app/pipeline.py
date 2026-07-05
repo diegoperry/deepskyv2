@@ -12,6 +12,7 @@ import numpy as np
 from .cli_tools import find_executable, run_deepsnr, run_starnet
 from .goal_look import (
     apply_broadband_look,
+    apply_pcc_galaxy_look,
     apply_cosmos_style_nebula_finish,
     apply_goal_look,
     apply_pixinsight_style_nebula_finish,
@@ -736,7 +737,7 @@ def _run_siril_calibration(
     object_type = _normalized_object_type(settings)
     use_deconvolution_layer = (
         bool(getattr(settings, "siril_deconvolution_enabled", False))
-        and mode == "Basic"
+        and mode in {"Basic", "Siril Photometric"}
         and object_type == "galaxy"
     )
     if mode == "Off":
@@ -896,6 +897,12 @@ def _run_siril_calibration(
     elif object_type == "nebula":
         write_log("Siril PCC color calibration succeeded for nebula; handing calibrated data to DeepSky nebula color enhancement.")
         finished_image = astrophotography_stretch(siril_image, strength="standard")
+    elif object_type == "galaxy":
+        write_log("Siril PCC color calibration succeeded for galaxy; preserving catalog color through linked galaxy stretch.")
+        finished_image = apply_pcc_galaxy_look(siril_image, write_log)
+        if deconvolution_image is not None:
+            write_log("Applying Siril deconvolution as protected luminance detail after PCC galaxy stretch.")
+            finished_image = blend_galaxy_deconvolution_detail(finished_image, deconvolution_image, write_log)
     else:
         write_log("Siril PCC succeeded; preserving Siril photometric color without manual color shaping.")
         finished_image = siril_image
@@ -1041,6 +1048,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             )
 
     nebula_auto_pcc_command = None
+    galaxy_auto_pcc_command = None
     if mode == PipelineMode.FULL and object_type == "nebula" and settings.color_calibration_mode != "Off":
         nebula_auto_pcc_command = build_siril_pcc_command(
             original,
@@ -1053,6 +1061,18 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             write_log(f"Nebula Siril PCC available and will be used: {nebula_auto_pcc_command}")
         else:
             write_log("Nebula Siril PCC unavailable; FITS is missing usable WCS/plate-solve metadata for catalog calibration.")
+    if mode == PipelineMode.FULL and object_type == "galaxy" and settings.color_calibration_mode != "Off":
+        galaxy_auto_pcc_command = build_siril_pcc_command(
+            original,
+            optional_object_name=settings.siril_object_name.strip() or None,
+            optional_ra_dec=settings.siril_ra_dec.strip() or None,
+            optional_focal_length=settings.siril_focal_length.strip() or None,
+            optional_pixel_size=settings.siril_pixel_size.strip() or None,
+        )
+        if galaxy_auto_pcc_command:
+            write_log(f"Galaxy Siril PCC available and will be used automatically: {galaxy_auto_pcc_command}")
+        else:
+            write_log("Galaxy Siril PCC unavailable; FITS is missing usable WCS/plate-solve metadata for catalog calibration.")
 
     should_use_siril_calibration = settings.color_calibration_mode != "Off" and (
         mode == PipelineMode.SIRIL
@@ -1060,6 +1080,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         or gradient_galaxy_siril
         or (mode == PipelineMode.FULL and siril_deconvolution_requested)
         or bool(nebula_auto_pcc_command)
+        or bool(galaxy_auto_pcc_command)
     )
     if should_use_siril_calibration:
         if siril_deconvolution_requested and not gradient_galaxy_siril and not use_prestretched and mode == PipelineMode.FULL:
@@ -1068,6 +1089,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         if nebula_auto_pcc_command and mode == PipelineMode.FULL and object_type == "nebula":
             settings.color_calibration_mode = "Siril Photometric"
             write_log("Nebula mode: forcing Siril PCC before DeepSky strong nebula color separation.")
+        elif galaxy_auto_pcc_command and mode == PipelineMode.FULL and object_type == "galaxy":
+            settings.color_calibration_mode = "Siril Photometric"
+            write_log("Galaxy mode: forcing Siril PCC before the automatic measured-color galaxy finish.")
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
         try:
             _run_siril_calibration(
@@ -1160,9 +1184,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
 
     current = calibrated
-    preserve_siril_galaxy_finish = gradient_galaxy_siril or (
-        siril_deconvolution_requested and mode == PipelineMode.FULL
-    )
+    preserve_siril_galaxy_finish = gradient_galaxy_siril
     skip_siril_galaxy_star_reduction = (
         preserve_siril_galaxy_finish
         and object_type == "galaxy"
