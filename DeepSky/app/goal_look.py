@@ -975,6 +975,93 @@ def apply_pcc_galaxy_look(image: np.ndarray, log: LogCallback | None = None) -> 
         1.0,
     )
 
+    extended_linear_galaxy = (
+        0.018 <= white <= 0.20
+        and float(np.mean(galaxy_mask)) >= 0.046
+        and float(np.mean(chroma_confidence)) < 0.11
+    )
+    if extended_linear_galaxy:
+        # Large linear galaxies need their broad disk and dust lanes separated
+        # from the sky instead of receiving the compact-galaxy core treatment.
+        extended_lum = _luminance(colored).astype(np.float32)
+        local_base = cv2.GaussianBlur(extended_lum, (0, 0), 13.0)
+        broad_base = cv2.GaussianBlur(extended_lum, (0, 0), 34.0)
+        disk_field = cv2.GaussianBlur(extended_lum, (0, 0), 20.0)
+        disk_floor = float(np.percentile(disk_field, 61.0))
+        disk_ceiling = float(np.percentile(disk_field, 99.55))
+        outer_disk_mask = np.clip(
+            (disk_field - disk_floor) / max(1e-6, disk_ceiling - disk_floor),
+            0.0,
+            1.0,
+        ) ** 0.72
+        outer_disk_mask = cv2.GaussianBlur(outer_disk_mask.astype(np.float32), (0, 0), 8.0)
+        extended_disk_mask = np.clip(
+            np.maximum(galaxy_mask * 2.35, outer_disk_mask * 2.10)
+            * (1.0 - star_mask * 0.94),
+            0.0,
+            0.96,
+        )
+        dust_structure = extended_lum - local_base
+        broad_structure = local_base - broad_base
+        dark_dust = np.minimum(dust_structure, 0.0)
+        bright_texture = np.maximum(dust_structure, 0.0)
+        disk_detail_mask = np.clip(
+            extended_disk_mask * (1.0 - core_mask * 0.58),
+            0.0,
+            0.92,
+        )
+        restored_lum = np.clip(
+            extended_lum
+            + dark_dust * disk_detail_mask * 1.34
+            + bright_texture * disk_detail_mask * 0.52
+            + broad_structure * disk_detail_mask * 0.38
+            + broad_base * extended_disk_mask * (1.0 - core_mask * 0.72) * 0.26,
+            0.0,
+            1.0,
+        )
+        lifted_disk = np.clip(restored_lum, 0.0, 1.0) ** 0.62
+        tone_mix = np.clip(
+            extended_disk_mask * (1.0 - core_mask * 0.58) * 0.72,
+            0.0,
+            0.64,
+        )
+        restored_lum = np.clip(
+            restored_lum * (1.0 - tone_mix) + lifted_disk * tone_mix,
+            0.0,
+            1.0,
+        )
+        colored = np.clip(
+            colored * (restored_lum / np.maximum(extended_lum, 1e-5))[..., None],
+            0.0,
+            1.0,
+        )
+
+        warm_disk = np.clip(
+            restored_lum[..., None]
+            * np.array([1.14, 1.025, 0.76], dtype=np.float32).reshape(1, 1, 3),
+            0.0,
+            1.0,
+        )
+        warm_mask = np.clip(
+            extended_disk_mask[..., None]
+            * (0.52 + core_mask[..., None] * 0.10)
+            * (1.0 - star_mask[..., None] * 0.96),
+            0.0,
+            0.55,
+        )
+        colored = np.clip(colored * (1.0 - warm_mask) + warm_disk * warm_mask, 0.0, 1.0)
+        measured_lum = _luminance(colored).astype(np.float32)
+        measured_chroma = colored - measured_lum[..., None]
+        outer_color_gain = 1.0 + np.clip(
+            extended_disk_mask[..., None]
+            * (1.0 - core_mask[..., None] * 0.88)
+            * chroma_confidence[..., None]
+            * 1.15,
+            0.0,
+            0.72,
+        )
+        colored = np.clip(measured_lum[..., None] + measured_chroma * outer_color_gain, 0.0, 1.0)
+
     final_lum = _luminance(colored).astype(np.float32)
     background = np.clip(1.0 - galaxy_mask - star_mask * 0.85, 0.0, 1.0)
     smooth = cv2.GaussianBlur(colored.astype(np.float32), (0, 0), 0.75)
@@ -989,7 +1076,8 @@ def apply_pcc_galaxy_look(image: np.ndarray, log: LogCallback | None = None) -> 
             f"black={black:.6f}, white={white:.6f}, "
             f"galaxy_mask_mean={float(np.mean(galaxy_mask)):.5f}, "
             f"chroma_confidence_mean={float(np.mean(chroma_confidence)):.5f}, "
-            f"chroma_p95={chroma_percentile(colored, 95.0):.5f}"
+            f"chroma_p95={chroma_percentile(colored, 95.0):.5f}, "
+            f"extended_linear={extended_linear_galaxy}"
         )
     return _to_uint16(colored)
 
