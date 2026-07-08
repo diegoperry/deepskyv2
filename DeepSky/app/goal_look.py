@@ -1036,31 +1036,111 @@ def apply_pcc_galaxy_look(image: np.ndarray, log: LogCallback | None = None) -> 
             1.0,
         )
 
-        warm_disk = np.clip(
-            restored_lum[..., None]
-            * np.array([1.14, 1.025, 0.76], dtype=np.float32).reshape(1, 1, 3),
+        ys, xs = np.indices((height, width), dtype=np.float32)
+        center_y, center_x = np.unravel_index(int(np.argmax(broad)), broad.shape)
+        radial = np.sqrt(
+            ((xs - float(center_x)) / max(width * 0.32, 1.0)) ** 2
+            + ((ys - float(center_y)) / max(height * 0.50, 1.0)) ** 2
+        )
+        radial_arm_zone = np.clip((radial - 0.12) / max(1e-6, 0.92 - 0.12), 0.0, 1.0)
+        radial_arm_zone = radial_arm_zone * radial_arm_zone * (3.0 - 2.0 * radial_arm_zone)
+        radial_falloff = np.clip((radial - 1.35) / max(1e-6, 2.20 - 1.35), 0.0, 1.0)
+        radial_falloff = radial_falloff * radial_falloff * (3.0 - 2.0 * radial_falloff)
+        color_arm_mask = np.clip(
+            extended_disk_mask
+            * (1.0 - core_mask * 0.92)
+            * radial_arm_zone
+            * (1.0 - radial_falloff)
+            * (1.0 - star_mask * 0.96),
             0.0,
             1.0,
         )
-        warm_mask = np.clip(
-            extended_disk_mask[..., None]
-            * (0.52 + core_mask[..., None] * 0.10)
-            * (1.0 - star_mask[..., None] * 0.96),
-            0.0,
-            0.55,
+        color_arm_mask = cv2.GaussianBlur(color_arm_mask.astype(np.float32), (0, 0), 5.0)
+
+        blue_ratio = (balanced[..., 2] + balanced[..., 1] * 0.50) / np.maximum(
+            np.sum(balanced, axis=2),
+            1e-5,
         )
-        colored = np.clip(colored * (1.0 - warm_mask) + warm_disk * warm_mask, 0.0, 1.0)
+        valid_arm = color_arm_mask > 0.08
+        if int(np.count_nonzero(valid_arm)) > 512:
+            blue_low = float(np.percentile(blue_ratio[valid_arm], 55.0))
+            blue_high = float(np.percentile(blue_ratio[valid_arm], 94.0))
+        else:
+            blue_low = float(np.percentile(blue_ratio, 76.0))
+            blue_high = float(np.percentile(blue_ratio, 99.2))
+        blue_weight = np.clip((blue_ratio - blue_low) / max(1e-6, blue_high - blue_low), 0.0, 1.0)
+        blue_weight = cv2.GaussianBlur(
+            (blue_weight * color_arm_mask).astype(np.float32),
+            (0, 0),
+            3.0,
+        )
+
         measured_lum = _luminance(colored).astype(np.float32)
         measured_chroma = colored - measured_lum[..., None]
-        outer_color_gain = 1.0 + np.clip(
+        color_chroma_gain = 1.0 + np.clip(
             extended_disk_mask[..., None]
             * (1.0 - core_mask[..., None] * 0.88)
-            * chroma_confidence[..., None]
-            * 1.15,
+            * (0.80 + chroma_confidence[..., None] * 1.10),
             0.0,
-            0.72,
+            1.55,
         )
-        colored = np.clip(measured_lum[..., None] + measured_chroma * outer_color_gain, 0.0, 1.0)
+        colored = np.clip(measured_lum[..., None] + measured_chroma * color_chroma_gain, 0.0, 1.0)
+
+        blue_disk = np.clip(
+            restored_lum[..., None]
+            * np.array([0.58, 0.78, 1.42], dtype=np.float32).reshape(1, 1, 3),
+            0.0,
+            1.0,
+        )
+        blue_mix = np.clip(
+            (color_arm_mask * 0.18 + blue_weight * 0.20)[..., None],
+            0.0,
+            0.34,
+        )
+        colored = np.clip(colored * (1.0 - blue_mix) + blue_disk * blue_mix, 0.0, 1.0)
+
+        colored[..., 2] = np.clip(
+            colored[..., 2] + blue_weight * 0.10 * (0.40 + restored_lum),
+            0.0,
+            1.0,
+        )
+        colored[..., 1] = np.clip(
+            colored[..., 1] + blue_weight * 0.025 * (0.40 + restored_lum),
+            0.0,
+            1.0,
+        )
+
+        gold_disk = np.clip(
+            restored_lum[..., None]
+            * np.array([1.24, 1.08, 0.76], dtype=np.float32).reshape(1, 1, 3),
+            0.0,
+            1.0,
+        )
+        gold_mask = np.clip(
+            core_mask[..., None]
+            * 0.36
+            * (1.0 - star_mask[..., None] * 0.96),
+            0.0,
+            0.36,
+        )
+        colored = np.clip(colored * (1.0 - gold_mask) + gold_disk * gold_mask, 0.0, 1.0)
+
+        nucleus_extended = np.clip(
+            (broad - np.percentile(broad, 98.3))
+            / max(1e-6, np.percentile(broad, 99.97) - np.percentile(broad, 98.3)),
+            0.0,
+            1.0,
+        )
+        nucleus_extended = cv2.GaussianBlur(nucleus_extended.astype(np.float32), (0, 0), 4.0)
+        ivory_core = np.clip(
+            restored_lum[..., None]
+            * np.array([1.06, 1.04, 0.99], dtype=np.float32).reshape(1, 1, 3)
+            + np.array([0.035, 0.028, 0.018], dtype=np.float32).reshape(1, 1, 3),
+            0.0,
+            1.0,
+        )
+        ivory_mix = np.clip(nucleus_extended[..., None] * 0.65, 0.0, 0.65)
+        colored = np.clip(colored * (1.0 - ivory_mix) + ivory_core * ivory_mix, 0.0, 1.0)
 
     final_lum = _luminance(colored).astype(np.float32)
     background = np.clip(1.0 - galaxy_mask - star_mask * 0.85, 0.0, 1.0)
