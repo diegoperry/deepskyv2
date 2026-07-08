@@ -2846,9 +2846,31 @@ def _job_response(job: WebJob) -> dict[str, Any]:
     return payload
 
 
+def _subscription_period_end_timestamp(subscription: Any) -> float | None:
+    current_period_end = _object_get(subscription, "current_period_end")
+    if current_period_end:
+        try:
+            return float(current_period_end)
+        except (TypeError, ValueError):
+            pass
+    item_period_ends: list[float] = []
+    items = _object_get(_object_get(subscription, "items") or {}, "data") or []
+    for item in items:
+        item_period_end = _object_get(item, "current_period_end")
+        if not item_period_end:
+            continue
+        try:
+            item_period_ends.append(float(item_period_end))
+        except (TypeError, ValueError):
+            continue
+    if item_period_ends:
+        return max(item_period_ends)
+    return None
+
+
 def _subscription_payload(subscription: Any, *, status_override: str | None = None) -> dict[str, Any]:
     status = status_override or _object_get(subscription, "status")
-    current_period_end = _object_get(subscription, "current_period_end")
+    current_period_end = _subscription_period_end_timestamp(subscription)
     return {
         "subscription_status": status or "free",
         "stripe_subscription_id": _object_get(subscription, "id"),
@@ -2860,11 +2882,11 @@ def _subscription_payload(subscription: Any, *, status_override: str | None = No
 
 
 def _subscription_period_is_current(subscription: Any) -> bool:
-    current_period_end = _object_get(subscription, "current_period_end")
+    current_period_end = _subscription_period_end_timestamp(subscription)
     if not current_period_end:
         return False
     try:
-        return datetime.fromtimestamp(float(current_period_end), tz=timezone.utc) > datetime.now(timezone.utc)
+        return datetime.fromtimestamp(current_period_end, tz=timezone.utc) > datetime.now(timezone.utc)
     except (TypeError, ValueError, OSError, OverflowError):
         return False
 
@@ -2924,7 +2946,7 @@ def _reconcile_stripe_subscription(user: AuthUser, profile: dict[str, Any]) -> d
         status = str(profile.get("subscription_status") or "").lower()
         latest_subscription = max(
             matching,
-            key=lambda subscription: float(_object_get(subscription, "current_period_end") or 0),
+            key=lambda subscription: _subscription_period_end_timestamp(subscription) or 0,
             default=None,
         )
         if latest_subscription:
