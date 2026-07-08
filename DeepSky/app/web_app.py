@@ -344,22 +344,26 @@ def _profile_select_filter(column: str, value: str) -> str:
     return f"profiles?{column}=eq.{urllib.parse.quote(value, safe='')}&select=*"
 
 
-def _profile_period_is_current(profile: dict[str, Any] | None) -> bool:
-    period_end = (profile or {}).get("current_period_end")
+def _parse_period_end(period_end: Any) -> datetime | None:
     if not period_end:
-        return True
+        return None
     try:
         if isinstance(period_end, str):
             parsed = datetime.fromisoformat(period_end.replace("Z", "+00:00"))
         elif isinstance(period_end, datetime):
             parsed = period_end
         else:
-            return False
+            return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed > datetime.now(timezone.utc)
+        return parsed
     except (TypeError, ValueError):
-        return False
+        return None
+
+
+def _profile_period_is_current(profile: dict[str, Any] | None) -> bool:
+    parsed = _parse_period_end((profile or {}).get("current_period_end"))
+    return bool(parsed and parsed > datetime.now(timezone.utc))
 
 
 def _is_paid_profile(profile: dict[str, Any] | None) -> bool:
@@ -2855,6 +2859,16 @@ def _subscription_payload(subscription: Any, *, status_override: str | None = No
     }
 
 
+def _subscription_period_is_current(subscription: Any) -> bool:
+    current_period_end = _object_get(subscription, "current_period_end")
+    if not current_period_end:
+        return False
+    try:
+        return datetime.fromtimestamp(float(current_period_end), tz=timezone.utc) > datetime.now(timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return False
+
+
 def _apply_subscription_update(subscription: Any, *, status_override: str | None = None) -> None:
     metadata = _object_get(subscription, "metadata") or {}
     user_id = metadata.get("user_id")
@@ -2902,12 +2916,25 @@ def _reconcile_stripe_subscription(user: AuthUser, profile: dict[str, Any]) -> d
             subscription
             for subscription in matching
             if str(_object_get(subscription, "status") or "").lower() in PAID_SUBSCRIPTION_STATUSES
+            and _subscription_period_is_current(subscription)
         ),
         None,
     )
     if not paid_subscription:
         status = str(profile.get("subscription_status") or "").lower()
-        if status in PAID_SUBSCRIPTION_STATUSES and not _profile_period_is_current(profile):
+        latest_subscription = max(
+            matching,
+            key=lambda subscription: float(_object_get(subscription, "current_period_end") or 0),
+            default=None,
+        )
+        if latest_subscription:
+            updates = _subscription_payload(latest_subscription)
+            updates["stripe_customer_id"] = customer_id
+            if str(updates.get("subscription_status") or "").lower() in PAID_SUBSCRIPTION_STATUSES:
+                updates["subscription_status"] = "canceled"
+            _update_profile(user.id, updates)
+            return _get_profile(user.id) or {**profile, **updates}
+        if status in PAID_SUBSCRIPTION_STATUSES:
             updates = {
                 "subscription_status": "canceled",
                 "current_period_end": profile.get("current_period_end"),
@@ -3097,8 +3124,8 @@ def create_billing_portal(user: AuthUser = Depends(require_user)) -> dict[str, s
     profile = _billing_profile_for(user)
     profile = _reconcile_stripe_subscription(user, profile)
     customer_id = profile.get("stripe_customer_id")
-    if not customer_id:
-        raise HTTPException(status_code=404, detail="No paid plan found for this account.")
+    if not customer_id or not _is_paid_profile(profile):
+        raise HTTPException(status_code=404, detail="No active paid plan found for this account.")
     stripe = _stripe_module()
     session = stripe.billing_portal.Session.create(
         customer=customer_id,
