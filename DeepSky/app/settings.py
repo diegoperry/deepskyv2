@@ -42,6 +42,7 @@ class AppSettings:
     telescope_profile: str
     prestretched_input: bool
     object_type: str
+    pcc_failure_policy: str
 
 
 def _default_tool_folder(name: str, extracted_prefix: str) -> Path:
@@ -70,8 +71,8 @@ def default_settings() -> AppSettings:
         siril_apply_scnr=False,
         siril_color_saturation=15,
         siril_deconvolution_enabled=False,
-        starless_test_enabled=True,
-        star_handling_mode="Slight Star Reduction",
+        starless_test_enabled=False,
+        star_handling_mode="Standard",
         siril_debug_mode=False,
         galaxy_background_smoothness=90,
         galaxy_background_darkness=90,
@@ -83,6 +84,7 @@ def default_settings() -> AppSettings:
         telescope_profile="Auto",
         prestretched_input=False,
         object_type="Nebula",
+        pcc_failure_policy="continue",
     )
 
 

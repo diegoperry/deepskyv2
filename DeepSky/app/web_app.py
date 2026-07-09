@@ -26,7 +26,7 @@ from io import BytesIO
 
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
-from .pipeline import PipelineMode, run_pipeline
+from .pipeline import PccCalibrationFailed, PipelineMode, run_pipeline
 from .settings import APP_ROOT, PROJECT_ROOT, default_settings, load_settings
 
 
@@ -159,6 +159,8 @@ class WebJob:
     stage: str = "Queued"
     progress: int = 0
     credit_consumed: bool = False
+    input_path: Path | None = None
+    run_args: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -2260,6 +2262,13 @@ def _html() -> str:
       `;
     }
 
+    function renderPccDecision(job) {
+      downloads.innerHTML = `
+        <button class="link-button" type="button" data-pcc-action="continue" data-job-id="${job.id}">Continue without PCC</button>
+        <button class="link-button" type="button" data-pcc-action="abort" data-job-id="${job.id}">Abort run</button>
+      `;
+    }
+
     async function postFormJson(url, data, { onUploadProgress, onServerWait } = {}) {
       const headers = await authHeaders();
       return new Promise((resolve, reject) => {
@@ -2552,6 +2561,31 @@ def _html() -> str:
     });
 
     downloads.addEventListener("click", async (event) => {
+      const pccButton = event.target.closest("button[data-pcc-action]");
+      if (pccButton) {
+        const jobId = pccButton.dataset.jobId;
+        const action = pccButton.dataset.pccAction;
+        try {
+          downloads.querySelectorAll("button[data-pcc-action]").forEach((button) => { button.disabled = true; });
+          statusEl.textContent = action === "continue" ? "Continuing without PCC..." : "Aborting run...";
+          const response = await postJsonAuthed(`/api/jobs/${jobId}/pcc/${action}`);
+          if (action === "continue") {
+            downloads.innerHTML = "";
+            processingIndicator.classList.add("active");
+            run.disabled = true;
+            poll(response.id);
+          } else {
+            processingIndicator.classList.remove("active");
+            run.disabled = false;
+            downloads.innerHTML = "";
+            statusEl.textContent = "Processing aborted.";
+          }
+        } catch (error) {
+          statusEl.textContent = error.message || String(error);
+          downloads.querySelectorAll("button[data-pcc-action]").forEach((button) => { button.disabled = false; });
+        }
+        return;
+      }
       const pngButton = event.target.closest("button[data-download-kind='png-export']");
       if (pngButton) {
         openPngExportModal(pngButton.dataset.jobId, pngButton.dataset.downloadUrl);
@@ -2646,6 +2680,14 @@ def _html() -> str:
       if (job.after_preview) {
         await loadImageIntoFrame(`${job.after_preview}&t=${Date.now()}`, afterFrame, "After preview");
       }
+      if (job.status === "pcc_failed" || job.requires_pcc_decision) {
+        showPipelineProgress("Siril PCC Failed", job.progress || 34);
+        processingIndicator.classList.remove("active");
+        statusEl.textContent = job.pcc_error || job.error || "Siril PCC failed. Continue without PCC or abort this run.";
+        renderPccDecision(job);
+        run.disabled = true;
+        return;
+      }
       if (job.status === "finished") {
         showPipelineProgress("Complete", 100);
         processingIndicator.classList.remove("active");
@@ -2697,8 +2739,9 @@ def _html() -> str:
         "siril_deconvolution",
         selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
       );
-      data.append("star_setting", "Slight Star Reduction");
-      data.append("starless_test", "true");
+      const starSetting = selectedObjectType === "Galaxy" ? "Slight Star Reduction" : "Standard";
+      data.append("star_setting", starSetting);
+      data.append("starless_test", selectedObjectType === "Galaxy" ? "true" : "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -2829,7 +2872,10 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         "progress": job.progress,
         "credit_consumed": job.credit_consumed,
         "can_download": job.status == "finished" and bool(job.result),
+        "requires_pcc_decision": job.status == "pcc_failed",
     }
+    if job.status == "pcc_failed":
+        payload["pcc_error"] = job.error or "Siril PCC failed."
     if job.result:
         payload.update(
             {
@@ -2982,12 +3028,24 @@ def _run_job(
     siril_deconvolution: bool = False,
     starless_test: bool = False,
     star_setting: str = "Slight Star Reduction",
+    pcc_failure_policy: str = "pause",
 ) -> None:
     with jobs_lock:
         job = jobs[job_id]
         job.status = "running"
         job.stage = "Starting Pipeline"
         job.progress = 1
+        job.input_path = input_path
+        job.run_args = {
+            "pre_stretched": pre_stretched,
+            "object_type": object_type,
+            "input_mode": input_mode,
+            "stretch_level": stretch_level,
+            "nebula_color_separation": nebula_color_separation,
+            "siril_deconvolution": siril_deconvolution,
+            "starless_test": starless_test,
+            "star_setting": star_setting,
+        }
 
     def write_log(message: str) -> None:
         with jobs_lock:
@@ -3021,6 +3079,7 @@ def _run_job(
             mode = "Pre-stretched"
         settings.input_processing_mode = mode
         settings.prestretched_input = mode == "Pre-stretched"
+        settings.pcc_failure_policy = pcc_failure_policy
         settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
         settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
         settings.siril_deconvolution_enabled = settings.object_type == "Galaxy" and bool(siril_deconvolution)
@@ -3033,8 +3092,8 @@ def _run_job(
             settings.nebula_color_separation = "Strong"
         else:
             settings.nebula_color_separation = "Balanced"
-        settings.star_handling_mode = "Slight Star Reduction"
-        settings.starless_test_enabled = True
+        settings.star_handling_mode = "Slight Star Reduction" if settings.object_type == "Galaxy" else "Standard"
+        settings.starless_test_enabled = settings.object_type == "Galaxy"
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
@@ -3053,6 +3112,13 @@ def _run_job(
                 setattr(settings, attr, getattr(defaults, attr))
         result = run_pipeline(input_path, settings, PipelineMode.FULL, write_log)
         shutil.rmtree(input_path.parent, ignore_errors=True)
+    except PccCalibrationFailed as exc:
+        with jobs_lock:
+            jobs[job_id].status = "pcc_failed"
+            jobs[job_id].error = str(exc)
+            jobs[job_id].stage = "Siril PCC Failed"
+            jobs[job_id].progress = max(jobs[job_id].progress, 34)
+            jobs[job_id].log.append(f"PCC_DECISION_REQUIRED: {exc}")
     except Exception as exc:
         shutil.rmtree(input_path.parent, ignore_errors=True)
         with jobs_lock:
@@ -3396,9 +3462,10 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
             )
-        jobs[job_id].warnings.append(
-            "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
-        )
+        if selected_object_type == "Galaxy":
+            jobs[job_id].warnings.append(
+                "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
+            )
         if selected_object_type == "Nebula":
             jobs[job_id].warnings.append(
                 f"Nebula color separation is set to {selected_nebula_color_separation}."
@@ -3415,6 +3482,7 @@ async def create_job(
         selected_siril_deconvolution,
         starless_test,
         star_setting,
+        "pause",
     )
     return {"id": job_id}
 
@@ -3427,6 +3495,62 @@ def get_job(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, An
         if not job or job.user_id != user.id:
             raise HTTPException(status_code=404, detail="Job not found.")
         return _job_response(job)
+
+
+@app.post("/api/jobs/{job_id}/pcc/continue")
+def continue_job_without_pcc(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, str]:
+    _cleanup_old_temp_files()
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status != "pcc_failed":
+            raise HTTPException(status_code=409, detail="This job is not waiting for a PCC decision.")
+        if not job.input_path or not job.input_path.exists():
+            raise HTTPException(status_code=404, detail="The original upload is no longer available.")
+        input_path = job.input_path
+        run_args = dict(job.run_args)
+        job.status = "queued"
+        job.error = None
+        job.stage = "Queued"
+        job.progress = 1
+        job.warnings.append("Continuing without Siril PCC. DeepSky will use Siril local background/color calibration instead.")
+        job.log.append("User chose to continue without Siril PCC.")
+
+    executor.submit(
+        _run_job,
+        job_id,
+        input_path,
+        run_args.get("pre_stretched", False),
+        run_args.get("object_type", "Nebula"),
+        run_args.get("input_mode", "Auto"),
+        run_args.get("stretch_level", "Standard"),
+        run_args.get("nebula_color_separation", "Strong"),
+        run_args.get("siril_deconvolution", False),
+        run_args.get("starless_test", False),
+        run_args.get("star_setting", "Standard"),
+        "continue_without_pcc",
+    )
+    return {"id": job_id}
+
+
+@app.post("/api/jobs/{job_id}/pcc/abort")
+def abort_job_after_pcc_failure(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, str]:
+    _cleanup_old_temp_files()
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status != "pcc_failed":
+            raise HTTPException(status_code=409, detail="This job is not waiting for a PCC decision.")
+        input_path = job.input_path
+        job.status = "failed"
+        job.error = "Processing aborted after Siril PCC failed."
+        job.stage = "Aborted"
+        job.log.append("User aborted after Siril PCC failed.")
+    if input_path:
+        shutil.rmtree(input_path.parent, ignore_errors=True)
+    return {"id": job_id}
 
 
 @app.post("/api/jobs/{job_id}/export/png")

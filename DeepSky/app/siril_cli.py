@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Callable
+import os
 
 from astropy.io import fits
 
@@ -84,15 +85,32 @@ def run_siril_script(
     working_directory: Path,
     log: LogCallback | None = None,
 ) -> None:
+    executable_path = Path(executable_path).resolve()
+    script_path = Path(script_path).resolve()
+    working_directory = Path(working_directory).resolve()
     command = _format_script_command(executable_path, script_path, working_directory)
     if log:
         log(f"Running Siril: {' '.join(command)}")
+
+    siril_profile = Path(working_directory) / ".siril_profile"
+    siril_local = siril_profile / "Local"
+    siril_roaming = siril_profile / "Roaming"
+    siril_cache = siril_profile / "cache"
+    for folder in (siril_local, siril_roaming, siril_cache):
+        folder.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env["LOCALAPPDATA"] = str(siril_local)
+    env["APPDATA"] = str(siril_roaming)
+    env["XDG_CACHE_HOME"] = str(siril_cache)
+    env["XDG_CONFIG_HOME"] = str(siril_roaming)
 
     output_log = Path(working_directory) / "siril_output.log"
     with output_log.open("w", encoding="utf-8") as log_file:
         process = subprocess.Popen(
             command,
             cwd=str(working_directory),
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
