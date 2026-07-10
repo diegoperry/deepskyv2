@@ -1975,7 +1975,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     )
     reflection_style_nebula = False
 
-    if mode in {PipelineMode.FULL, PipelineMode.DEEPSNR} and not preserve_siril_galaxy_finish:
+    skip_generic_deepsnr_for_nebula = mode == PipelineMode.FULL and object_type == "nebula"
+    if mode in {PipelineMode.FULL, PipelineMode.DEEPSNR} and not preserve_siril_galaxy_finish and not skip_generic_deepsnr_for_nebula:
         deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
         if not deepsnr_exe:
             raise FileNotFoundError("DeepSNR executable not found. Update the DeepSNR path in settings.")
@@ -1983,11 +1984,13 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         run_deepsnr(current, denoised, deepsnr_exe, write_log)
         _log_existing_image(denoised, write_log, "denoised.tif")
         current = denoised
+    elif skip_generic_deepsnr_for_nebula:
+        write_log("Skipping generic DeepSNR stage for Nebula natural RGB pipeline; using internal masked sky denoise to avoid tile artifacts.")
     elif preserve_siril_galaxy_finish and mode == PipelineMode.FULL:
         write_log("Skipping generic DeepSNR stage; Siril finish already applied.")
 
     if mode == PipelineMode.FULL and object_type == "nebula" and not preserve_siril_galaxy_finish:
-        write_log("Nebula natural RGB pipeline: using Siril/DeepSNR result directly; skipping legacy StarNet color-separation composer.")
+        write_log("Nebula natural RGB pipeline: using Siril-calibrated RGB with internal masked sky denoise; skipping legacy StarNet color-separation composer.")
         natural_nebula = apply_natural_nebula_rgb_look(
             load_image(current, write_log),
             write_log,

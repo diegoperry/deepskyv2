@@ -2861,9 +2861,9 @@ def _html() -> str:
         "siril_deconvolution",
         selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
       );
-      const starSetting = selectedObjectType === "Star Cluster" ? "Standard" : "Slight Star Reduction";
+      const starSetting = selectedObjectType === "Galaxy" ? "Slight Star Reduction" : "Standard";
       data.append("star_setting", starSetting);
-      data.append("starless_test", selectedObjectType === "Star Cluster" ? "false" : "true");
+      data.append("starless_test", selectedObjectType === "Galaxy" ? "true" : "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -3215,9 +3215,9 @@ def _run_job(
         else:
             settings.nebula_color_separation = "Balanced"
         settings.star_handling_mode = (
-            "Standard" if settings.object_type == "Star Cluster" else "Slight Star Reduction"
+            "Slight Star Reduction" if settings.object_type == "Galaxy" else "Standard"
         )
-        settings.starless_test_enabled = settings.object_type != "Star Cluster"
+        settings.starless_test_enabled = settings.object_type == "Galaxy"
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
@@ -3590,7 +3590,7 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
             )
-        if selected_object_type in {"Galaxy", "Nebula"}:
+        if selected_object_type == "Galaxy":
             jobs[job_id].warnings.append(
                 "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
             )

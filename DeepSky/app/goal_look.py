@@ -1606,7 +1606,10 @@ def apply_natural_nebula_rgb_look(
         black = float(np.percentile(lum, 1.6))
         sky_floor = float(np.percentile(lum, 42.0))
     white = float(np.percentile(lum, 99.88))
-    rgb = np.clip((rgb - black * 0.26) / max(1e-6, white - black * 0.26), 0.0, 1.0)
+    linear_like_input = white < 0.08 or (white - black) < 0.025
+    black_scale = 0.985 if linear_like_input else 0.26
+    black_point = black * black_scale
+    rgb = np.clip((rgb - black_point) / max(1e-6, white - black_point), 0.0, 1.0)
     lum = _luminance(rgb).astype(np.float32)
 
     soft_lum = np.arcsinh(lum * 3.0) / np.arcsinh(3.0)
@@ -1668,7 +1671,7 @@ def apply_natural_nebula_rgb_look(
             f"sky_before_RGB={sky_before[0]:.5f}, {sky_before[1]:.5f}, {sky_before[2]:.5f}, "
             f"ref_sky_RGB={ref_sky[0]:.5f}, {ref_sky[1]:.5f}, {ref_sky[2]:.5f}, "
             f"sky_after_RGB={sky_after[0]:.5f}, {sky_after[1]:.5f}, {sky_after[2]:.5f}, "
-            f"black={black:.5f}, white={white:.5f}, "
+            f"black={black:.5f}, white={white:.5f}, linear_like_input={linear_like_input}, "
             f"nebula_mask_mean={float(np.mean(nebula_mask)):.5f}, sky_mask_mean={float(np.mean(sky_mask)):.5f}, "
             f"chroma_p95={chroma_percentile(rgb, 95.0):.5f}"
         )
