@@ -28,6 +28,7 @@ from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
 from .pipeline import PccCalibrationFailed, PipelineMode, run_pipeline
 from .settings import APP_ROOT, PROJECT_ROOT, default_settings, load_settings
+from .siril_cli import build_siril_pcc_command
 
 
 logger = logging.getLogger(__name__)
@@ -557,6 +558,10 @@ def _discard_staged_upload(upload_id: str) -> None:
         staged = staged_uploads.pop(upload_id, None)
     if staged:
         shutil.rmtree(staged.path.parent, ignore_errors=True)
+
+
+def _pcc_metadata_available(input_path: Path) -> bool:
+    return bool(build_siril_pcc_command(input_path))
 
 
 def _docs_html() -> str:
@@ -1570,6 +1575,42 @@ def _html() -> str:
       z-index: 30;
     }
     .export-modal[hidden] { display: none; }
+    .pcc-modal {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(3, 7, 14, .72);
+      backdrop-filter: blur(7px);
+      z-index: 35;
+    }
+    .pcc-modal[hidden] { display: none; }
+    .pcc-card {
+      width: min(500px, 100%);
+      border: 1px solid rgba(246, 196, 83, .55);
+      border-radius: 16px;
+      background: #08111f;
+      padding: 22px;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .52);
+      text-align: left;
+    }
+    .pcc-card h2 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      color: #fff5d6;
+    }
+    .pcc-card p {
+      margin: 0 0 18px;
+      color: #c4d2ea;
+      line-height: 1.5;
+    }
+    .pcc-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
     .export-card {
       width: min(520px, 100%);
       border: 1px solid rgba(79, 118, 181, .44);
@@ -1787,6 +1828,16 @@ def _html() -> str:
       <span>Processing image...</span>
     </div>
     </div>
+    <div id="pccWarningModal" class="pcc-modal" hidden>
+      <div class="pcc-card">
+        <h2>No PCC in data</h2>
+        <p>This file does not include the sky metadata Siril needs for photometric color calibration. DeepSky can still process it with local color calibration, but the colors may be less accurate.</p>
+        <div class="pcc-actions">
+          <button id="pccCancel" class="link-button" type="button">Cancel</button>
+          <button id="pccContinue" class="cta" type="button">Continue</button>
+        </div>
+      </div>
+    </div>
     <div id="pngExportModal" class="export-modal" hidden>
       <div class="export-card">
         <h2>Export PNG</h2>
@@ -1854,6 +1905,9 @@ def _html() -> str:
     const beforeFrame = document.getElementById("beforeFrame");
     const afterFrame = document.getElementById("afterFrame");
     const downloads = document.getElementById("downloads");
+    const pccWarningModal = document.getElementById("pccWarningModal");
+    const pccCancel = document.getElementById("pccCancel");
+    const pccContinue = document.getElementById("pccContinue");
     const pngExportModal = document.getElementById("pngExportModal");
     const exportTelescope = document.getElementById("exportTelescope");
     const exportTarget = document.getElementById("exportTarget");
@@ -1890,6 +1944,10 @@ def _html() -> str:
     let billingStatusPromise = null;
     let selectedFile = null;
     let stagedUpload = null;
+    let previewPccAvailable = null;
+    let pccWarningAcceptedKey = "";
+    let pccWarningCanceledKey = "";
+    let pendingRunAfterPccWarning = false;
     let activeJob = null;
     let pendingPngJobId = null;
     let pendingPngUrl = null;
@@ -1903,6 +1961,45 @@ def _html() -> str:
       if (nebulaPipelineLabels) nebulaPipelineLabels.hidden = !isNebula;
       if (galaxyDeconvolutionOption) galaxyDeconvolutionOption.hidden = !isGalaxy;
       if (!isGalaxy && sirilDeconvolution) sirilDeconvolution.checked = false;
+      updatePccWarningState();
+    }
+
+    function currentFileKey() {
+      if (!selectedFile) return "";
+      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}`;
+    }
+
+    function currentModeNeedsPcc() {
+      if (!selectedFile || previewPccAvailable !== false) return false;
+      if (objectType.value === "Nebula") return true;
+      return objectType.value === "Galaxy" && sirilDeconvolution.checked;
+    }
+
+    function showPccWarning({ runAfterContinue = false } = {}) {
+      pendingRunAfterPccWarning = runAfterContinue;
+      pccWarningModal.hidden = false;
+    }
+
+    function hidePccWarning() {
+      pccWarningModal.hidden = true;
+    }
+
+    function updatePccWarningState() {
+      if (!selectedFile) {
+        run.disabled = true;
+        return;
+      }
+      const needsWarning = currentModeNeedsPcc();
+      const key = currentFileKey();
+      if (needsWarning && pccWarningCanceledKey === key) {
+        run.disabled = true;
+        statusEl.textContent = "Processing canceled for this file because PCC metadata is missing.";
+        return;
+      }
+      run.disabled = false;
+      if (needsWarning && pccWarningAcceptedKey !== key) {
+        showPccWarning();
+      }
     }
 
     function setAuthMessage(message) {
@@ -2360,6 +2457,9 @@ def _html() -> str:
       const requestId = ++previewRequest;
       resetProgress();
       stagedUpload = null;
+      previewPccAvailable = null;
+      pendingRunAfterPccWarning = false;
+      hidePccWarning();
       fileName.textContent = file ? file.name : "Supports FITS and TIFF formats up to 300 MB";
       const tooLarge = file && file.size > MAX_UPLOAD_BYTES_CLIENT;
       run.disabled = true;
@@ -2409,16 +2509,18 @@ def _html() -> str:
           });
         }
         if (requestId !== previewRequest) return;
+        previewPccAvailable = preview.pcc_available === true;
         setProgress(uploadProgressFill, uploadProgressValue, 100);
         setProgress(previewProgressFill, previewProgressValue, 100);
         await loadImageIntoFrame(`${preview.preview_url}&t=${Date.now()}`, beforeFrame, "Before preview");
-        run.disabled = false;
         statusEl.textContent = "Ready to run full pipeline.";
+        updatePccWarningState();
         setTimeout(() => {
           if (requestId === previewRequest) progressPanel.hidden = true;
         }, 700);
       } catch (error) {
         if (requestId !== previewRequest) return;
+        previewPccAvailable = null;
         progressPanel.hidden = true;
         beforeFrame.innerHTML = '<span class="empty">Preview unavailable</span>';
         if (file.size > CHUNKED_UPLOAD_THRESHOLD && !stagedUpload) {
@@ -2446,6 +2548,22 @@ def _html() -> str:
       }
     });
     objectType.addEventListener("change", syncObjectControls);
+    sirilDeconvolution.addEventListener("change", updatePccWarningState);
+    pccCancel.addEventListener("click", () => {
+      pccWarningCanceledKey = currentFileKey();
+      pendingRunAfterPccWarning = false;
+      hidePccWarning();
+      updatePccWarningState();
+    });
+    pccContinue.addEventListener("click", () => {
+      pccWarningAcceptedKey = currentFileKey();
+      pccWarningCanceledKey = "";
+      const shouldRun = pendingRunAfterPccWarning;
+      pendingRunAfterPccWarning = false;
+      hidePccWarning();
+      updatePccWarningState();
+      if (shouldRun) run.click();
+    });
     syncObjectControls();
 
     signIn.addEventListener("click", async () => {
@@ -2709,6 +2827,10 @@ def _html() -> str:
 
     run.addEventListener("click", async () => {
       if (!selectedFile) return;
+      if (currentModeNeedsPcc() && pccWarningAcceptedKey !== currentFileKey()) {
+        showPccWarning({ runAfterContinue: true });
+        return;
+      }
       run.disabled = true;
       statusEl.textContent = "Uploading...";
       processingIndicator.classList.add("active");
@@ -2739,9 +2861,9 @@ def _html() -> str:
         "siril_deconvolution",
         selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
       );
-      const starSetting = selectedObjectType === "Galaxy" ? "Slight Star Reduction" : "Standard";
+      const starSetting = selectedObjectType === "Star Cluster" ? "Standard" : "Slight Star Reduction";
       data.append("star_setting", starSetting);
-      data.append("starless_test", selectedObjectType === "Galaxy" ? "true" : "false");
+      data.append("starless_test", selectedObjectType === "Star Cluster" ? "false" : "true");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -3092,8 +3214,10 @@ def _run_job(
             settings.nebula_color_separation = "Strong"
         else:
             settings.nebula_color_separation = "Balanced"
-        settings.star_handling_mode = "Slight Star Reduction" if settings.object_type == "Galaxy" else "Standard"
-        settings.starless_test_enabled = settings.object_type == "Galaxy"
+        settings.star_handling_mode = (
+            "Standard" if settings.object_type == "Star Cluster" else "Slight Star Reduction"
+        )
+        settings.starless_test_enabled = settings.object_type != "Star Cluster"
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
@@ -3316,7 +3440,7 @@ async def upload_chunk(
 
 
 @app.post("/api/uploads/{upload_id}/preview")
-def create_staged_preview(upload_id: str, user: AuthUser = Depends(require_user)) -> dict[str, str]:
+def create_staged_preview(upload_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     _cleanup_old_temp_files()
     staged = _require_completed_staged_upload(upload_id, user)
     preview_id = uuid.uuid4().hex
@@ -3330,14 +3454,17 @@ def create_staged_preview(upload_id: str, user: AuthUser = Depends(require_user)
         raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
     with jobs_lock:
         previews[preview_id] = user.id
-    return {"preview_url": f"/api/previews/{preview_id}?inline=1"}
+    return {
+        "preview_url": f"/api/previews/{preview_id}?inline=1",
+        "pcc_available": _pcc_metadata_available(staged.path),
+    }
 
 
 @app.post("/api/preview")
 async def create_preview(
     file: UploadFile = File(...),
     user: AuthUser = Depends(require_user),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     _cleanup_old_temp_files()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_INPUTS:
@@ -3363,13 +3490,14 @@ async def create_preview(
     preview_path = preview_dir / "before_preview.png"
     try:
         make_preview(input_path, preview_path)
+        pcc_available = _pcc_metadata_available(input_path)
         input_path.unlink(missing_ok=True)
     except Exception as exc:
         shutil.rmtree(preview_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
     with jobs_lock:
         previews[preview_id] = user.id
-    return {"preview_url": f"/api/previews/{preview_id}?inline=1"}
+    return {"preview_url": f"/api/previews/{preview_id}?inline=1", "pcc_available": pcc_available}
 
 
 @app.get("/api/previews/{preview_id}")
@@ -3462,7 +3590,7 @@ async def create_job(
             jobs[job_id].warnings.append(
                 "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
             )
-        if selected_object_type == "Galaxy":
+        if selected_object_type in {"Galaxy", "Nebula"}:
             jobs[job_id].warnings.append(
                 "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
             )
@@ -3482,7 +3610,7 @@ async def create_job(
         selected_siril_deconvolution,
         starless_test,
         star_setting,
-        "pause",
+        "continue",
     )
     return {"id": job_id}
 

@@ -15,6 +15,7 @@ from .goal_look import (
     apply_pcc_galaxy_look,
     apply_cosmos_style_nebula_finish,
     apply_goal_look,
+    apply_natural_nebula_rgb_look,
     apply_pixinsight_style_nebula_finish,
     apply_prestretched_broadband_look,
     apply_prestretched_nebula_rgb_reveal,
@@ -43,6 +44,7 @@ from .settings import AppSettings
 from .siril_cli import (
     build_siril_pcc_command,
     create_basic_color_script,
+    create_nebula_local_color_script,
     create_photometric_color_script,
     find_siril_executable,
     run_siril_script,
@@ -187,6 +189,22 @@ def _looks_like_green_duoband_raw(
     return bool((compressed_raw and green_median and green_high) or lifted_gradient_duoband)
 
 
+def _looks_like_weak_snr_nebula_raw(analysis: object | None) -> bool:
+    metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
+    raw_p99 = float(metrics.get("raw_p99", 0.0))
+    raw_p999 = float(metrics.get("raw_p999", 0.0))
+    bright_fraction = float(metrics.get("bright_fraction", 0.0))
+    shadow_fraction = float(metrics.get("shadow_fraction", 0.0))
+    midtone_fraction = float(metrics.get("midtone_fraction", 0.0))
+    return bool(
+        raw_p999 < 0.018
+        and raw_p99 < 0.014
+        and bright_fraction < 0.00022
+        and shadow_fraction > 0.990
+        and midtone_fraction < 0.0015
+    )
+
+
 def _to_float01(image: np.ndarray) -> np.ndarray:
     arr = np.asarray(image)
     rgb = arr[..., :3].astype(np.float32) if arr.ndim == 3 else arr.astype(np.float32)
@@ -316,8 +334,8 @@ def _crop_edge_artifacts(
     stripe_y = max(6, int(round(height * 0.018)))
     stripe_x = max(6, int(round(width * 0.018)))
 
-    top = bottom = base_y
-    left = right = base_x
+    top = bottom = 0
+    left = right = 0
 
     def bad_luminance(stripe: np.ndarray, stripe_chroma: np.ndarray, vertical: bool) -> bool:
         if stripe.size < 16:
@@ -501,16 +519,10 @@ def _clean_lifted_nebula_color_borders(image: np.ndarray, write_log: LogCallback
         right += step_x
 
     if top or bottom or left or right:
-        if height - top - bottom >= 128 and width - left - right >= 128:
-            write_log(
-                "Cleaned lifted nebula color borders: "
-                f"crop_top={top}, crop_bottom={bottom}, crop_left={left}, crop_right={right}"
-            )
-            arr = arr[top : height - bottom, left : width - right].copy()
-            rgb = _to_float01(arr)
-            height, width = arr.shape[:2]
-        else:
-            write_log("Skipped lifted nebula border crop because it would leave too little image.")
+        write_log(
+            "Detected lifted nebula color borders; preserving image size and applying color cleanup only: "
+            f"detected_top={top}, detected_bottom={bottom}, detected_left={left}, detected_right={right}"
+        )
 
     lum = _rgb_luminance(rgb)
     red_signal = np.clip(
@@ -520,6 +532,8 @@ def _clean_lifted_nebula_color_borders(image: np.ndarray, write_log: LogCallback
         1.0,
     )
     red_signal = cv2.GaussianBlur(red_signal.astype(np.float32), (0, 0), 3.0)
+    broad_red = cv2.GaussianBlur(red_signal.astype(np.float32), (0, 0), 13.0)
+    red_protect = np.clip(red_signal * (0.16 + broad_red * 1.65), 0.0, 1.0)
     star_signal = np.clip(
         (lum - np.percentile(lum, 97.2))
         / max(1e-6, np.percentile(lum, 99.95) - np.percentile(lum, 97.2)),
@@ -536,7 +550,7 @@ def _clean_lifted_nebula_color_borders(image: np.ndarray, write_log: LogCallback
         0.0,
         1.0,
     )
-    reduction = np.clip(green_noise * sky_weight * (1.0 - red_signal * 0.88) * (1.0 - star_signal * 0.86), 0.0, 0.88)
+    reduction = np.clip(green_noise * sky_weight * (1.0 - red_protect * 0.88) * (1.0 - star_signal * 0.86), 0.0, 0.88)
     if float(np.mean(reduction)) > 0.002:
         rgb[..., 1] = np.clip(rgb[..., 1] - green_excess * reduction, 0.0, 1.0)
         write_log(f"Suppressed lifted nebula green speckle noise: reduction_mean={float(np.mean(reduction)):.5f}")
@@ -556,7 +570,7 @@ def _clean_lifted_nebula_color_borders(image: np.ndarray, write_log: LogCallback
         warm_noise
         * (0.34 + point_like * 0.76)
         * sky_weight
-        * (1.0 - red_signal * 0.93)
+        * (1.0 - red_protect * 0.93)
         * (1.0 - star_signal * 0.88),
         0.0,
         0.82,
@@ -660,8 +674,8 @@ def _apply_reflection_nebula_color_preserve(image: np.ndarray, write_log: LogCal
     lum = _rgb_luminance(rgb).astype(np.float32)
     chroma = rgb - lum[..., None]
     quiet_sky = np.clip(sky * (1.0 - nebula * 0.82) * (1.0 - star_protect * 0.95), 0.0, 1.0)
-    subdued_chroma = np.clip(lum[..., None] + chroma * 0.08, 0.0, 1.0)
-    chroma_quiet_mix = np.clip(quiet_sky[..., None] * 0.94, 0.0, 0.94)
+    subdued_chroma = np.clip(lum[..., None] + chroma * 0.035, 0.0, 1.0)
+    chroma_quiet_mix = np.clip(quiet_sky[..., None] * 0.985, 0.0, 0.985)
     rgb = np.clip(rgb * (1.0 - chroma_quiet_mix) + subdued_chroma * chroma_quiet_mix, 0.0, 1.0)
 
     # Reflection targets like IC 63 often have real red-brown signal sitting in a very
@@ -688,13 +702,13 @@ def _apply_reflection_nebula_color_preserve(image: np.ndarray, write_log: LogCal
     sky_blur_lum = _rgb_luminance(sky_blur).astype(np.float32)
     sky_blur = np.clip(sky_blur * (lum / np.maximum(sky_blur_lum, 1e-5))[..., None], 0.0, 1.0)
     sky_blur = np.clip(_rgb_luminance(sky_blur)[..., None] + (sky_blur - _rgb_luminance(sky_blur)[..., None]) * 0.18, 0.0, 1.0)
-    sky_smooth_mix = np.clip(quiet_sky[..., None] * (1.0 - nebula[..., None] * 0.92) * (1.0 - star_protect[..., None] * 0.94) * 0.78, 0.0, 0.78)
+    sky_smooth_mix = np.clip(quiet_sky[..., None] * (1.0 - nebula[..., None] * 0.94) * (1.0 - star_protect[..., None] * 0.96) * 0.90, 0.0, 0.90)
     rgb = np.clip(rgb * (1.0 - sky_smooth_mix) + sky_blur * sky_smooth_mix, 0.0, 1.0)
 
     smooth = cv2.bilateralFilter((rgb * 255.0).astype(np.uint8), 7, 50, 9).astype(np.float32) / 255.0
     blur_smooth = cv2.GaussianBlur(rgb.astype(np.float32), (0, 0), 1.35)
     smooth = np.clip(smooth * 0.62 + blur_smooth * 0.38, 0.0, 1.0)
-    denoise_mix = np.clip((1.0 - star_protect[..., None] * 0.96) * (1.0 - nebula[..., None] * 0.76) * (0.36 + quiet_sky[..., None] * 0.74), 0.0, 0.88)
+    denoise_mix = np.clip((1.0 - star_protect[..., None] * 0.98) * (1.0 - nebula[..., None] * 0.84) * (0.42 + quiet_sky[..., None] * 0.84), 0.0, 0.94)
     rgb = np.clip(rgb * (1.0 - denoise_mix) + smooth * denoise_mix, 0.0, 1.0)
 
     local_rgb = cv2.GaussianBlur(rgb.astype(np.float32), (0, 0), 0.85)
@@ -712,9 +726,9 @@ def _apply_reflection_nebula_color_preserve(image: np.ndarray, write_log: LogCal
         quiet_sky[..., None]
         * (1.0 - nebula[..., None] * 0.92)
         * (1.0 - star_protect[..., None] * 0.985)
-        * (0.44 + noise_weight[..., None] * 0.52),
+        * (0.58 + noise_weight[..., None] * 0.50),
         0.0,
-        0.86,
+        0.92,
     )
     rgb = np.clip(rgb * (1.0 - sky_despeckle_mix) + sky_smooth * sky_despeckle_mix, 0.0, 1.0)
 
@@ -739,6 +753,28 @@ def _apply_reflection_nebula_color_preserve(image: np.ndarray, write_log: LogCal
         0.76,
     )
     rgb = np.clip(rgb * (1.0 - nlm_mix) + nlm * nlm_mix, 0.0, 1.0)
+
+    heavy_nlm = cv2.fastNlMeansDenoisingColored(
+        (rgb * 255.0).astype(np.uint8),
+        None,
+        15,
+        28,
+        7,
+        27,
+    ).astype(np.float32) / 255.0
+    heavy_lum = _rgb_luminance(heavy_nlm).astype(np.float32)
+    heavy_chroma = heavy_nlm - heavy_lum[..., None]
+    rgb_lum = _rgb_luminance(rgb).astype(np.float32)
+    heavy_nlm = np.clip(rgb_lum[..., None] + heavy_chroma * 0.16, 0.0, 1.0)
+    background_cleanup = np.clip(
+        quiet_sky[..., None]
+        * (1.0 - nebula[..., None] * 0.96)
+        * (1.0 - star_protect[..., None] * 0.985)
+        * (0.56 + noise_weight[..., None] * 0.38),
+        0.0,
+        0.92,
+    )
+    rgb = np.clip(rgb * (1.0 - background_cleanup) + heavy_nlm * background_cleanup, 0.0, 1.0)
 
     lum = _rgb_luminance(rgb).astype(np.float32)
     point_floor = cv2.medianBlur((lum * 255.0).astype(np.uint8), 5).astype(np.float32) / 255.0
@@ -790,11 +826,11 @@ def _apply_reflection_nebula_color_preserve(image: np.ndarray, write_log: LogCal
 
     sky_darken = np.clip(
         quiet_sky
-        * (1.0 - nebula * 0.78)
+        * (1.0 - nebula * 0.84)
         * (1.0 - star_protect * 0.92)
-        * 0.62,
+        * 0.74,
         0.0,
-        0.62,
+        0.74,
     )
     rgb = np.clip(rgb * (1.0 - sky_darken[..., None]), 0.0, 1.0)
 
@@ -805,7 +841,7 @@ def _apply_reflection_nebula_color_preserve(image: np.ndarray, write_log: LogCal
         sky_gains = np.clip(neutral_target / np.maximum(sky_medians, 1e-5), 0.72, 1.18)
         sky_gains = sky_gains * np.array([0.96, 0.98, 1.02], dtype=np.float32)
         sky_neutralized = np.clip(rgb * sky_gains.reshape(1, 1, 3), 0.0, 1.0)
-        neutral_mix = np.clip(quiet_sky[..., None] * (1.0 - nebula[..., None] * 0.92) * 0.76, 0.0, 0.76)
+        neutral_mix = np.clip(quiet_sky[..., None] * (1.0 - nebula[..., None] * 0.94) * 0.88, 0.0, 0.88)
         rgb = np.clip(rgb * (1.0 - neutral_mix) + sky_neutralized * neutral_mix, 0.0, 1.0)
         write_log(
             "Reflection nebula background neutralization: "
@@ -828,8 +864,272 @@ def _apply_reflection_nebula_color_preserve(image: np.ndarray, write_log: LogCal
     return np.clip(rgb * 65535.0, 0.0, 65535.0).round().astype(np.uint16)
 
 
+def _clean_reflection_nebula_starless_layer(image: np.ndarray, write_log: LogCallback) -> np.ndarray:
+    """Suppress IC63-style starless chroma grain while preserving red reflection signal."""
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+
+    rgb = _to_float01(arr)
+    lum = _rgb_luminance(rgb).astype(np.float32)
+    red_signal = np.clip(
+        (rgb[..., 0] - (rgb[..., 1] * 0.68 + rgb[..., 2] * 0.32))
+        / max(1e-6, float(np.percentile(rgb[..., 0], 99.2) - np.percentile(rgb[..., 0], 35.0))),
+        0.0,
+        1.0,
+    )
+    broad = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 22.0)
+    broad_signal = np.clip(
+        (broad - np.percentile(broad, 44.0))
+        / max(1e-6, np.percentile(broad, 98.5) - np.percentile(broad, 44.0)),
+        0.0,
+        1.0,
+    )
+    nebula = np.clip(red_signal * 0.72 + broad_signal * red_signal * 0.65, 0.0, 1.0)
+    nebula = cv2.GaussianBlur(nebula.astype(np.float32), (0, 0), 3.4)
+    residual_points = np.clip(
+        (lum - np.percentile(lum, 96.8))
+        / max(1e-6, np.percentile(lum, 99.92) - np.percentile(lum, 96.8)),
+        0.0,
+        1.0,
+    )
+    residual_points = cv2.GaussianBlur(residual_points.astype(np.float32), (0, 0), 0.75)
+    sky = np.clip((1.0 - nebula * 1.25) * (1.0 - residual_points * 0.88), 0.0, 1.0)
+
+    rgb8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+    nlm = cv2.fastNlMeansDenoisingColored(rgb8, None, 18, 34, 7, 31).astype(np.float32) / 255.0
+    median = cv2.medianBlur(rgb8, 5).astype(np.float32) / 255.0
+    blur = cv2.GaussianBlur(rgb.astype(np.float32), (0, 0), 2.4)
+    smooth = np.clip(nlm * 0.58 + median * 0.24 + blur * 0.18, 0.0, 1.0)
+
+    smooth_lum = _rgb_luminance(smooth).astype(np.float32)
+    smooth_chroma = smooth - smooth_lum[..., None]
+    sky_smooth = np.clip(smooth_lum[..., None] + smooth_chroma * 0.22, 0.0, 1.0)
+    sky_mix = np.clip(sky[..., None] * 0.92, 0.0, 0.92)
+    rgb = np.clip(rgb * (1.0 - sky_mix) + sky_smooth * sky_mix, 0.0, 1.0)
+
+    lum = _rgb_luminance(rgb).astype(np.float32)
+    smooth_lum = cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 3.2)
+    luma_mix = np.clip(sky * (1.0 - nebula * 0.92) * 0.72, 0.0, 0.72)
+    cleaned_lum = np.clip(lum * (1.0 - luma_mix) + smooth_lum * luma_mix, 0.0, 1.0)
+    rgb = np.clip(rgb * (cleaned_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
+
+    lum = _rgb_luminance(rgb).astype(np.float32)
+    chroma = rgb - lum[..., None]
+    neutral_sky = np.clip(lum[..., None] * np.array([0.94, 0.95, 0.99], dtype=np.float32).reshape(1, 1, 3), 0.0, 1.0)
+    neutral_mix = np.clip(sky[..., None] * (1.0 - nebula[..., None] * 0.86) * 0.82, 0.0, 0.82)
+    rgb = np.clip(rgb * (1.0 - neutral_mix) + neutral_sky * neutral_mix, 0.0, 1.0)
+
+    nebula_chroma = np.clip(lum[..., None] + chroma * (1.0 + nebula[..., None] * 0.55), 0.0, 1.0)
+    rgb = np.clip(rgb * (1.0 - nebula[..., None] * 0.28) + nebula_chroma * (nebula[..., None] * 0.28), 0.0, 1.0)
+
+    write_log(
+        "Cleaned reflection nebula starless layer: "
+        f"nebula_mean={float(np.mean(nebula)):.5f}; sky_mean={float(np.mean(sky)):.5f}"
+    )
+    return np.clip(rgb * 65535.0, 0.0, 65535.0).round().astype(np.uint16)
+
+
 def _rgb_luminance(rgb: np.ndarray) -> np.ndarray:
     return rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
+
+
+def _repair_nebula_starless_base(
+    starless_image: np.ndarray,
+    stars_image: np.ndarray,
+    reference_image: np.ndarray,
+    write_log: LogCallback,
+) -> tuple[np.ndarray, float]:
+    """Build a cleaner nebula base without letting StarNet scars drive the image."""
+    starless_rgb = _to_float01(starless_image)
+    stars_rgb = _to_float01(stars_image)
+    reference_rgb = _to_float01(reference_image)
+    if (
+        starless_rgb.ndim != 3
+        or stars_rgb.ndim != 3
+        or reference_rgb.ndim != 3
+        or starless_rgb.shape[:2] != stars_rgb.shape[:2]
+        or starless_rgb.shape[:2] != reference_rgb.shape[:2]
+    ):
+        return starless_image, 0.0
+
+    height, width = starless_rgb.shape[:2]
+    support = np.ones((height, width), dtype=np.float32)
+    inset_y = max(1, int(round(height * 0.025)))
+    inset_x = max(1, int(round(width * 0.025)))
+    support[:inset_y, :] = 0.0
+    support[-inset_y:, :] = 0.0
+    support[:, :inset_x] = 0.0
+    support[:, -inset_x:] = 0.0
+    support = cv2.GaussianBlur(support, (0, 0), max(1.5, min(height, width) * 0.006))
+
+    star_lum = np.max(stars_rgb, axis=2).astype(np.float32)
+    star_high = max(float(np.percentile(star_lum[support > 0.90], 99.35)) if np.any(support > 0.90) else float(np.percentile(star_lum, 99.35)), 1e-6)
+    star_norm = np.clip(star_lum / star_high, 0.0, 1.0)
+    star_density = float(np.mean((star_norm > 0.030) & (support > 0.90)))
+    if star_density < 0.020:
+        write_log(f"Nebula StarNet base audit: star_density={star_density:.5f}; starless base kept unchanged.")
+        return starless_image, star_density
+
+    starless_lum = _rgb_luminance(starless_rgb).astype(np.float32)
+    reference_lum = _rgb_luminance(reference_rgb).astype(np.float32)
+    removal_core = np.clip((star_norm - 0.0015) / 0.9985, 0.0, 1.0) ** 0.38
+    faint_star_support = np.clip((star_norm - 0.0006) / 0.9994, 0.0, 1.0) ** 0.34
+    removal_halo = cv2.GaussianBlur(removal_core.astype(np.float32), (0, 0), 2.2)
+    removal_wide = cv2.GaussianBlur(faint_star_support.astype(np.float32), (0, 0), 7.0)
+    repair_mask = np.clip((removal_halo * 0.58 + removal_wide * 0.42) * support, 0.0, 1.0)
+    repair_strength = float(np.clip(0.68 + star_density * 2.1, 0.68, 0.96))
+    repair_mask = np.clip(repair_mask * repair_strength, 0.0, 0.995)
+
+    quiet = (support > 0.90) & (repair_mask < 0.04) & (reference_lum > 0)
+    if np.count_nonzero(quiet) > 512:
+        scale = float(np.median(starless_lum[quiet]) / max(float(np.median(reference_lum[quiet])), 1e-5))
+    else:
+        scale = float(np.median(starless_lum) / max(float(np.median(reference_lum)), 1e-5))
+    scale = float(np.clip(scale, 0.40, 2.20))
+    reference_repair = np.clip(reference_rgb * scale, 0.0, 1.0)
+
+    inpaint_seed = np.clip(
+        (
+            (star_norm > 0.032).astype(np.float32) * 0.70
+            + (repair_mask > 0.145).astype(np.float32) * 0.30
+        )
+        * support,
+        0.0,
+        1.0,
+    )
+    inpaint_seed = cv2.dilate(
+        inpaint_seed.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1 + int(star_density > 0.12),
+    )
+    inpaint_mask = (inpaint_seed > 0).astype(np.uint8) * 255
+    if np.count_nonzero(inpaint_mask) > 0:
+        reference8 = np.clip(reference_repair * 255.0, 0, 255).astype(np.uint8)
+        inpainted8 = cv2.inpaint(reference8, inpaint_mask, 3.0, cv2.INPAINT_TELEA)
+        inpainted_reference = inpainted8.astype(np.float32) / 255.0
+    else:
+        inpainted_reference = reference_repair
+
+    # StarNet's starless layer is useful as a mask, but dense smart-telescope
+    # fields leave thousands of tiny removal scars.  In those cases, suppress
+    # stars in the calibrated RGB frame and blend that back in as the texture
+    # master instead of enhancing the scarred StarNet pixels.
+    local_reference = cv2.GaussianBlur(inpainted_reference.astype(np.float32), (0, 0), 2.4 + min(star_density, 0.22) * 4.6)
+    wide_reference = cv2.GaussianBlur(inpainted_reference.astype(np.float32), (0, 0), 8.5 + min(star_density, 0.22) * 10.5)
+    suppressed_reference = np.clip(
+        reference_repair * (1.0 - repair_mask[..., None])
+        + (inpainted_reference * 0.62 + local_reference * 0.28 + wide_reference * 0.10) * repair_mask[..., None],
+        0.0,
+        1.0,
+    )
+
+    local_starless = cv2.GaussianBlur(starless_rgb.astype(np.float32), (0, 0), 2.0 + min(star_density, 0.22) * 4.0)
+    wide_starless = cv2.GaussianBlur(starless_rgb.astype(np.float32), (0, 0), 7.0 + min(star_density, 0.22) * 9.0)
+    starless_repair = np.clip(local_starless * 0.14 + wide_starless * 0.06 + suppressed_reference * 0.80, 0.0, 1.0)
+    repaired_starless = np.clip(
+        starless_rgb * (1.0 - repair_mask[..., None]) + starless_repair * repair_mask[..., None],
+        0.0,
+        1.0,
+    )
+
+    # Use calibrated RGB as the master only where broad nebula structure exists.
+    # In clean sky, the StarNet layer is the better master because it has already
+    # removed the dense star field. This keeps real nebula hue/detail without
+    # reintroducing thousands of stars into the background.
+    ref_smooth = cv2.GaussianBlur(reference_lum.astype(np.float32), (0, 0), 22.0)
+    starless_smooth = cv2.GaussianBlur(starless_lum.astype(np.float32), (0, 0), 18.0)
+    broad_signal = np.maximum(ref_smooth, starless_smooth)
+    signal_low = float(np.percentile(broad_signal[support > 0.70], 52.0)) if np.any(support > 0.70) else float(np.percentile(broad_signal, 52.0))
+    signal_high = float(np.percentile(broad_signal[support > 0.70], 99.15)) if np.any(support > 0.70) else float(np.percentile(broad_signal, 99.15))
+    nebula_structure = np.clip((broad_signal - signal_low) / max(1e-6, signal_high - signal_low), 0.0, 1.0)
+    nebula_structure = cv2.GaussianBlur((nebula_structure * support).astype(np.float32), (0, 0), 8.0)
+    weak_dense_nebula = bool(star_density > 0.055 and float(np.mean(nebula_structure)) < 0.14)
+    if weak_dense_nebula:
+        dense_blend = float(np.clip(0.28 + star_density * 0.80, 0.28, 0.46))
+        dense_blend_map = np.clip(
+            0.035
+            + nebula_structure * dense_blend
+            + cv2.GaussianBlur(repair_mask.astype(np.float32), (0, 0), 2.4) * 0.045,
+            0.025,
+            0.54,
+        )
+    else:
+        dense_blend = float(np.clip(0.70 + star_density * 1.25, 0.70, 0.96))
+        dense_blend_map = np.clip(
+            0.14
+            + nebula_structure * dense_blend
+            + cv2.GaussianBlur(repair_mask.astype(np.float32), (0, 0), 2.4) * 0.14,
+            0.12,
+            0.96,
+        )
+    repaired = np.clip(
+        repaired_starless * (1.0 - dense_blend_map[..., None])
+        + suppressed_reference * dense_blend_map[..., None],
+        0.0,
+        1.0,
+    )
+
+    repaired_lum = _rgb_luminance(repaired).astype(np.float32)
+    local_wide = cv2.GaussianBlur(repaired_lum, (0, 0), 5.2)
+    residual_scale = max(
+        1e-6,
+        float(np.percentile(np.abs(repaired_lum - local_wide)[support > 0.70], 98.3))
+        if np.any(support > 0.70)
+        else float(np.percentile(np.abs(repaired_lum - local_wide), 98.3)),
+    )
+    residual_points = np.clip((repaired_lum - cv2.GaussianBlur(repaired_lum, (0, 0), 1.0)) / residual_scale, 0.0, 1.0)
+    residual_points = np.clip(
+        cv2.GaussianBlur(residual_points.astype(np.float32), (0, 0), 0.75)
+        * (0.34 + star_density * 2.4)
+        * support
+        * (1.0 - cv2.GaussianBlur(repair_mask.astype(np.float32), (0, 0), 6.0) * 0.35),
+        0.0,
+        0.70,
+    )
+    residual_color = cv2.GaussianBlur(repaired.astype(np.float32), (0, 0), 1.9 + min(star_density, 0.22) * 4.5)
+    repaired = np.clip(
+        repaired * (1.0 - residual_points[..., None])
+        + residual_color * residual_points[..., None],
+        0.0,
+        1.0,
+    )
+
+    if star_density > 0.055:
+        repaired8 = np.clip(repaired * 255.0, 0, 255).astype(np.uint8)
+        denoised = cv2.fastNlMeansDenoisingColored(
+            repaired8,
+            None,
+            int(round(10 + min(star_density, 0.20) * 54)),
+            int(round(18 + min(star_density, 0.20) * 64)),
+            5,
+            17,
+        ).astype(np.float32) / 255.0
+        sky_like = np.clip(
+            (1.0 - cv2.GaussianBlur(repair_mask.astype(np.float32), (0, 0), 8.0) * 0.45)
+            * (1.0 - np.clip((reference_lum - np.percentile(reference_lum, 72.0)) / max(1e-6, np.percentile(reference_lum, 99.4) - np.percentile(reference_lum, 72.0)), 0.0, 1.0) * 0.25)
+            * support,
+            0.0,
+            1.0,
+        )
+        repaired = np.clip(
+            repaired * (1.0 - sky_like[..., None] * 0.32)
+            + denoised * (sky_like[..., None] * 0.40),
+            0.0,
+            1.0,
+        )
+
+    write_log(
+        "Nebula StarNet base audit: "
+        f"star_density={star_density:.5f}; "
+        f"repair_strength={repair_strength:.2f}; "
+        f"dense_calibrated_blend={dense_blend:.2f}; "
+        f"weak_dense_nebula={weak_dense_nebula}; "
+        f"nebula_structure_mean={float(np.mean(nebula_structure)):.5f}; "
+        f"repair_mask_mean={float(np.mean(repair_mask)):.5f}; "
+        "using one nebula pipeline with calibrated RGB as dense-field texture reference."
+    )
+    return np.clip(repaired * 65535.0, 0.0, 65535.0).round().astype(np.uint16), star_density
 
 
 def _apply_duoband_nebula_finish(
@@ -1161,14 +1461,17 @@ def _run_siril_calibration(
         if mode == "Siril Photometric"
         else None
     )
-    if mode == "Siril Photometric" and pcc_command:
+    pcc_available = mode == "Siril Photometric" and bool(pcc_command)
+    if pcc_available:
         siril_input = job_folder / original.name
         if siril_input.resolve() != original.resolve():
             shutil.copy2(original, siril_input)
         write_log(f"Siril PCC metadata command: {pcc_command}")
     elif mode == "Siril Photometric":
-        write_log("Siril PCC metadata unavailable; using Python fallback color calibration.")
-        return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
+        pcc_succeeded = False
+        siril_input = job_folder / "siril_input.tif"
+        shutil.copy2(working, siril_input)
+        write_log("Siril PCC metadata unavailable; using Siril local background/color calibration instead of Python fallback.")
     else:
         siril_input = job_folder / "siril_input.tif"
         shutil.copy2(working, siril_input)
@@ -1190,7 +1493,7 @@ def _run_siril_calibration(
     )
     _log_existing_image(siril_input, write_log, "siril_input.tif")
 
-    if mode == "Siril Photometric":
+    if pcc_available:
         write_log("Siril background extraction: enabled before color calibration.")
         write_log("Siril-based calibration step: enabled.")
         script_path = create_photometric_color_script(
@@ -1204,6 +1507,14 @@ def _run_siril_calibration(
             apply_scnr=settings.siril_apply_scnr,
             color_saturation=settings.siril_color_saturation,
         )
+    elif object_type == "nebula":
+        script_path = create_nebula_local_color_script(
+            siril_input,
+            siril_output_fit,
+            job_folder,
+            apply_scnr=settings.siril_apply_scnr,
+            color_saturation=settings.siril_color_saturation,
+        )
     else:
         script_path = create_basic_color_script(
             siril_input,
@@ -1213,7 +1524,7 @@ def _run_siril_calibration(
             color_saturation=settings.siril_color_saturation,
         )
 
-    pcc_succeeded = mode == "Siril Photometric"
+    pcc_succeeded = pcc_available
     write_log(f"Siril script: {script_path}")
     try:
         run_siril_script(siril_exe, script_path, job_folder, write_log)
@@ -1230,13 +1541,22 @@ def _run_siril_calibration(
                 f"Error: {exc}"
             )
             pcc_succeeded = False
-            fallback_script_path = create_basic_color_script(
-                siril_input,
-                siril_output_fit,
-                job_folder,
-                apply_scnr=settings.siril_apply_scnr,
-                color_saturation=settings.siril_color_saturation,
-            )
+            if object_type == "nebula":
+                fallback_script_path = create_nebula_local_color_script(
+                    siril_input,
+                    siril_output_fit,
+                    job_folder,
+                    apply_scnr=settings.siril_apply_scnr,
+                    color_saturation=settings.siril_color_saturation,
+                )
+            else:
+                fallback_script_path = create_basic_color_script(
+                    siril_input,
+                    siril_output_fit,
+                    job_folder,
+                    apply_scnr=settings.siril_apply_scnr,
+                    color_saturation=settings.siril_color_saturation,
+                )
             write_log(f"Siril local fallback script: {fallback_script_path}")
             try:
                 run_siril_script(siril_exe, fallback_script_path, job_folder, write_log)
@@ -1319,18 +1639,15 @@ def _run_siril_calibration(
         elif object_type == "star cluster":
             write_log("Object type is Star Cluster; using neutral star-preserving broadband finish.")
             finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "star_cluster")
-        elif emission_score < 3.0 and reflection_score < 0.08:
-            write_log("Nebula mode selected, but broadband-like color detected; using neutral broadband finish.")
-            finished_image = _apply_broadband_background_cleanup(siril_image, job_folder, settings, write_log, "broadband")
-        elif emission_score < 3.0:
-            write_log("Nebula mode selected with weak/reflection nebula color; preserving red-brown nebula finish.")
-            finished_image = _apply_reflection_nebula_color_preserve(siril_image, write_log)
+        elif object_type == "nebula":
+            write_log("Object type is Nebula; preserving Siril-calibrated RGB as the nebula processing master.")
+            finished_image = siril_image
         else:
             write_log("Object type is Nebula; using emission nebula color finish.")
             finished_image = apply_goal_look(siril_image, write_log, stretch=False)
     elif object_type == "nebula":
-        write_log("Siril PCC color calibration succeeded for nebula; handing calibrated data to DeepSky nebula color enhancement.")
-        finished_image = astrophotography_stretch(siril_image, strength="standard")
+        write_log("Siril PCC color calibration succeeded for nebula; preserving calibrated RGB for DeepSky nebula enhancement.")
+        finished_image = siril_image
     elif object_type == "galaxy":
         write_log("Siril PCC color calibration succeeded for galaxy; preserving catalog color through linked galaxy stretch.")
         finished_image = apply_pcc_galaxy_look(siril_image, write_log)
@@ -1361,15 +1678,8 @@ def _run_python_fallback_calibration(
     object_type = _normalized_object_type(settings)
     write_log(f"Python fallback object type: {object_type}; red_emission_dominance={emission_score:.3f}")
     if object_type == "nebula":
-        reflection_score = reflection_nebula_bias(python_color)
-        if emission_score < 3.0 and reflection_score >= 0.08:
-            write_log(
-                "Python fallback detected weak/reflection nebula color; preserving red-brown nebula finish. "
-                f"reflection_nebula_bias={reflection_score:.3f}"
-            )
-            calibrated_image = _apply_reflection_nebula_color_preserve(python_color, write_log)
-        else:
-            calibrated_image = apply_goal_look(python_color, write_log, stretch=False)
+        write_log("Python fallback nebula calibration: using unified nebula finish.")
+        calibrated_image = apply_goal_look(python_color, write_log, stretch=False)
     else:
         calibrated_image = apply_broadband_look(python_color, write_log)
     save_tiff(calibrated, calibrated_image, write_log)
@@ -1446,8 +1756,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         star_handling_mode = "slight"
     else:
         star_handling_mode = "standard"
-    if object_type in {"nebula", "star_cluster"} and star_handling_mode != "standard":
-        write_log(f"{object_type.replace('_', ' ').title()} mode preserves the star field; forcing star settings to standard.")
+    if object_type == "star_cluster" and star_handling_mode != "standard":
+        write_log("Star Cluster mode preserves the star field; forcing star settings to standard.")
         star_handling_mode = "standard"
     starless_test_requested = star_handling_mode in {"slight", "starless"}
     starless_only_requested = star_handling_mode == "starless"
@@ -1479,22 +1789,13 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         analysis,
         original.name,
     )
+    weak_snr_nebula_raw = object_type == "nebula" and _looks_like_weak_snr_nebula_raw(analysis)
     lifted_duoband_gradient_raw = False
     reflection_style_nebula_hint = False
-    if object_type == "nebula" and not green_duoband_raw:
-        try:
-            reflection_style_nebula_hint = _is_reflection_style_nebula(
-                analysis,
-                working_image_for_routing,
-                write_log,
-            )
-            if reflection_style_nebula_hint:
-                write_log(
-                    "Weak/reflection-style nebula detected from original RGB; "
-                    "will preserve red-brown/pink target color after Siril."
-                )
-        except Exception as exc:
-            write_log(f"Original nebula style probe failed; continuing with calibrated probe. Error: {exc}")
+    if object_type == "nebula":
+        write_log("Nebula audit: using one calibrated nebula pipeline; no object-specific color branches.")
+        if weak_snr_nebula_raw:
+            write_log("Weak-SNR nebula frame detected; using conservative stretch and heavier sky chroma cleanup.")
 
     gradient_galaxy_siril = False
     gradient_galaxy_spread = 0.0
@@ -1548,16 +1849,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         or (mode == PipelineMode.FULL and use_prestretched)
         or gradient_galaxy_siril
         or (mode == PipelineMode.FULL and siril_deconvolution_requested)
+        or (mode == PipelineMode.FULL and object_type == "nebula")
         or bool(nebula_auto_pcc_command)
         or bool(galaxy_auto_pcc_command)
     )
-    if should_use_siril_calibration:
-        if nebula_auto_pcc_command and reflection_style_nebula_hint:
-            write_log(
-                "Siril PCC metadata is available, but this weak/reflection-style nebula "
-                "will use the protected raw RGB color path to avoid neutralizing real red-brown signal."
-            )
-            should_use_siril_calibration = False
 
     if should_use_siril_calibration:
         if siril_deconvolution_requested and not gradient_galaxy_siril and not use_prestretched and mode == PipelineMode.FULL:
@@ -1624,6 +1919,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             )
             stretch_source_image = working_image if lifted_duoband_gradient_raw else load_image(original, write_log)
             stretch_source_image = _flatten_lifted_duoband_gradient(stretch_source_image, write_log)
+        elif weak_snr_nebula_raw and base_strength in {"seestar_aggressive", "seestar_extra_aggressive", "seestar"}:
+            base_strength = "seestar_slight"
+            baseline_reason = f"weak-SNR nebula protected from aggressive background lift ({baseline_reason})"
         elif reflection_style_nebula_hint and base_strength in {"seestar_aggressive", "seestar_extra_aggressive"}:
             base_strength = "seestar"
             baseline_reason = f"weak/reflection nebula color path; limiting sky noise lift ({baseline_reason})"
@@ -1675,21 +1973,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         and not starless_only_requested
         and _is_compact_siril_galaxy(analysis)
     )
-    reflection_style_nebula = reflection_style_nebula_hint
-    if object_type == "nebula" and not green_duoband_raw:
-        try:
-            reflection_style_nebula = reflection_style_nebula or _is_reflection_style_nebula(
-                analysis,
-                load_image(current, write_log),
-                write_log,
-            )
-            if reflection_style_nebula:
-                write_log(
-                    "Weak/reflection-style nebula detected; using broadband-like nebula handling "
-                    "instead of emission color separation."
-                )
-        except Exception as exc:
-            write_log(f"Nebula style probe failed; using normal nebula handling. Error: {exc}")
+    reflection_style_nebula = False
 
     if mode in {PipelineMode.FULL, PipelineMode.DEEPSNR} and not preserve_siril_galaxy_finish:
         deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
@@ -1701,6 +1985,31 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         current = denoised
     elif preserve_siril_galaxy_finish and mode == PipelineMode.FULL:
         write_log("Skipping generic DeepSNR stage; Siril finish already applied.")
+
+    if mode == PipelineMode.FULL and object_type == "nebula" and not preserve_siril_galaxy_finish:
+        write_log("Nebula natural RGB pipeline: using Siril/DeepSNR result directly; skipping legacy StarNet color-separation composer.")
+        natural_nebula = apply_natural_nebula_rgb_look(
+            load_image(current, write_log),
+            write_log,
+            color_reference=load_image(working, write_log),
+        )
+        save_tiff(final, natural_nebula, write_log)
+        _log_existing_image(final, write_log, "final.tif")
+        save_png(final_png, load_image(final, write_log), write_log)
+        after_preview = job_folder / "after_preview.png"
+        calibrated_preview = job_folder / "calibrated_preview.png"
+        make_preview(final, after_preview, log=write_log, stretch_for_display=False)
+        make_preview(calibrated, calibrated_preview, log=write_log, stretch_for_display=False)
+        write_log(f"Final image: {final}")
+        write_log("Done.")
+        return {
+            "job_folder": job_folder,
+            "before_preview": before_preview,
+            "after_preview": after_preview,
+            "final": final,
+            "png": final_png,
+            "log": log_file,
+        }
 
     skip_reflection_nebula_starnet = (
         mode == PipelineMode.FULL
@@ -1722,7 +2031,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless, write_log, "starless.tif")
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
-        if object_type == "nebula" and not green_duoband_raw and not reflection_style_nebula:
+        if object_type == "nebula":
             color_separation = str(getattr(settings, "nebula_color_separation", "Balanced") or "Balanced")
             nebula_color_reference = job_folder / "siril_calibrated.tif"
             nebula_texture_reference = nebula_color_reference
@@ -1734,30 +2043,48 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 write_log("Using calibrated image for nebula color strength and original working image for hue texture.")
             write_log("Nebula Color: Enhanced")
             write_log(f"DeepSky color separation: {color_separation}")
+            starless_image = load_image(starless, write_log)
+            stars_image = load_image(stars, write_log)
+            color_reference_image = load_image(nebula_color_reference, write_log)
+            texture_reference_image = load_image(nebula_texture_reference, write_log)
+            star_reference_image = load_image(stretched, write_log)
+            starless_image, nebula_star_density = _repair_nebula_starless_base(
+                starless_image,
+                stars_image,
+                color_reference_image,
+                write_log,
+            )
             if starless_only_requested:
                 write_log("Starless enabled; composing controlled starless nebula without star recombination.")
                 composed_nebula = compose_pixinsight_nebula_layers(
-                    load_image(starless, write_log),
-                    np.zeros_like(load_image(stars, write_log)),
+                    starless_image,
+                    np.zeros_like(stars_image),
                     write_log,
                     star_strength=0.0,
                     color_separation=color_separation,
-                    color_reference_image=load_image(nebula_color_reference, write_log),
-                    color_texture_reference_image=load_image(nebula_texture_reference, write_log),
-                    star_color_reference_image=load_image(stretched, write_log),
+                    color_reference_image=color_reference_image,
+                    color_texture_reference_image=texture_reference_image,
+                    star_color_reference_image=star_reference_image,
+                    weak_snr_nebula=weak_snr_nebula_raw,
                 )
             else:
-                star_strength = 0.64 if starless_test_requested else 1.0
+                if starless_test_requested:
+                    star_strength = 0.11 if weak_snr_nebula_raw and nebula_star_density > 0.055 else 0.14 if nebula_star_density > 0.055 else 0.22
+                elif object_type == "nebula":
+                    star_strength = 0.14 if weak_snr_nebula_raw and nebula_star_density > 0.055 else 0.20 if nebula_star_density > 0.055 else 0.34
+                else:
+                    star_strength = 1.0
                 write_log(f"Composing controlled nebula starless/stars layers with star strength {star_strength:.2f}.")
                 composed_nebula = compose_pixinsight_nebula_layers(
-                    load_image(starless, write_log),
-                    load_image(stars, write_log),
+                    starless_image,
+                    stars_image,
                     write_log,
                     star_strength=star_strength,
                     color_separation=color_separation,
-                    color_reference_image=load_image(nebula_color_reference, write_log),
-                    color_texture_reference_image=load_image(nebula_texture_reference, write_log),
-                    star_color_reference_image=load_image(stretched, write_log),
+                    color_reference_image=color_reference_image,
+                    color_texture_reference_image=texture_reference_image,
+                    star_color_reference_image=star_reference_image,
+                    weak_snr_nebula=weak_snr_nebula_raw,
                 )
             save_tiff(final, composed_nebula, write_log)
             _log_existing_image(final, write_log, "final.tif")
@@ -1807,6 +2134,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             _log_existing_image(starless, write_log, "enhanced starless.tif")
         elif gentle_nebula_star_reduction:
             write_log("Reflection-style nebula detected; using gentle star reduction without starless dust enhancer.")
+            cleaned_starless = _clean_reflection_nebula_starless_layer(load_image(starless, write_log), write_log)
+            save_tiff(starless, cleaned_starless, write_log)
+            _log_existing_image(starless, write_log, "cleaned reflection starless.tif")
         elif green_duoband_raw:
             write_log("Skipping starless nebula dust/detail enhancer for green-dominant duo-band raw frame.")
         if starless_test_requested:

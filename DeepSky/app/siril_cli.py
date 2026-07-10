@@ -284,6 +284,41 @@ def create_deconvolution_script(
     return script_path
 
 
+def create_nebula_local_color_script(
+    input_path: Path,
+    output_path: Path,
+    work_dir: Path,
+    apply_scnr: bool = False,
+    color_saturation: int = 35,
+) -> Path:
+    """Gentle Siril fallback for nebula frames when PCC is unavailable.
+
+    Keep this path mostly linear. DeepSky does the nebula stretch, StarNet
+    separation, DeepSNR cleanup, and color separation later; pre-stretching here
+    makes faint sky noise and stacking edges look like real nebulosity.
+    """
+    script_path = Path(work_dir) / "siril_nebula_local_color.ssf"
+    input_name = _relative_or_name(Path(input_path), Path(work_dir))
+    output_stem = Path(output_path).with_suffix("").name
+    lines = [
+        SIRIL_REQUIRES_COMMAND,
+        "# DeepSky controlled nebula local calibration path",
+        f'load "{input_name}"',
+        "subsky 2",
+        "denoise -vst",
+        "denoise -mod=0.35",
+        "autostretch -linked -2.25 0.06",
+    ]
+    if apply_scnr:
+        lines.append(SCNR_COMMAND)
+    saturation = _saturation_amount(color_saturation)
+    if saturation > 0:
+        lines.append(SATURATION_COMMAND.format(amount=min(0.22, saturation * 0.45)))
+    lines.extend([SAVE_FITS_COMMAND.format(output_stem=output_stem), "close"])
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return script_path
+
+
 def create_photometric_color_script(
     input_path: Path,
     output_path: Path,
