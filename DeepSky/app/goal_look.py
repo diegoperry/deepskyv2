@@ -1612,9 +1612,11 @@ def apply_natural_nebula_rgb_look(
     rgb = np.clip((rgb - black_point) / max(1e-6, white - black_point), 0.0, 1.0)
     lum = _luminance(rgb).astype(np.float32)
 
-    soft_lum = np.arcsinh(lum * 3.0) / np.arcsinh(3.0)
-    lift = np.clip(nebula_mask * 0.62 + sky_mask * 0.085, 0.0, 0.66)
+    soft_lum = np.arcsinh(lum * 3.9) / np.arcsinh(3.9)
+    lift = np.clip(nebula_mask * 1.10 + sky_mask * 0.095, 0.0, 0.92)
     target_lum = np.clip(lum * (1.0 - lift) + soft_lum * lift, 0.0, 1.0)
+    nebula_reveal = np.clip(nebula_mask * (1.0 - star_protect * 0.72), 0.0, 1.0)
+    target_lum = np.clip(target_lum + nebula_reveal * (1.0 - target_lum) * 0.145, 0.0, 1.0)
     target_lum = np.maximum(target_lum, sky_mask * min(0.078, max(0.020, sky_floor * 0.95)))
     rgb = np.clip(rgb * (target_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
 
