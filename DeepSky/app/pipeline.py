@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -39,6 +40,7 @@ from .image_io import (
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
 from .image_math import add_bright_star_fraction, add_images, add_weighted_star_layer, subtract_images
+from .plate_solver import solve_image, write_plate_solve_debug, write_wcs_enriched_fits
 from .python_color_calibration import python_fallback_color_calibration
 from .settings import AppSettings
 from .siril_cli import (
@@ -52,6 +54,7 @@ from .siril_cli import (
     siril_catalog_calibration_path,
 )
 from .stretch import astrophotography_stretch
+from .target_identifier import identify_target
 
 
 LogCallback = Callable[[str], None]
@@ -1664,10 +1667,17 @@ def _run_siril_calibration(
     raw_siril = job_folder / "siril_calibrated.tif"
     save_tiff(raw_siril, siril_image, write_log)
     _log_existing_image(raw_siril, write_log, "siril_calibrated.tif")
+    catalog_success_marker = job_folder / "siril_catalog_color_succeeded.txt"
 
     if mode == "Basic" or not pcc_succeeded:
         if mode == "Siril Photometric" and not pcc_succeeded:
             write_log("Siril PCC did not complete; treating calibrated output as local Siril color calibration.")
+        write_log("color_calibration_used: natural_color_fallback")
+        write_log("color_calibration_success: false")
+        if mode == "Siril Photometric" and not pcc_succeeded:
+            write_log("fallback_reason: SPCC/PCC command did not produce a catalog-calibrated result.")
+        elif mode == "Basic":
+            write_log("fallback_reason: Basic Siril/local color mode selected.")
         chroma_95 = chroma_percentile(siril_image, 95.0)
         emission_score = red_emission_dominance(siril_image)
         reflection_score = reflection_nebula_bias(siril_image)
@@ -1700,15 +1710,24 @@ def _run_siril_calibration(
             finished_image = apply_goal_look(siril_image, write_log, stretch=False)
     elif object_type == "nebula":
         write_log("Siril catalog color calibration succeeded for nebula; preserving calibrated RGB for DeepSky nebula enhancement.")
+        catalog_success_marker.write_text(str(catalog_calibration_path or "catalog"), encoding="utf-8")
+        write_log(f"color_calibration_used: {catalog_calibration_path or 'local_spcc'}")
+        write_log("color_calibration_success: true")
         finished_image = siril_image
     elif object_type == "galaxy":
         write_log("Siril catalog color calibration succeeded for galaxy; preserving catalog color through linked galaxy stretch.")
+        catalog_success_marker.write_text(str(catalog_calibration_path or "catalog"), encoding="utf-8")
+        write_log(f"color_calibration_used: {catalog_calibration_path or 'local_spcc'}")
+        write_log("color_calibration_success: true")
         finished_image = apply_pcc_galaxy_look(siril_image, write_log)
         if deconvolution_image is not None:
             write_log("Applying Siril deconvolution as protected luminance detail after PCC galaxy stretch.")
             finished_image = blend_galaxy_deconvolution_detail(finished_image, deconvolution_image, write_log)
     else:
         write_log("Siril PCC succeeded; preserving Siril photometric color without manual color shaping.")
+        catalog_success_marker.write_text(str(catalog_calibration_path or "catalog"), encoding="utf-8")
+        write_log(f"color_calibration_used: {catalog_calibration_path or 'online_pcc'}")
+        write_log("color_calibration_success: true")
         finished_image = siril_image
 
     save_tiff(calibrated, finished_image, write_log)
@@ -1799,6 +1818,28 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     input_mode = _normalized_input_mode(settings)
     stretch_level = _normalized_stretch_level(settings)
     object_type = _normalized_object_type(settings)
+    plate_result = solve_image(original, write_log, allow_plate_solve=True)
+    target_identification = identify_target(plate_result, getattr(settings, "siril_object_name", "") or None)
+    write_plate_solve_debug(job_folder / "plate_solve_debug.json", plate_result)
+    (job_folder / "target_identification.json").write_text(json.dumps(target_identification.to_dict(), indent=2), encoding="utf-8")
+    write_log(f"metadata_has_wcs: {str(plate_result.metadata_has_wcs).lower()}")
+    write_log(f"solve_source: {plate_result.source}")
+    write_log(f"plate_solver_used: {plate_result.solver or 'none'}")
+    write_log(f"solved_ra_deg: {plate_result.ra_deg if plate_result.ra_deg is not None else 'none'}")
+    write_log(f"solved_dec_deg: {plate_result.dec_deg if plate_result.dec_deg is not None else 'none'}")
+    write_log(f"target_identified: {str(target_identification.identified).lower()}")
+    write_log(f"target_name: {target_identification.target_name or 'none'}")
+    if target_identification.identified:
+        write_log(
+            "Target-aware guardrails enabled: "
+            f"{target_identification.target_name}; expected_color_family={', '.join(target_identification.expected_color_family)}; "
+            "guidance only, no pixel recoloring."
+        )
+    catalog_calibration_input = original
+    if plate_result.source == "plate_solve" and original.suffix.lower() in {".fit", ".fits", ".fts"}:
+        wcs_enriched = job_folder / f"{original.stem}_wcs{original.suffix}"
+        if write_wcs_enriched_fits(original, wcs_enriched, write_log):
+            catalog_calibration_input = wcs_enriched
     siril_deconvolution_requested = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy"
     star_setting_raw = str(getattr(settings, "star_handling_mode", "") or "").strip().lower()
     if star_setting_raw in {"starless", "zero stars", "no stars"}:
@@ -1871,7 +1912,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     skip_catalog_pcc = getattr(settings, "pcc_failure_policy", "continue") == "continue_without_pcc"
     if mode == PipelineMode.FULL and object_type == "nebula" and settings.color_calibration_mode != "Off" and not skip_catalog_pcc:
         nebula_auto_pcc_command = build_siril_pcc_command(
-            original,
+            catalog_calibration_input,
             optional_object_name=settings.siril_object_name.strip() or None,
             optional_ra_dec=settings.siril_ra_dec.strip() or None,
             optional_focal_length=settings.siril_focal_length.strip() or None,
@@ -1885,7 +1926,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("Siril catalog color calibration skipped by user choice; using non-catalog Siril color calibration.")
     if mode == PipelineMode.FULL and object_type == "galaxy" and settings.color_calibration_mode != "Off" and not skip_catalog_pcc:
         galaxy_auto_pcc_command = build_siril_pcc_command(
-            original,
+            catalog_calibration_input,
             optional_object_name=settings.siril_object_name.strip() or None,
             optional_ra_dec=settings.siril_ra_dec.strip() or None,
             optional_focal_length=settings.siril_focal_length.strip() or None,
@@ -1921,7 +1962,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("Siril calibration path enabled for this run; applying it to the working TIFF.")
         try:
             _run_siril_calibration(
-                original,
+                catalog_calibration_input,
                 working,
                 stretched,
                 calibrated,
@@ -2044,11 +2085,18 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("Skipping generic DeepSNR stage; Siril finish already applied.")
 
     if use_natural_nebula_pipeline and not preserve_siril_galaxy_finish:
+        nebula_catalog_color = (job_folder / "siril_catalog_color_succeeded.txt").exists()
+        if nebula_catalog_color:
+            write_log("Nebula natural RGB pipeline: catalog color available; using stronger measured chroma preservation.")
+        else:
+            write_log("SPCC/PCC failed, using non-photometric color fallback.")
+            write_log("Nebula natural RGB pipeline: SPCC/PCC unavailable; using conservative measured-RGB fallback to avoid painted color.")
         write_log("Nebula natural RGB pipeline: using Siril-calibrated RGB with internal masked sky denoise; skipping legacy StarNet color-separation composer.")
         natural_nebula = apply_natural_nebula_rgb_look(
             load_image(current, write_log),
             write_log,
             color_reference=load_image(working, write_log),
+            catalog_color=nebula_catalog_color,
         )
         save_tiff(final, natural_nebula, write_log)
         _log_existing_image(final, write_log, "final.tif")
