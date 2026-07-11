@@ -27,6 +27,8 @@ SIRIL_BASIC_LINEAR_COMMANDS = [
     "linstretch -BP=0.05",
 ]
 SIRIL_PCC_SUFFIXES = {".fit", ".fits", ".fts"}
+LOCAL_SPCC_CATALOG_ENV = "SIRIL_SPCC_CATALOG_DIR"
+DEFAULT_LOCAL_SPCC_CATALOG_DIR = Path(r"C:\Apps\SirilCatalogs\GaiaDR3_SPCC")
 
 
 def find_siril_executable(siril_folder: Path) -> Path | None:
@@ -79,11 +81,71 @@ def _format_script_command(executable_path: Path, script_path: Path, working_dir
     return [part.format(**values) for part in SIRIL_SCRIPT_COMMAND]
 
 
+def _escape_siril_config_path(path: Path) -> str:
+    return str(path).replace("\\", "\\\\")
+
+
+def find_local_spcc_catalog(catalog_dir: Path | str | None = None) -> Path | None:
+    candidates: list[Path] = []
+    if catalog_dir:
+        candidates.append(Path(catalog_dir))
+    env_value = os.environ.get(LOCAL_SPCC_CATALOG_ENV)
+    if env_value:
+        candidates.append(Path(env_value))
+    candidates.append(DEFAULT_LOCAL_SPCC_CATALOG_DIR)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            resolved = candidate.expanduser()
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if resolved.is_dir() and any(resolved.glob("*.dat")):
+                return resolved
+        except OSError:
+            continue
+    return None
+
+
+def _write_isolated_siril_config(siril_local: Path, spcc_catalog_dir: Path | None) -> None:
+    if not spcc_catalog_dir:
+        return
+
+    config_dir = siril_local / "siril"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "config.1.4.ini"
+    try:
+        resolved_catalog_dir = spcc_catalog_dir.resolve()
+    except Exception:
+        resolved_catalog_dir = spcc_catalog_dir
+    escaped_catalog_dir = _escape_siril_config_path(resolved_catalog_dir)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[core]",
+                f"catalogue_gaia_photo={escaped_catalog_dir}",
+                "",
+                "[gui]",
+                "use_spcc_repository=false",
+                "auto_update_spcc=false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def run_siril_script(
     executable_path: Path,
     script_path: Path,
     working_directory: Path,
     log: LogCallback | None = None,
+    spcc_catalog_dir: Path | None = None,
 ) -> None:
     executable_path = Path(executable_path).resolve()
     script_path = Path(script_path).resolve()
@@ -98,12 +160,16 @@ def run_siril_script(
     siril_cache = siril_profile / "cache"
     for folder in (siril_local, siril_roaming, siril_cache):
         folder.mkdir(parents=True, exist_ok=True)
+    _write_isolated_siril_config(siril_local, spcc_catalog_dir)
+    _write_isolated_siril_config(siril_roaming, spcc_catalog_dir)
 
     env = os.environ.copy()
     env["LOCALAPPDATA"] = str(siril_local)
     env["APPDATA"] = str(siril_roaming)
     env["XDG_CACHE_HOME"] = str(siril_cache)
     env["XDG_CONFIG_HOME"] = str(siril_roaming)
+    if spcc_catalog_dir:
+        env[LOCAL_SPCC_CATALOG_ENV] = str(spcc_catalog_dir)
 
     output_log = Path(working_directory) / "siril_output.log"
     with output_log.open("w", encoding="utf-8") as log_file:
@@ -192,6 +258,7 @@ def build_siril_pcc_command(
     optional_ra_dec: str | None = None,
     optional_focal_length: str | None = None,
     optional_pixel_size: str | None = None,
+    prefer_local_spcc: bool = True,
 ) -> str | None:
     path = Path(input_path)
     if path.suffix.lower() not in SIRIL_PCC_SUFFIXES:
@@ -211,7 +278,18 @@ def build_siril_pcc_command(
     if not has_wcs:
         return None
 
+    if prefer_local_spcc and find_local_spcc_catalog() is not None:
+        return "spcc -catalog=localgaia"
+
     return "pcc -catalog=apass"
+
+
+def siril_catalog_calibration_path(pcc_command: str | None) -> str | None:
+    if not pcc_command:
+        return None
+    if pcc_command.strip().lower().startswith("spcc"):
+        return "local_spcc"
+    return "online_pcc"
 
 
 def create_basic_color_script(
@@ -323,11 +401,12 @@ def create_photometric_color_script(
     optional_pixel_size: str | None = None,
     apply_scnr: bool = False,
     color_saturation: int = 35,
+    pcc_command: str | None = None,
 ) -> Path:
     script_path = Path(work_dir) / "siril_photometric_color.ssf"
     input_name = _relative_or_name(Path(input_path), Path(work_dir))
     output_stem = Path(output_path).with_suffix("").name
-    pcc_command = build_siril_pcc_command(
+    pcc_command = pcc_command or build_siril_pcc_command(
         Path(input_path),
         optional_object_name=optional_object_name,
         optional_ra_dec=optional_ra_dec,
@@ -339,7 +418,7 @@ def create_photometric_color_script(
 
     lines = [
         SIRIL_REQUIRES_COMMAND,
-        "# DeepSky Siril PCC color calibration",
+        "# DeepSky Siril catalog color calibration",
         f'load "{input_name}"',
         "# Siril background extraction before color calibration",
         "subsky 2",
