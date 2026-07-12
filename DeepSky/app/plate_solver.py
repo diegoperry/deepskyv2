@@ -44,13 +44,15 @@ def _empty(value: object | None) -> bool:
     return not text or text.lower() in {"unknown", "none", "null", "nan", "-"}
 
 
-def _parse_angle(value: object, *, is_ra: bool) -> float | None:
+def _parse_angle(value: object, *, is_ra: bool, numeric_ra_is_degrees: bool = False) -> float | None:
     if _empty(value):
         return None
     text = str(value).strip()
     try:
         number = float(text)
-        return number * 15.0 if is_ra and 0.0 <= number <= 24.0 else number
+        if is_ra and not numeric_ra_is_degrees and 0.0 <= number <= 24.0:
+            return number * 15.0
+        return number
     except ValueError:
         pass
     try:
@@ -84,7 +86,9 @@ def _header_result(path: Path) -> PlateSolveResult:
         return PlateSolveResult(False, "unknown", None, None, None, None, None, None, None, None, "No FITS header found")
 
     object_name = str(header.get("OBJECT") or header.get("OBJNAME") or "").strip() or None
-    ra = _parse_angle(header.get("CRVAL1") or header.get("RA") or header.get("OBJCTRA"), is_ra=True)
+    ra = _parse_angle(header.get("CRVAL1"), is_ra=True, numeric_ra_is_degrees=True)
+    if ra is None:
+        ra = _parse_angle(header.get("RA") or header.get("OBJCTRA"), is_ra=True, numeric_ra_is_degrees=True)
     dec = _parse_angle(header.get("CRVAL2") or header.get("DEC") or header.get("OBJCTDEC"), is_ra=False)
     has_wcs_keys = not any(_empty(header.get(key)) for key in ("CRVAL1", "CRVAL2", "CTYPE1", "CTYPE2"))
 
