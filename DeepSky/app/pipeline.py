@@ -1428,6 +1428,72 @@ def _apply_broadband_background_cleanup(
         return finished_image
 
 
+def _orientation_score(image: np.ndarray, reference: np.ndarray) -> float:
+    img = np.asarray(image)
+    ref = np.asarray(reference)
+    if img.ndim < 2 or ref.ndim < 2 or img.shape[:2] != ref.shape[:2]:
+        return -1.0
+
+    def _small_lum(arr: np.ndarray) -> np.ndarray:
+        arr = np.asarray(arr)
+        if arr.ndim == 3 and arr.shape[-1] >= 3:
+            data = arr[..., :3].astype(np.float32)
+            if np.issubdtype(arr.dtype, np.integer):
+                data /= max(float(np.iinfo(arr.dtype).max), 1.0)
+            elif data.size and float(np.nanmax(data)) > 1.0:
+                data /= 65535.0
+            lum = data[..., 0] * 0.2126 + data[..., 1] * 0.7152 + data[..., 2] * 0.0722
+        else:
+            lum = np.squeeze(arr).astype(np.float32)
+            if np.issubdtype(arr.dtype, np.integer):
+                lum /= max(float(np.iinfo(arr.dtype).max), 1.0)
+            elif lum.size and float(np.nanmax(lum)) > 1.0:
+                lum /= 65535.0
+        lum = np.nan_to_num(lum.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        height, width = lum.shape[:2]
+        scale = max(height / 180.0, width / 180.0, 1.0)
+        size = (max(8, int(width / scale)), max(8, int(height / scale)))
+        small = cv2.resize(lum, size, interpolation=cv2.INTER_AREA)
+        low, high = np.percentile(small, (2.0, 99.5))
+        small = np.clip((small - low) / max(1e-6, high - low), 0.0, 1.0)
+        small = cv2.GaussianBlur(small.astype(np.float32), (0, 0), 1.0)
+        small -= float(np.mean(small))
+        return small / max(float(np.std(small)), 1e-6)
+
+    a = _small_lum(img)
+    b = _small_lum(ref)
+    if a.shape != b.shape:
+        b = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA)
+    return float(np.mean(a * b))
+
+
+def _orient_like_reference(image: np.ndarray, reference: np.ndarray, write_log: LogCallback, label: str) -> np.ndarray:
+    arr = np.asarray(image)
+    ref = np.asarray(reference)
+    if arr.shape[:2] != ref.shape[:2]:
+        write_log(f"{label} orientation check skipped: shape mismatch {arr.shape[:2]} vs {ref.shape[:2]}.")
+        return arr
+
+    candidates: list[tuple[str, np.ndarray]] = [
+        ("original", arr),
+        ("vertical flip", np.flipud(arr)),
+        ("horizontal flip", np.fliplr(arr)),
+        ("vertical+horizontal flip", np.flipud(np.fliplr(arr))),
+    ]
+    scores = [(name, candidate, _orientation_score(candidate, ref)) for name, candidate in candidates]
+    best_name, best_image, best_score = max(scores, key=lambda item: item[2])
+    original_score = scores[0][2]
+    write_log(
+        f"{label} orientation scores: "
+        + ", ".join(f"{name}={score:.5f}" for name, _, score in scores)
+    )
+    if best_name != "original" and best_score > original_score + 0.035:
+        write_log(f"{label} orientation corrected using {best_name}.")
+        return np.ascontiguousarray(best_image)
+    write_log(f"{label} orientation preserved.")
+    return arr
+
+
 def _run_siril_calibration(
     original: Path,
     working: Path,
@@ -1468,6 +1534,12 @@ def _run_siril_calibration(
         else None
     )
     pcc_available = mode == "Siril Photometric" and bool(pcc_command)
+    if object_type == "nebula" and not pcc_available:
+        if mode == "Siril Photometric":
+            write_log("Nebula SPCC/PCC metadata unavailable; using non-photometric measured-RGB fallback.")
+        else:
+            write_log("Nebula non-photometric color mode; using measured-RGB fallback without Siril local color script.")
+        return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
     if pcc_available:
         siril_input = job_folder / original.name
         if siril_input.resolve() != original.resolve():
@@ -1585,6 +1657,13 @@ def _run_siril_calibration(
                     "Siril PCC failed because the star catalog could not be reached or solved. "
                     "Continue without PCC, or abort this run."
                 ) from exc
+            if object_type == "nebula":
+                write_log(
+                    "SPCC/PCC failed, using non-photometric color fallback. "
+                    "Bypassing Siril local color script to preserve measured RGB and original orientation. "
+                    f"Error: {exc}"
+                )
+                return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
             write_log(
                 "Siril PCC failed; trying Siril local background/color calibration before Python fallback. "
                 f"Error: {exc}"
@@ -2092,12 +2171,14 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             write_log("SPCC/PCC failed, using non-photometric color fallback.")
             write_log("Nebula natural RGB pipeline: SPCC/PCC unavailable; using conservative measured-RGB fallback to avoid painted color.")
         write_log("Nebula natural RGB pipeline: using Siril-calibrated RGB with internal masked sky denoise; skipping legacy StarNet color-separation composer.")
+        working_reference = load_image(working, write_log)
         natural_nebula = apply_natural_nebula_rgb_look(
             load_image(current, write_log),
             write_log,
-            color_reference=load_image(working, write_log),
+            color_reference=working_reference,
             catalog_color=nebula_catalog_color,
         )
+        natural_nebula = _orient_like_reference(natural_nebula, working_reference, write_log, "Natural nebula final")
         save_tiff(final, natural_nebula, write_log)
         _log_existing_image(final, write_log, "final.tif")
 
@@ -2118,6 +2199,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             write_log(f"Slight Star Reduction enabled; recombining brightest {keep_fraction:.0%} of StarNet star layer.")
             threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
             write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
+        corrected_final = _orient_like_reference(load_image(final, write_log), working_reference, write_log, "Natural nebula StarNet final")
+        save_tiff(final, corrected_final, write_log)
         _log_existing_image(final, write_log, "star-reduced final.tif")
 
         save_png(final_png, load_image(final, write_log), write_log)
