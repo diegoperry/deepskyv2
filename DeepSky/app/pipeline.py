@@ -2100,6 +2100,26 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         )
         save_tiff(final, natural_nebula, write_log)
         _log_existing_image(final, write_log, "final.tif")
+
+        starnet_exe = find_executable(Path(settings.starnet_folder))
+        if not starnet_exe:
+            raise FileNotFoundError("StarNet executable not found. Update the StarNet path in settings.")
+        write_log("Nebula natural RGB pipeline: running StarNet after color finish for star separation/star reduction.")
+        write_log(f"StarNet executable: {starnet_exe}")
+        run_starnet(final, starless_test, starnet_exe, write_log)
+        _log_existing_image(starless_test, write_log, "natural nebula starless.tif")
+        subtract_images(final, starless_test, starless_test_stars)
+        _log_existing_image(starless_test_stars, write_log, "natural nebula stars.tif")
+        if starless_only_requested:
+            write_log("Starless enabled; keeping natural nebula StarNet starless image without recombining stars.")
+            shutil.copy2(starless_test, final)
+        else:
+            keep_fraction = 0.16 if weak_snr_nebula_raw else 0.22
+            write_log(f"Slight Star Reduction enabled; recombining brightest {keep_fraction:.0%} of StarNet star layer.")
+            threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
+            write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
+        _log_existing_image(final, write_log, "star-reduced final.tif")
+
         save_png(final_png, load_image(final, write_log), write_log)
         after_preview = job_folder / "after_preview.png"
         calibrated_preview = job_folder / "calibrated_preview.png"
