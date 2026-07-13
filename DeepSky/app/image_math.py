@@ -76,15 +76,51 @@ def add_bright_star_fraction(
     threshold = float(np.percentile(candidates, (1.0 - keep_fraction) * 100.0))
     bright_mask = star_lum >= threshold
     large_mask = _large_retained_star_mask(star_lum, candidate_floor, threshold)
-    mask = np.maximum(bright_mask, large_mask).astype(np.float32)
-    if stars.ndim == 3:
-        mask = mask[..., None]
-
-    kept_stars = stars * mask
+    mask = np.maximum(bright_mask, large_mask)
+    kept_stars = _build_halo_suppressed_star_layer(stars, star_lum, mask, bright_mask, threshold)
     final = np.clip(base + kept_stars.astype(np.int32), 0, 65535).astype(np.uint16)
-    final = _repair_retained_star_pinholes(final, mask)
+    final = _repair_retained_star_pinholes(final, mask.astype(np.float32))
     save_tiff(output_path, final)
     return threshold
+
+
+def _build_halo_suppressed_star_layer(
+    stars: np.ndarray,
+    star_lum: np.ndarray,
+    retained_mask: np.ndarray,
+    bright_mask: np.ndarray,
+    threshold: float,
+) -> np.ndarray:
+    """Keep retained star cores while strongly reducing colored StarNet halos."""
+    if int(np.count_nonzero(retained_mask)) == 0:
+        return np.zeros_like(stars, dtype=np.float32)
+
+    retained = retained_mask.astype(np.float32)
+    core = bright_mask.astype(np.float32)
+    halo = np.clip(retained - core, 0.0, 1.0)
+
+    local_peak = cv2.dilate(star_lum.astype(np.float32), np.ones((9, 9), dtype=np.uint8), iterations=1)
+    local_ratio = np.clip(star_lum / np.maximum(local_peak, 1.0), 0.0, 1.0)
+    compact_core = np.clip((local_ratio - 0.42) / 0.40, 0.0, 1.0)
+    compact_core = compact_core * compact_core * (3.0 - 2.0 * compact_core)
+
+    peak_window = max(1.0, float(np.percentile(star_lum[retained_mask], 99.85)) - threshold)
+    brightness_core = np.clip((star_lum - threshold) / peak_window, 0.0, 1.0)
+    brightness_core = brightness_core * brightness_core * (3.0 - 2.0 * brightness_core)
+
+    core_weight = np.clip(np.maximum(compact_core, brightness_core) * core, 0.0, 1.0)
+    halo_weight = np.clip(halo * 0.10 * compact_core, 0.0, 0.12)
+    weight = np.clip(core_weight + halo_weight, 0.0, 1.0)
+
+    if stars.ndim != 3:
+        return stars.astype(np.float32) * weight
+
+    star_rgb = stars.astype(np.float32)
+    lum = star_lum.astype(np.float32)
+    neutral = np.repeat(lum[..., None], star_rgb.shape[2], axis=2)
+    halo_mix = halo[..., None] * (1.0 - core_weight[..., None]) * 0.82
+    star_rgb = np.clip(star_rgb * (1.0 - halo_mix) + neutral * halo_mix, 0.0, 65535.0)
+    return star_rgb * weight[..., None]
 
 
 def _large_retained_star_mask(star_lum: np.ndarray, candidate_floor: float, threshold: float) -> np.ndarray:

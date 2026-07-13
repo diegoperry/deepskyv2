@@ -2861,9 +2861,10 @@ def _html() -> str:
         "siril_deconvolution",
         selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
       );
-      const starSetting = selectedObjectType === "Galaxy" ? "Slight Star Reduction" : "Standard";
+      const starSetting =
+        selectedObjectType === "Star Cluster" ? "Standard" : "Slight Star Reduction";
       data.append("star_setting", starSetting);
-      data.append("starless_test", selectedObjectType === "Galaxy" ? "true" : "false");
+      data.append("starless_test", selectedObjectType === "Star Cluster" ? "false" : "true");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -3215,9 +3216,9 @@ def _run_job(
         else:
             settings.nebula_color_separation = "Balanced"
         settings.star_handling_mode = (
-            "Slight Star Reduction" if settings.object_type == "Galaxy" else "Standard"
+            "Standard" if settings.object_type == "Star Cluster" else "Slight Star Reduction"
         )
-        settings.starless_test_enabled = settings.object_type == "Galaxy"
+        settings.starless_test_enabled = settings.object_type != "Star Cluster"
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
