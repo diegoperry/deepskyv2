@@ -1137,6 +1137,52 @@ def _repair_nebula_starless_base(
     return np.clip(repaired * 65535.0, 0.0, 65535.0).round().astype(np.uint16), star_density
 
 
+def _apply_mild_nebula_star_core_reduction(image: np.ndarray, write_log: LogCallback) -> np.ndarray:
+    """Mildly compress compact star cores without using StarNet's starless reconstruction."""
+    rgb = _to_float01(image)
+    if rgb.ndim != 3:
+        return image
+
+    lum = _rgb_luminance(rgb).astype(np.float32)
+    low = float(np.percentile(lum, 96.5))
+    high = float(np.percentile(lum, 99.92))
+    if high <= low + 1e-6:
+        write_log("Mild nebula star reduction skipped: insufficient stellar contrast.")
+        return image
+
+    star_signal = np.clip((lum - low) / max(1e-6, high - low), 0.0, 1.0)
+    local_bg_lum = cv2.GaussianBlur(lum, (0, 0), 2.2)
+    contrast = np.clip((lum - local_bg_lum) / max(1e-6, high - low), 0.0, 1.0)
+    compact = np.clip(star_signal * (contrast ** 0.55), 0.0, 1.0)
+
+    seeds = (compact > 0.11).astype(np.uint8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(seeds, connectivity=8)
+    if count <= 1:
+        write_log("Mild nebula star reduction skipped: no compact star cores found.")
+        return image
+
+    areas = stats[:, cv2.CC_STAT_AREA]
+    valid = (np.arange(count) > 0) & (areas <= 220)
+    valid[0] = False
+    core_mask = valid[labels].astype(np.float32)
+    core_mask = cv2.GaussianBlur(core_mask * compact, (0, 0), 0.85)
+    core_mask = np.clip(core_mask, 0.0, 1.0)
+
+    smooth_rgb = cv2.GaussianBlur(rgb.astype(np.float32), (0, 0), 1.15)
+    smooth_lum = _rgb_luminance(smooth_rgb).astype(np.float32)
+    smooth_chroma = smooth_rgb - smooth_lum[..., None]
+    replacement = np.clip(smooth_lum[..., None] + smooth_chroma * 0.70, 0.0, 1.0)
+
+    mix = np.clip(core_mask[..., None] * 0.38, 0.0, 0.38)
+    reduced = np.clip(rgb * (1.0 - mix) + replacement * mix, 0.0, 1.0)
+    write_log(
+        "Applied mild natural RGB star-core reduction without StarNet recombination: "
+        f"mask_mean={float(np.mean(core_mask)):.5f}; "
+        f"detected_components={int(np.count_nonzero(valid))}"
+    )
+    return np.clip(reduced * 65535.0, 0.0, 65535.0).round().astype(np.uint16)
+
+
 def _apply_duoband_nebula_finish(
     image: np.ndarray,
     write_log: LogCallback,
@@ -2234,14 +2280,31 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless_test, write_log, "natural nebula starless.tif")
         subtract_images(final, starless_test, starless_test_stars)
         _log_existing_image(starless_test_stars, write_log, "natural nebula stars.tif")
+        repaired_starless, star_density = _repair_nebula_starless_base(
+            load_image(starless_test, write_log),
+            load_image(starless_test_stars, write_log),
+            load_image(final, write_log),
+            write_log,
+        )
+        if star_density >= 0.055 and not starless_only_requested:
+            write_log("Dense StarNet residual risk detected; skipping starless repair because final will bypass StarNet recombination.")
+        elif star_density >= 0.020:
+            save_tiff(starless_test, repaired_starless, write_log)
+            _log_existing_image(starless_test, write_log, "repaired natural nebula starless.tif")
         if starless_only_requested:
             write_log("Starless enabled; keeping natural nebula StarNet starless image without recombining stars.")
             shutil.copy2(starless_test, final)
         else:
             keep_fraction = 0.16 if weak_snr_nebula_raw else 0.22
-            write_log(f"Slight Star Reduction enabled; recombining brightest {keep_fraction:.0%} of StarNet star layer.")
-            threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
-            write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
+            if star_density >= 0.055:
+                write_log("StarNet bypassed due to dense star residual risk.")
+                write_log("Dense nebula default: preserving natural RGB canvas and applying mild direct star-core reduction.")
+                reduced = _apply_mild_nebula_star_core_reduction(load_image(final, write_log), write_log)
+                save_tiff(final, reduced, write_log)
+            else:
+                write_log(f"Slight Star Reduction enabled; recombining brightest {keep_fraction:.0%} of StarNet star layer.")
+                threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
+                write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
         corrected_final = _orient_like_reference(load_image(final, write_log), working_reference, write_log, "Natural nebula StarNet final")
         save_tiff(final, corrected_final, write_log)
         _log_existing_image(final, write_log, "star-reduced final.tif")

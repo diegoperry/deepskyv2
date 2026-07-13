@@ -75,8 +75,7 @@ def add_bright_star_fraction(
     keep_fraction = float(np.clip(keep_fraction, 0.0, 1.0))
     threshold = float(np.percentile(candidates, (1.0 - keep_fraction) * 100.0))
     bright_mask = star_lum >= threshold
-    large_mask = _large_retained_star_mask(star_lum, candidate_floor, threshold)
-    mask = np.maximum(bright_mask, large_mask)
+    mask = _compact_retained_star_mask(star_lum, bright_mask, threshold)
     kept_stars = _build_halo_suppressed_star_layer(stars, star_lum, mask, bright_mask, threshold)
     final = np.clip(base + kept_stars.astype(np.int32), 0, 65535).astype(np.uint16)
     final = _repair_retained_star_pinholes(final, mask.astype(np.float32))
@@ -109,7 +108,7 @@ def _build_halo_suppressed_star_layer(
     brightness_core = brightness_core * brightness_core * (3.0 - 2.0 * brightness_core)
 
     core_weight = np.clip(np.maximum(compact_core, brightness_core) * core, 0.0, 1.0)
-    halo_weight = np.clip(halo * 0.10 * compact_core, 0.0, 0.12)
+    halo_weight = np.clip(halo * 0.035 * compact_core, 0.0, 0.04)
     weight = np.clip(core_weight + halo_weight, 0.0, 1.0)
 
     if stars.ndim != 3:
@@ -118,9 +117,28 @@ def _build_halo_suppressed_star_layer(
     star_rgb = stars.astype(np.float32)
     lum = star_lum.astype(np.float32)
     neutral = np.repeat(lum[..., None], star_rgb.shape[2], axis=2)
-    halo_mix = halo[..., None] * (1.0 - core_weight[..., None]) * 0.82
+    halo_mix = halo[..., None] * (1.0 - core_weight[..., None]) * 0.94
     star_rgb = np.clip(star_rgb * (1.0 - halo_mix) + neutral * halo_mix, 0.0, 65535.0)
     return star_rgb * weight[..., None]
+
+
+def _compact_retained_star_mask(star_lum: np.ndarray, bright_mask: np.ndarray, threshold: float) -> np.ndarray:
+    seeds = bright_mask.astype(np.uint8)
+    if int(np.count_nonzero(seeds)) == 0:
+        return bright_mask
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(seeds, connectivity=8)
+    if count <= 1:
+        return bright_mask
+
+    peaks = np.zeros(count, dtype=np.float32)
+    np.maximum.at(peaks, labels.ravel(), star_lum.ravel().astype(np.float32))
+    areas = stats[:, cv2.CC_STAT_AREA].astype(np.float32)
+    valid = (np.arange(count) > 0) & (peaks >= threshold) & (areas <= max(900.0, float(np.percentile(areas[1:], 99.8)) * 1.8))
+    valid[0] = False
+    compact = valid[labels]
+    compact = cv2.dilate(compact.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), iterations=1).astype(bool)
+    return compact
 
 
 def _large_retained_star_mask(star_lum: np.ndarray, candidate_floor: float, threshold: float) -> np.ndarray:
