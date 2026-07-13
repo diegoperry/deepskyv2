@@ -27,7 +27,7 @@ from io import BytesIO
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
 from .pipeline import PccCalibrationFailed, PipelineMode, run_pipeline
-from .settings import APP_ROOT, PROJECT_ROOT, default_settings, load_settings
+from .settings import APP_ROOT, PROJECT_ROOT, AppSettings, default_settings, load_settings
 from .siril_cli import build_siril_pcc_command
 
 
@@ -1971,7 +1971,6 @@ def _html() -> str:
 
     function currentModeNeedsPcc() {
       if (!selectedFile || previewPccAvailable !== false) return false;
-      if (objectType.value === "Nebula") return true;
       return objectType.value === "Galaxy" && sirilDeconvolution.checked;
     }
 
@@ -2864,7 +2863,7 @@ def _html() -> str:
       const starSetting =
         selectedObjectType === "Star Cluster" ? "Standard" : "Slight Star Reduction";
       data.append("star_setting", starSetting);
-      data.append("starless_test", selectedObjectType === "Star Cluster" ? "false" : "true");
+      data.append("starless_test", "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
       let job;
       try {
@@ -3140,6 +3139,49 @@ def _reconcile_stripe_subscription(user: AuthUser, profile: dict[str, Any]) -> d
     return _get_profile(user.id) or {**profile, **updates}
 
 
+def _configure_web_pipeline_settings(
+    settings: AppSettings,
+    *,
+    object_type: str,
+    input_mode: str,
+    pre_stretched: bool,
+    stretch_level: str,
+    siril_deconvolution: bool,
+    star_setting: str,
+    pcc_failure_policy: str,
+) -> AppSettings:
+    """Map web controls onto the same single pipeline used by local runs."""
+    mode = input_mode if input_mode in {"Auto", "Linear", "Pre-stretched"} else "Auto"
+    if pre_stretched and mode == "Auto":
+        mode = "Pre-stretched"
+    selected_object = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
+
+    settings.input_processing_mode = mode
+    settings.prestretched_input = mode == "Pre-stretched"
+    settings.object_type = selected_object
+    settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
+    settings.siril_deconvolution_enabled = selected_object == "Galaxy" and bool(siril_deconvolution)
+    settings.color_calibration_mode = "Basic" if selected_object == "Nebula" or settings.siril_deconvolution_enabled else "Off"
+    settings.nebula_color_separation = "Strong" if selected_object == "Nebula" else "Balanced"
+
+    # Nebula processing is deliberately one route: measured RGB, the protected
+    # auto stretch, one DeepSNR pass, one StarNet pass, and one recomposition.
+    # Do not let the web layer re-enter the Siril/PCC branch or enable a second
+    # legacy starless-test route.
+    if selected_object == "Nebula":
+        settings.pcc_failure_policy = "continue_without_pcc"
+        settings.star_handling_mode = "Slight Star Reduction"
+    else:
+        settings.pcc_failure_policy = pcc_failure_policy
+        settings.star_handling_mode = (
+            "Standard"
+            if selected_object == "Star Cluster"
+            else star_setting if star_setting in {"Standard", "Slight Star Reduction", "Starless"} else "Slight Star Reduction"
+        )
+    settings.starless_test_enabled = False
+    return settings
+
+
 def _run_job(
     job_id: str,
     input_path: Path,
@@ -3197,34 +3239,23 @@ def _run_job(
         output_root = JOB_OUTPUT_ROOT / job_id
         output_root.mkdir(parents=True, exist_ok=True)
         settings.output_folder = str(output_root)
-        mode = input_mode if input_mode in {"Auto", "Linear", "Pre-stretched"} else "Auto"
-        if pre_stretched and mode == "Auto":
-            mode = "Pre-stretched"
-        settings.input_processing_mode = mode
-        settings.prestretched_input = mode == "Pre-stretched"
-        settings.pcc_failure_policy = pcc_failure_policy
-        settings.object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
-        settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
-        settings.siril_deconvolution_enabled = settings.object_type == "Galaxy" and bool(siril_deconvolution)
-        settings.color_calibration_mode = (
-            "Basic"
-            if settings.object_type == "Nebula" or settings.siril_deconvolution_enabled
-            else "Off"
+        settings = _configure_web_pipeline_settings(
+            settings,
+            object_type=object_type,
+            input_mode=input_mode,
+            pre_stretched=pre_stretched,
+            stretch_level=stretch_level,
+            siril_deconvolution=siril_deconvolution,
+            star_setting=star_setting,
+            pcc_failure_policy=pcc_failure_policy,
         )
-        if settings.object_type == "Nebula":
-            settings.nebula_color_separation = "Strong"
-        else:
-            settings.nebula_color_separation = "Balanced"
-        settings.star_handling_mode = (
-            "Standard" if settings.object_type == "Star Cluster" else "Slight Star Reduction"
-        )
-        settings.starless_test_enabled = settings.object_type != "Star Cluster"
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
         if settings.object_type == "Nebula":
-            write_log("Color Calibration: Siril")
-            write_log("Background Extraction: Siril")
+            write_log("Nebula pipeline route: natural measured RGB hybrid (single route)")
+            write_log("Color Calibration: measured RGB; Siril/PCC bypassed")
+            write_log("Background Extraction: protected local cleanup")
             write_log(f"Selected color separation: {settings.nebula_color_separation}")
         elif settings.siril_deconvolution_enabled:
             write_log("Galaxy color calibration: Siril (enabled with deconvolution)")
@@ -3530,7 +3561,7 @@ async def create_job(
     stretch_level: str = Form("Standard"),
     nebula_color_separation: str = Form("Strong"),
     siril_deconvolution: bool = Form(False),
-    starless_test: bool = Form(True),
+    starless_test: bool = Form(False),
     star_setting: str = Form(""),
     user: AuthUser = Depends(require_user),
 ) -> dict[str, str]:
@@ -3611,7 +3642,7 @@ async def create_job(
         selected_siril_deconvolution,
         starless_test,
         star_setting,
-        "continue",
+        "continue_without_pcc" if selected_object_type == "Nebula" else "continue",
     )
     return {"id": job_id}
 

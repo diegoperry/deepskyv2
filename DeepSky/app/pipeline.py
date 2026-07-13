@@ -2294,6 +2294,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         nebula_catalog_color = (job_folder / "siril_catalog_color_succeeded.txt").exists()
         if nebula_catalog_color:
             write_log("Nebula natural RGB pipeline: catalog color available; using stronger measured chroma preservation.")
+        elif skip_catalog_pcc:
+            write_log("Nebula natural RGB pipeline: Siril/PCC intentionally bypassed; using the single measured-RGB route.")
         else:
             write_log("SPCC/PCC failed, using non-photometric color fallback.")
             write_log("Nebula natural RGB pipeline: SPCC/PCC unavailable; using conservative measured-RGB fallback to avoid painted color.")
