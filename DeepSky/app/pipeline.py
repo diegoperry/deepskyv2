@@ -16,6 +16,7 @@ from .goal_look import (
     apply_pcc_galaxy_look,
     apply_cosmos_style_nebula_finish,
     apply_goal_look,
+    apply_measured_color_to_nebula_detail,
     apply_natural_nebula_rgb_look,
     apply_pixinsight_style_nebula_finish,
     apply_prestretched_broadband_look,
@@ -116,7 +117,7 @@ def _stretch_strength_for(base: str, stretch_level: str) -> str:
 def _adjust_stretch_strength(base_strength: str, stretch_level: str) -> str:
     ladders = (
         ["gentle", "slight", "normal", "aggressive", "extra_aggressive"],
-        ["seestar_slight", "seestar", "seestar_aggressive", "seestar_extra_aggressive"],
+        ["seestar_weak_nebula", "seestar_slight", "seestar", "seestar_aggressive", "seestar_extra_aggressive"],
     )
     for ladder in ladders:
         if base_strength in ladder:
@@ -1547,6 +1548,7 @@ def _run_siril_calibration(
     write_log: LogCallback,
     *,
     darkroom_small_galaxy: bool = False,
+    nebula_fallback_stretch_strength: str | None = None,
 ) -> Path:
     mode = settings.color_calibration_mode
     object_type = _normalized_object_type(settings)
@@ -1563,7 +1565,13 @@ def _run_siril_calibration(
     if not siril_exe:
         if object_type == "nebula":
             write_log("Siril executable not found; preserving measured RGB for nebula natural finish.")
-            return _run_nebula_measured_rgb_fallback(working, stretched, calibrated, write_log)
+            return _run_nebula_measured_rgb_fallback(
+                working,
+                stretched,
+                calibrated,
+                write_log,
+                stretch_strength=nebula_fallback_stretch_strength,
+            )
         write_log("Siril executable not found; using Python fallback color calibration.")
         return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
 
@@ -1600,7 +1608,13 @@ def _run_siril_calibration(
         else:
             write_log("Nebula non-photometric color mode; using Siril background extraction before measured-RGB fallback finish.")
         write_log("Nebula non-photometric fallback selected before Siril local color scripts.")
-        return _run_nebula_measured_rgb_fallback(working, stretched, calibrated, write_log)
+        return _run_nebula_measured_rgb_fallback(
+            working,
+            stretched,
+            calibrated,
+            write_log,
+            stretch_strength=nebula_fallback_stretch_strength,
+        )
     if pcc_available:
         siril_input = job_folder / original.name
         if siril_input.resolve() != original.resolve():
@@ -1724,7 +1738,13 @@ def _run_siril_calibration(
                     "Bypassing Siril/Python color scripts to preserve measured RGB and original orientation. "
                     f"Error: {exc}"
                 )
-                return _run_nebula_measured_rgb_fallback(working, stretched, calibrated, write_log)
+                return _run_nebula_measured_rgb_fallback(
+                    working,
+                    stretched,
+                    calibrated,
+                    write_log,
+                    stretch_strength=nebula_fallback_stretch_strength,
+                )
             write_log(
                 "Siril PCC failed; trying Siril local background/color calibration before Python fallback. "
                 f"Error: {exc}"
@@ -1763,7 +1783,13 @@ def _run_siril_calibration(
                     f"Siril {mode} failed; preserving measured RGB for nebula natural finish. "
                     f"Error: {exc}"
                 )
-                return _run_nebula_measured_rgb_fallback(working, stretched, calibrated, write_log)
+                return _run_nebula_measured_rgb_fallback(
+                    working,
+                    stretched,
+                    calibrated,
+                    write_log,
+                    stretch_strength=nebula_fallback_stretch_strength,
+                )
             write_log(f"Siril {mode} failed; using Python fallback color calibration. Error: {exc}")
             return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
         else:
@@ -1912,8 +1938,13 @@ def _run_nebula_measured_rgb_fallback(
     stretched: Path,
     calibrated: Path,
     write_log: LogCallback,
+    *,
+    stretch_strength: str | None = None,
 ) -> Path:
     source = load_image(working, write_log)
+    if stretch_strength:
+        write_log(f"Nebula non-photometric fallback: applying protected {stretch_strength} auto stretch.")
+        source = astrophotography_stretch(source, strength=stretch_strength)
     write_log(
         "Nebula non-photometric fallback: preserving measured RGB pixels; "
         "no Siril local color script, no Python color rebalance, no synthetic hue injection."
@@ -2108,7 +2139,6 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         or (mode == PipelineMode.FULL and use_prestretched)
         or gradient_galaxy_siril
         or (mode == PipelineMode.FULL and siril_deconvolution_requested)
-        or (mode == PipelineMode.FULL and object_type == "nebula")
         or bool(nebula_auto_pcc_command)
         or bool(galaxy_auto_pcc_command)
     )
@@ -2134,6 +2164,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 settings,
                 write_log,
                 darkroom_small_galaxy=gradient_galaxy_siril,
+                nebula_fallback_stretch_strength=(
+                    _adjust_stretch_strength("seestar_weak_nebula", stretch_level)
+                    if weak_snr_nebula_raw and not use_prestretched
+                    else None
+                ),
             )
         finally:
             settings.color_calibration_mode = original_color_mode
@@ -2178,9 +2213,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             )
             stretch_source_image = working_image if lifted_duoband_gradient_raw else load_image(original, write_log)
             stretch_source_image = _flatten_lifted_duoband_gradient(stretch_source_image, write_log)
-        elif weak_snr_nebula_raw and base_strength in {"seestar_aggressive", "seestar_extra_aggressive", "seestar"}:
-            base_strength = "seestar_slight"
-            baseline_reason = f"weak-SNR nebula protected from aggressive background lift ({baseline_reason})"
+        elif weak_snr_nebula_raw:
+            base_strength = "seestar_weak_nebula"
+            baseline_reason = f"weak-SNR nebula using capped linked-luminance micro-stretch ({baseline_reason})"
         elif reflection_style_nebula_hint and base_strength in {"seestar_aggressive", "seestar_extra_aggressive"}:
             base_strength = "seestar"
             baseline_reason = f"weak/reflection nebula color path; limiting sky noise lift ({baseline_reason})"
@@ -2200,6 +2235,13 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         elif object_type in {"galaxy", "star cluster"}:
             write_log(f"Applying protected raw broadband finish for: {object_type}.")
             calibrated_image = apply_prestretched_broadband_look(stretched_image, write_log)
+            save_tiff(calibrated, calibrated_image, write_log)
+        elif weak_snr_nebula_raw:
+            # The capped micro-stretch is the complete global tone operation for
+            # weak nebula frames.  apply_goal_look adds another black point and
+            # contrast remap, turning a tiny lift into exaggerated mottling.
+            write_log("Weak-SNR nebula: preserving micro-stretched measured RGB without a second global finish.")
+            calibrated_image = stretched_image
             save_tiff(calibrated, calibrated_image, write_log)
         elif reflection_style_nebula_hint:
             write_log("Applying protected raw reflection-nebula finish to preserve red-brown RGB color.")
@@ -2259,7 +2301,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             "Nebula natural RGB pipeline: measured RGB only; no synthetic color painting, "
             "no warm_bias/red_bias/cyan_bias, no HOO/showcase color mapping."
         )
-        write_log("Nebula natural RGB pipeline: using calibrated/measured RGB with internal masked sky denoise; skipping legacy StarNet color-separation composer.")
+        write_log("Nebula hybrid pipeline: June-detail luminance with measured low-frequency RGB color.")
         working_reference = load_image(working, write_log)
         natural_nebula = apply_natural_nebula_rgb_look(
             load_image(current, write_log),
@@ -2268,43 +2310,55 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             catalog_color=nebula_catalog_color,
         )
         natural_nebula = _orient_like_reference(natural_nebula, working_reference, write_log, "Natural nebula final")
-        save_tiff(final, natural_nebula, write_log)
-        _log_existing_image(final, write_log, "final.tif")
+
+        # Restore the June processing order: denoise before separation, enhance
+        # the starless luminance, then add measured color without replacing that
+        # luminance.  This keeps real filament/dust structure out of the color
+        # and denoise layers.
+        deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
+        if not deepsnr_exe:
+            raise FileNotFoundError("DeepSNR executable not found. Update the DeepSNR path in settings.")
+        write_log(f"Nebula hybrid DeepSNR executable: {deepsnr_exe}")
+        run_deepsnr(current, denoised, deepsnr_exe, write_log)
+        _log_existing_image(denoised, write_log, "hybrid denoised.tif")
 
         starnet_exe = find_executable(Path(settings.starnet_folder))
         if not starnet_exe:
             raise FileNotFoundError("StarNet executable not found. Update the StarNet path in settings.")
-        write_log("Nebula natural RGB pipeline: running StarNet after color finish for star separation/star reduction.")
+        write_log("Nebula hybrid pipeline: separating stars before detail and color recomposition.")
         write_log(f"StarNet executable: {starnet_exe}")
-        run_starnet(final, starless_test, starnet_exe, write_log)
-        _log_existing_image(starless_test, write_log, "natural nebula starless.tif")
-        subtract_images(final, starless_test, starless_test_stars)
-        _log_existing_image(starless_test_stars, write_log, "natural nebula stars.tif")
-        repaired_starless, star_density = _repair_nebula_starless_base(
-            load_image(starless_test, write_log),
-            load_image(starless_test_stars, write_log),
-            load_image(final, write_log),
+        run_starnet(denoised, starless_test, starnet_exe, write_log)
+        _log_existing_image(starless_test, write_log, "hybrid starless.tif")
+        subtract_images(denoised, starless_test, starless_test_stars)
+        _log_existing_image(starless_test_stars, write_log, "hybrid stars.tif")
+
+        if green_duoband_raw:
+            write_log("Green duo-band hybrid: skipping broadband June lift to keep the background dark.")
+            june_detail = load_image(starless_test, write_log)
+            measured_color_reference = load_image(calibrated, write_log)
+        else:
+            june_detail = apply_starless_nebula_detail(
+                load_image(starless_test, write_log),
+                write_log,
+                natural_hybrid=True,
+            )
+            measured_color_reference = working_reference
+        colored_detail = apply_measured_color_to_nebula_detail(
+            june_detail,
+            measured_color_reference,
             write_log,
+            star_layer=load_image(starless_test_stars, write_log),
         )
-        if star_density >= 0.055 and not starless_only_requested:
-            write_log("Dense StarNet residual risk detected; skipping starless repair because final will bypass StarNet recombination.")
-        elif star_density >= 0.020:
-            save_tiff(starless_test, repaired_starless, write_log)
-            _log_existing_image(starless_test, write_log, "repaired natural nebula starless.tif")
+        save_tiff(starless_test, colored_detail, write_log)
+        _log_existing_image(starless_test, write_log, "colored June-detail starless.tif")
         if starless_only_requested:
-            write_log("Starless enabled; keeping natural nebula StarNet starless image without recombining stars.")
+            write_log("Starless enabled; keeping colored June-detail starless image.")
             shutil.copy2(starless_test, final)
         else:
-            keep_fraction = 0.16 if weak_snr_nebula_raw else 0.22
-            if star_density >= 0.055:
-                write_log("StarNet bypassed due to dense star residual risk.")
-                write_log("Dense nebula default: preserving natural RGB canvas and applying mild direct star-core reduction.")
-                reduced = _apply_mild_nebula_star_core_reduction(load_image(final, write_log), write_log)
-                save_tiff(final, reduced, write_log)
-            else:
-                write_log(f"Slight Star Reduction enabled; recombining brightest {keep_fraction:.0%} of StarNet star layer.")
-                threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
-                write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
+            keep_fraction = 0.07 if weak_snr_nebula_raw else 0.08
+            write_log(f"Slight Star Reduction enabled; recombining brightest {keep_fraction:.0%} of StarNet star layer.")
+            threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
+            write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
         corrected_final = _orient_like_reference(load_image(final, write_log), working_reference, write_log, "Natural nebula StarNet final")
         save_tiff(final, corrected_final, write_log)
         _log_existing_image(final, write_log, "star-reduced final.tif")

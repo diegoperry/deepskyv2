@@ -108,7 +108,9 @@ def _build_halo_suppressed_star_layer(
     brightness_core = brightness_core * brightness_core * (3.0 - 2.0 * brightness_core)
 
     core_weight = np.clip(np.maximum(compact_core, brightness_core) * core, 0.0, 1.0)
-    halo_weight = np.clip(halo * 0.035 * compact_core, 0.0, 0.04)
+    # Do not re-add the diffuse StarNet difference layer: it contains the colored
+    # rings that appear around bright stars.  A tiny feather avoids hard cut-outs.
+    halo_weight = np.clip(halo * 0.010 * compact_core, 0.0, 0.012)
     weight = np.clip(core_weight + halo_weight, 0.0, 1.0)
 
     if stars.ndim != 3:
@@ -117,7 +119,7 @@ def _build_halo_suppressed_star_layer(
     star_rgb = stars.astype(np.float32)
     lum = star_lum.astype(np.float32)
     neutral = np.repeat(lum[..., None], star_rgb.shape[2], axis=2)
-    halo_mix = halo[..., None] * (1.0 - core_weight[..., None]) * 0.94
+    halo_mix = halo[..., None] * (1.0 - core_weight[..., None]) * 0.985
     star_rgb = np.clip(star_rgb * (1.0 - halo_mix) + neutral * halo_mix, 0.0, 65535.0)
     return star_rgb * weight[..., None]
 

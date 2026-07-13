@@ -1685,20 +1685,46 @@ def apply_natural_nebula_rgb_look(
 
     lum = _luminance(rgb).astype(np.float32)
     rgb8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-    nlm = cv2.fastNlMeansDenoisingColored(rgb8, None, 12, 24, 7, 29).astype(np.float32) / 255.0
+    nlm = cv2.fastNlMeansDenoisingColored(rgb8, None, 16, 30, 7, 29).astype(np.float32) / 255.0
     bilateral = cv2.bilateralFilter(rgb8, d=0, sigmaColor=30, sigmaSpace=17).astype(np.float32) / 255.0
     sky_clean = np.clip(nlm * 0.70 + bilateral * 0.30, 0.0, 1.0)
     sky_clean_lum = _luminance(sky_clean).astype(np.float32)
     sky_clean = np.clip(sky_clean * (lum / np.maximum(sky_clean_lum, 1e-5))[..., None], 0.0, 1.0)
+    # Low-SNR stacks carry visible grain inside faint nebulosity as well as the
+    # empty sky.  Give the object a moderate luminance-preserving cleanup while
+    # retaining broad structure; star cores remain protected.
+    denoise_region = np.maximum(sky_mask, nebula_mask * 0.58)
+    # Protect coherent Flame/Horsehead-style folds and dust lanes.  Measuring
+    # structure between 2 px and 8 px scales rejects most single-pixel grain,
+    # and using luminance keeps the protection independent of the color grade.
+    structure = np.abs(
+        cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 1.8)
+        - cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 8.0)
+    )
+    structure_scale = max(1e-6, float(np.percentile(structure[nebula_mask > 0.10], 96.5))) if np.any(nebula_mask > 0.10) else max(1e-6, float(np.percentile(structure, 98.0)))
+    structure_protect = np.clip(structure / structure_scale, 0.0, 1.0) ** 0.72
+    structure_protect = cv2.GaussianBlur(structure_protect.astype(np.float32), (0, 0), 1.0)
     denoise_mix = np.clip(
-        sky_mask[..., None]
-        * (1.0 - nebula_mask[..., None] * 0.62)
+        denoise_region[..., None]
+        * (1.0 - structure_protect[..., None] * 0.82)
         * (1.0 - star_protect[..., None] * 0.95)
-        * 0.94,
+        * 0.96,
         0.0,
-        0.94,
+        0.96,
     )
     rgb = np.clip(rgb * (1.0 - denoise_mix) + sky_clean * denoise_mix, 0.0, 1.0)
+
+    # Put coherent pre-denoise luminance structure back after the color-neutral
+    # cleanup.  This prevents color processing from turning Flame filaments and
+    # dust lanes into a soft red patch while avoiding restoration in empty sky.
+    restored_lum = _luminance(rgb).astype(np.float32)
+    signed_structure = (
+        cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 1.5)
+        - cv2.GaussianBlur(lum.astype(np.float32), (0, 0), 7.0)
+    )
+    restore_gate = np.clip(nebula_mask * structure_protect * (1.0 - star_protect * 0.92), 0.0, 0.88)
+    restored_lum = np.clip(restored_lum + signed_structure * restore_gate * 0.72, 0.0, 1.0)
+    rgb = np.clip(rgb * (restored_lum / np.maximum(_luminance(rgb), 1e-5))[..., None], 0.0, 1.0)
 
     lum = _luminance(rgb).astype(np.float32)
     measured_chroma = rgb - lum[..., None]
@@ -2095,7 +2121,12 @@ def apply_goal_look(image: np.ndarray, log: LogCallback | None = None, stretch: 
     return _to_uint16(rgb)
 
 
-def apply_starless_nebula_detail(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
+def apply_starless_nebula_detail(
+    image: np.ndarray,
+    log: LogCallback | None = None,
+    *,
+    natural_hybrid: bool = False,
+) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:
         return arr
@@ -2118,14 +2149,17 @@ def apply_starless_nebula_detail(image: np.ndarray, log: LogCallback | None = No
     filament = np.clip(fine * dust_field, 0.0, 1.0)
     filament = cv2.GaussianBlur(filament.astype(np.float32), (0, 0), 1.0)
 
-    lift_strength = 0.24 + 0.58 * reflection_bias
+    # The original June lift is useful for a stylized finish, but applying it
+    # before measured color creates a broad gray veil.  Hybrid mode keeps the
+    # June local contrast while giving the sky almost no additive lift.
+    lift_strength = 0.045 if natural_hybrid else 0.24 + 0.58 * reflection_bias
     lifted = np.clip(rgb + (1.0 - rgb) * dust_field[..., None] * lift_strength, 0.0, 1.0)
 
     lifted_lum = _luminance(lifted)
     contrast = np.clip(
         lifted_lum
         + (lifted_lum - cv2.GaussianBlur(lifted_lum.astype(np.float32), (0, 0), 9.0))
-        * (0.12 + 0.32 * reflection_bias)
+        * (0.20 if natural_hybrid else 0.12 + 0.32 * reflection_bias)
         * np.clip(dust_field + filament, 0.0, 1.0),
         0.0,
         1.0,
@@ -2133,7 +2167,7 @@ def apply_starless_nebula_detail(image: np.ndarray, log: LogCallback | None = No
     lifted = np.clip(lifted * (contrast / np.maximum(lifted_lum, 1e-5))[..., None], 0.0, 1.0)
 
     lifted_lum = _luminance(lifted)
-    if reflection_bias > 0.05:
+    if reflection_bias > 0.05 and not natural_hybrid:
         cool_target = lifted_lum[..., None] * np.array([0.90, 0.99, 1.12], dtype=np.float32).reshape(1, 1, 3)
         warm_target = lifted_lum[..., None] * np.array([1.16, 1.05, 0.86], dtype=np.float32).reshape(1, 1, 3)
         cool_mix = np.clip(filament[..., None] * 0.24 * reflection_bias, 0.0, 0.26)
@@ -2142,7 +2176,7 @@ def apply_starless_nebula_detail(image: np.ndarray, log: LogCallback | None = No
         lifted = np.clip(lifted * (1.0 - warm_mix) + warm_target * warm_mix, 0.0, 1.0)
 
     lifted_lum = _luminance(lifted)
-    chroma_boost = 1.0 + dust_field[..., None] * (0.08 + 0.26 * reflection_bias)
+    chroma_boost = 1.0 if natural_hybrid else 1.0 + dust_field[..., None] * (0.08 + 0.26 * reflection_bias)
     lifted = np.clip(lifted_lum[..., None] + (lifted - lifted_lum[..., None]) * chroma_boost, 0.0, 1.0)
 
     lifted_lum = _luminance(lifted)
@@ -2153,15 +2187,106 @@ def apply_starless_nebula_detail(image: np.ndarray, log: LogCallback | None = No
         1.0,
     )
     sky *= np.clip(1.0 - dust_field * 1.10, 0.0, 1.0)
-    lifted = np.clip(lifted * (1.0 - sky[..., None] * (0.16 + 0.20 * reflection_bias)), 0.0, 1.0)
+    sky_darkening = 0.38 if natural_hybrid else 0.16 + 0.20 * reflection_bias
+    lifted = np.clip(lifted * (1.0 - sky[..., None] * sky_darkening), 0.0, 1.0)
 
     if log:
         log(
             "Enhanced starless nebula detail: "
             f"dust_field_mean={float(np.mean(dust_field)):.5f}, "
-            f"filament_mean={float(np.mean(filament)):.5f}, reflection_bias={float(reflection_bias):.3f}"
+            f"filament_mean={float(np.mean(filament)):.5f}, reflection_bias={float(reflection_bias):.3f}, "
+            f"natural_hybrid={natural_hybrid}"
         )
     return _to_uint16(lifted)
+
+
+def apply_measured_color_to_nebula_detail(
+    detail_image: np.ndarray,
+    color_reference: np.ndarray,
+    log: LogCallback | None = None,
+    *,
+    star_layer: np.ndarray | None = None,
+) -> np.ndarray:
+    """Transfer measured RGB chroma while preserving the detailed luminance exactly.
+
+    The June pipeline's strength was its starless luminance structure.  Color is
+    deliberately treated as a low-frequency layer here so it cannot paint over
+    filaments, dust lanes, or small contrast transitions.
+    """
+    detail = _to_float01(np.asarray(detail_image))
+    reference = _to_float01(np.asarray(color_reference))
+    if detail.ndim != 3 or reference.ndim != 3 or detail.shape != reference.shape:
+        return np.asarray(detail_image)
+
+    detail_lum = _luminance(detail).astype(np.float32)
+    ref_lum = _luminance(reference).astype(np.float32)
+
+    # Chroma per unit luminance preserves hue without importing the reference's
+    # blurred/painted luminance.  Blur chroma only, never the structural layer.
+    ref_chroma = reference - ref_lum[..., None]
+    chroma_ratio = ref_chroma / np.maximum(ref_lum[..., None], 0.025)
+    chroma_ratio = np.clip(chroma_ratio, -0.72, 0.72)
+    chroma_ratio = cv2.GaussianBlur(chroma_ratio.astype(np.float32), (0, 0), 1.15)
+
+    broad = cv2.GaussianBlur(detail_lum, (0, 0), 18.0)
+    low = float(np.percentile(broad, 38.0))
+    high = float(np.percentile(broad, 99.0))
+    signal = np.clip((broad - low) / max(1e-6, high - low), 0.0, 1.0) ** 0.72
+    signal = cv2.GaussianBlur(signal.astype(np.float32), (0, 0), 2.2)
+
+    # Keep empty sky neutral and restrained while allowing actual nebulosity to
+    # retain the measured red/cyan balance from calibration.
+    chroma_strength = 0.14 + signal[..., None] * 0.88
+    star_halo = np.zeros_like(detail_lum, dtype=np.float32)
+    if star_layer is not None:
+        stars = _to_float01(np.asarray(star_layer))
+        if stars.shape == detail.shape:
+            star_lum = np.max(stars, axis=2).astype(np.float32)
+            star_high = max(1e-6, float(np.percentile(star_lum, 99.92)))
+            star_core = np.clip((star_lum - star_high * 0.16) / (star_high * 0.84), 0.0, 1.0) ** 1.35
+            star_halo = cv2.GaussianBlur(star_core, (0, 0), 5.0)
+            star_halo = np.clip(star_halo * 1.35, 0.0, 1.0)
+            # Colored rings are much more conspicuous than neutral optical
+            # bloom.  Keep luminance intact and remove only chroma near stars.
+            chroma_strength *= (1.0 - star_halo[..., None] * 0.92)
+    colored = np.clip(detail_lum[..., None] * (1.0 + chroma_ratio * chroma_strength), 0.0, 1.0)
+    colored_lum = _luminance(colored).astype(np.float32)
+    colored = np.clip(colored * (detail_lum / np.maximum(colored_lum, 1e-5))[..., None], 0.0, 1.0)
+
+    # Anchor empty sky near black without crushing nebula structure.  This is a
+    # scalar luminance adjustment, so it cannot manufacture or steer hue.
+    quiet_sky = (signal < 0.10) & (star_halo < 0.05)
+    black = float(np.percentile(detail_lum[quiet_sky], 52.0)) if np.count_nonzero(quiet_sky) > 512 else float(np.percentile(detail_lum, 18.0))
+    black_point = black * 0.82
+    dark_lum = np.clip((detail_lum - black_point) / max(1e-6, 1.0 - black_point), 0.0, 1.0)
+    current_lum = _luminance(colored).astype(np.float32)
+    colored = np.clip(colored * (dark_lum / np.maximum(current_lum, 1e-5))[..., None], 0.0, 1.0)
+    detail_lum = dark_lum
+
+    # Denoise genuinely empty sky only.  Mid-scale structure protects real dust
+    # and filament transitions, so the June detail layer is not blurred again.
+    band = np.abs(
+        cv2.GaussianBlur(detail_lum, (0, 0), 1.8)
+        - cv2.GaussianBlur(detail_lum, (0, 0), 7.5)
+    )
+    band_scale = max(1e-6, float(np.percentile(band, 98.0)))
+    structure = np.clip(band / band_scale, 0.0, 1.0) ** 0.70
+    sky = np.clip((1.0 - signal * 1.28) * (1.0 - structure * 0.90) * (1.0 - star_halo), 0.0, 1.0)
+    colored8 = np.clip(colored * 255.0, 0, 255).astype(np.uint8)
+    clean = cv2.fastNlMeansDenoisingColored(colored8, None, 11, 20, 7, 25).astype(np.float32) / 255.0
+    clean_lum = _luminance(clean).astype(np.float32)
+    clean = np.clip(clean * (detail_lum / np.maximum(clean_lum, 1e-5))[..., None], 0.0, 1.0)
+    sky_mix = np.clip(sky[..., None] * 0.88, 0.0, 0.88)
+    colored = np.clip(colored * (1.0 - sky_mix) + clean * sky_mix, 0.0, 1.0)
+
+    if log:
+        log(
+            "Applied measured chroma to June-detail luminance: "
+            f"signal_mean={float(np.mean(signal)):.5f}; "
+            f"detail_luminance_delta={float(np.mean(np.abs(_luminance(colored) - detail_lum))):.7f}; "
+            f"sky_denoise_mean={float(np.mean(sky)):.5f}; star_halo_mean={float(np.mean(star_halo)):.5f}"
+        )
+    return _to_uint16(colored)
 
 
 def apply_cosmos_style_nebula_finish(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
