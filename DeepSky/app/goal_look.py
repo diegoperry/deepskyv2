@@ -1578,13 +1578,16 @@ def apply_natural_nebula_rgb_look(
 
     sky_before = np.median(rgb[sky_pixels], axis=0) if int(np.count_nonzero(sky_pixels)) >= 512 else np.median(rgb.reshape(-1, 3), axis=0)
     neutral = float(np.mean(sky_before))
-    gains = np.clip(neutral / np.maximum(sky_before, 1e-5), 0.82, 1.18).astype(np.float32)
+    if catalog_color:
+        gains = np.clip(neutral / np.maximum(sky_before, 1e-5), 0.82, 1.18).astype(np.float32)
+    else:
+        gains = np.clip(neutral / np.maximum(sky_before, 1e-5), 0.64, 1.34).astype(np.float32)
     balanced = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
     neutral_mix = np.clip(
-        sky_mask[..., None] * (0.78 if catalog_color else 0.68)
-        + nebula_mask[..., None] * (0.055 if catalog_color else 0.035),
+        sky_mask[..., None] * (0.78 if catalog_color else 0.86)
+        + nebula_mask[..., None] * (0.055 if catalog_color else 0.070),
         0.0,
-        0.84 if catalog_color else 0.72,
+        0.84 if catalog_color else 0.90,
     )
     rgb = np.clip(rgb * (1.0 - neutral_mix) + balanced * neutral_mix, 0.0, 1.0)
 
@@ -1592,12 +1595,66 @@ def apply_natural_nebula_rgb_look(
     # fallback must not inject or replace hue from another image stage.
     ref_sky = np.median(reference[sky_pixels], axis=0) if int(np.count_nonzero(sky_pixels)) >= 512 else np.median(reference.reshape(-1, 3), axis=0)
 
+    if not catalog_color:
+        # Unsolved smart-telescope nebula frames can carry broad G/B gradients
+        # that are not real object color. Remove only the measured large-scale
+        # sky field; leave local RGB ratios and filament texture intact.
+        sample_weight = np.clip(
+            sky_mask * (1.0 - star_protect * 0.92) * edge_support,
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        if int(np.count_nonzero(sample_weight > 0.18)) >= 2048:
+            sigma = max(36.0, min(height, width) * 0.070)
+            weight_blur = cv2.GaussianBlur(sample_weight, (0, 0), sigma)
+            weighted_rgb = cv2.GaussianBlur(rgb * sample_weight[..., None], (0, 0), sigma)
+            background_field = weighted_rgb / np.maximum(weight_blur[..., None], 1e-4)
+            sky_anchor = (
+                np.median(rgb[sky_pixels], axis=0)
+                if int(np.count_nonzero(sky_pixels)) >= 512
+                else np.median(rgb.reshape(-1, 3), axis=0)
+            ).astype(np.float32)
+            gradient = background_field - sky_anchor.reshape(1, 1, 3)
+            gradient_mix = np.clip(
+                (sky_mask * 0.86 + nebula_mask * 0.22)
+                * (1.0 - star_protect * 0.88)
+                * edge_support,
+                0.0,
+                0.86,
+            )
+            rgb = np.clip(rgb - gradient * gradient_mix[..., None] * 0.82, 0.0, 1.0)
+            if log:
+                field_spread = np.percentile(background_field.reshape(-1, 3), 92.0, axis=0) - np.percentile(background_field.reshape(-1, 3), 8.0, axis=0)
+                log(
+                    "Applied no-SPCC nebula sky-gradient cleanup: "
+                    f"sigma={sigma:.1f}, sample_pixels={int(np.count_nonzero(sample_weight > 0.18))}, "
+                    f"field_spread_RGB={field_spread[0]:.5f}, {field_spread[1]:.5f}, {field_spread[2]:.5f}"
+                )
+
     # Green sky speckle is a common smart-telescope artifact. Suppress it only
     # in background regions; do not favor any nebula hue.
     lum = _luminance(rgb).astype(np.float32)
     green_excess = np.maximum(0.0, rgb[..., 1] - (rgb[..., 0] * 0.52 + rgb[..., 2] * 0.48))
-    green_reduction = np.clip(sky_mask * (1.0 - nebula_mask * 0.85) * (1.0 - star_protect * 0.90), 0.0, 0.70)
+    green_reduction = np.clip(
+        (sky_mask + (0.0 if catalog_color else nebula_mask * 0.34))
+        * (1.0 - nebula_mask * (0.85 if catalog_color else 0.22))
+        * (1.0 - star_protect * 0.90),
+        0.0,
+        0.70 if catalog_color else 0.96,
+    )
     rgb[..., 1] = np.clip(rgb[..., 1] - green_excess * green_reduction, 0.0, 1.0)
+    if not catalog_color and log:
+        log("Non-photometric nebula fallback: skipped target cast steering; preserving measured RGB ratios.")
+    lum = _luminance(rgb).astype(np.float32)
+    sky_chroma_clean = np.clip(
+        sky_mask[..., None]
+        * (1.0 - nebula_mask[..., None] * (0.78 if catalog_color else 0.56))
+        * (1.0 - star_protect[..., None] * 0.92)
+        * (0.20 if catalog_color else 0.42),
+        0.0,
+        0.42,
+    )
+    rgb = np.clip(rgb * (1.0 - sky_chroma_clean) + lum[..., None] * sky_chroma_clean, 0.0, 1.0)
 
     lum = _luminance(rgb).astype(np.float32)
     if int(np.count_nonzero(sky_pixels)) >= 512:
@@ -1615,14 +1672,14 @@ def apply_natural_nebula_rgb_look(
 
     soft_lum = np.arcsinh(lum * 3.9) / np.arcsinh(3.9)
     lift = np.clip(
-        nebula_mask * (1.10 if catalog_color else 0.82)
-        + sky_mask * (0.095 if catalog_color else 0.075),
+        nebula_mask * (1.10 if catalog_color else 1.02)
+        + sky_mask * (0.095 if catalog_color else 0.062),
         0.0,
-        0.92 if catalog_color else 0.78,
+        0.92 if catalog_color else 0.86,
     )
     target_lum = np.clip(lum * (1.0 - lift) + soft_lum * lift, 0.0, 1.0)
     nebula_reveal = np.clip(nebula_mask * (1.0 - star_protect * 0.72), 0.0, 1.0)
-    target_lum = np.clip(target_lum + nebula_reveal * (1.0 - target_lum) * (0.275 if catalog_color else 0.16), 0.0, 1.0)
+    target_lum = np.clip(target_lum + nebula_reveal * (1.0 - target_lum) * (0.275 if catalog_color else 0.23), 0.0, 1.0)
     target_lum = np.maximum(target_lum, sky_mask * min(0.078, max(0.020, sky_floor * 0.95)))
     rgb = np.clip(rgb * (target_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
 
@@ -1650,10 +1707,24 @@ def apply_natural_nebula_rgb_look(
     # hue replacement. Keep the sky restrained and let nebulosity keep gradients.
     chroma_gain = (
         1.0
-        + nebula_mask[..., None] * (0.44 if catalog_color else 0.24)
-        - sky_mask[..., None] * (0.38 if catalog_color else 0.24)
+        + nebula_mask[..., None] * (0.44 if catalog_color else 0.30)
+        - sky_mask[..., None] * (0.38 if catalog_color else 0.52)
     )
     rgb = np.clip(lum[..., None] + chroma * chroma_gain, 0.0, 1.0)
+    if not catalog_color:
+        final_lum = _luminance(rgb).astype(np.float32)
+        green_floor = np.maximum(rgb[..., 0], rgb[..., 2]) * 0.86 + np.minimum(rgb[..., 0], rgb[..., 2]) * 0.14
+        green_excess = np.maximum(0.0, rgb[..., 1] - green_floor)
+        green_cast_weight = np.clip(
+            (sky_mask * 0.82 + nebula_mask * 0.48)
+            * (1.0 - star_protect * 0.94),
+            0.0,
+            0.82,
+        )
+        corrected = rgb.copy()
+        corrected[..., 1] = np.clip(corrected[..., 1] - green_excess * green_cast_weight, 0.0, 1.0)
+        corrected_lum = _luminance(corrected).astype(np.float32)
+        rgb = np.clip(corrected * (final_lum / np.maximum(corrected_lum, 1e-5))[..., None], 0.0, 1.0)
 
     # Keep nebula color from calibrated RGB chroma only. Earlier red-target
     # blending made bright Flame/Horsehead highlights look painted.
@@ -1684,9 +1755,9 @@ def apply_natural_nebula_rgb_look(
         field_chroma_noise[..., None]
         * sky_mask[..., None]
         * (1.0 - nebula_mask[..., None] * 0.88)
-        * 0.42,
+        * (0.42 if catalog_color else 0.70),
         0.0,
-        0.42,
+        0.42 if catalog_color else 0.70,
     )
     total_desat = np.clip(star_desat + field_desat, 0.0, 0.62)
     rgb = np.clip(rgb * (1.0 - total_desat) + lum[..., None] * total_desat, 0.0, 1.0)
@@ -1705,7 +1776,7 @@ def apply_natural_nebula_rgb_look(
         3.0,
     )
     body_lift *= np.clip((0.62 - lum) / 0.50, 0.0, 1.0)
-    lifted_lum = np.clip(lum + body_lift * (1.0 - lum) * (0.24 if catalog_color else 0.15), 0.0, 1.0)
+    lifted_lum = np.clip(lum + body_lift * (1.0 - lum) * (0.24 if catalog_color else 0.22), 0.0, 1.0)
     rgb = np.clip(rgb * (lifted_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
 
     lum = _luminance(rgb).astype(np.float32)

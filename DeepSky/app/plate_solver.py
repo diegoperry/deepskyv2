@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -17,6 +18,8 @@ import astropy.units as u
 LogCallback = Callable[[str], None]
 FITS_SUFFIXES = {".fit", ".fits", ".fts"}
 ASTAP_ENV = "ASTAP_EXE"
+ASTAP_PATH_ENV = "ASTAP_PATH"
+ASTAP_DATABASE_ENV = "ASTAP_DATABASE_DIR"
 
 
 @dataclass
@@ -122,21 +125,107 @@ def _header_result(path: Path) -> PlateSolveResult:
 
 
 def find_astap_executable() -> Path | None:
-    env = os.environ.get(ASTAP_ENV)
-    candidates = []
-    if env:
-        candidates.append(Path(env))
+    candidates: list[Path] = []
+    for env_name in (ASTAP_ENV, ASTAP_PATH_ENV):
+        env = os.environ.get(env_name)
+        if not env:
+            continue
+        env_path = Path(env)
+        candidates.append(env_path)
+        if env_path.is_dir():
+            candidates.append(env_path / "astap.exe")
+
+    for command_name in ("astap.exe", "astap"):
+        found = shutil.which(command_name)
+        if found:
+            candidates.append(Path(found))
+
     candidates.extend(
         [
+            Path(r"C:\Program Files\ASTAP\astap.exe"),
             Path(r"C:\Program Files\astap\astap.exe"),
+            Path(r"C:\Program Files (x86)\ASTAP\astap.exe"),
             Path(r"C:\Program Files (x86)\astap\astap.exe"),
             Path(r"C:\Apps\ASTAP\astap.exe"),
+            Path(r"C:\Apps\astap\astap.exe"),
+            Path(r"C:\astap\astap.exe"),
+            Path(r"C:\Apps\deepskyv2\tools\astap\astap.exe"),
         ]
+    )
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def find_astap_database(astap_exe: Path | None = None) -> Path | None:
+    """Return the folder that appears to contain an ASTAP star database.
+
+    ASTAP itself is only the solver executable. Blind solving also needs one of
+    the H/G/D star databases installed. Without it, ASTAP can sit for minutes
+    and never produce WCS, so detect that case before launching it.
+    """
+    candidates: list[Path] = []
+    env = os.environ.get(ASTAP_DATABASE_ENV)
+    if env:
+        candidates.append(Path(env))
+    if astap_exe is not None:
+        candidates.append(Path(astap_exe).resolve().parent)
+    candidates.extend(
+        [
+            Path(r"C:\Program Files\ASTAP"),
+            Path(r"C:\Program Files\astap"),
+            Path(r"C:\Program Files (x86)\ASTAP"),
+            Path(r"C:\Program Files (x86)\astap"),
+            Path(r"C:\Apps\ASTAP"),
+            Path(r"C:\Apps\astap"),
+            Path(r"C:\astap"),
+            Path(r"C:\Apps\deepskyv2\tools\astap"),
+        ]
+    )
+
+    seen: set[str] = set()
+    database_patterns = (
+        "h*.290",
+        "g*.290",
+        "d*.290",
+        "h*.1476",
+        "g*.1476",
+        "d*.1476",
+        "h18",
+        "g18",
+        "d18",
     )
     for candidate in candidates:
         try:
-            if candidate.is_file():
-                return candidate
+            folder = candidate.expanduser().resolve()
+        except Exception:
+            folder = candidate.expanduser()
+        key = str(folder).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if not folder.is_dir():
+                continue
+            for pattern in database_patterns:
+                if any(folder.glob(pattern)):
+                    return folder
+            for file_path in folder.iterdir():
+                if (
+                    file_path.is_file()
+                    and re.match(r"^[dgh]\d{2}", file_path.name.lower())
+                    and file_path.stat().st_size > 1_000_000
+                ):
+                    return folder
         except OSError:
             continue
     return None
@@ -168,12 +257,40 @@ def run_astap_plate_solve(input_path: Path, log: LogCallback | None = None) -> P
     exe = find_astap_executable()
     if exe is None:
         return PlateSolveResult(False, "unknown", None, None, None, None, None, None, None, "astap", "ASTAP executable not found")
+    database = find_astap_database(exe)
+    if database is None:
+        return PlateSolveResult(
+            False,
+            "unknown",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "astap",
+            "ASTAP executable found, but no ASTAP H/G/D star database was found. Install an ASTAP star database for plate solving.",
+        )
 
-    command = [str(exe), "-f", str(input_path), "-r", "180", "-z", "0"]
+    metadata = _header_result(input_path)
+    command = [str(exe), "-f", str(input_path), "-r", "12", "-z", "0", "-d", str(database), "-D", "d50", "-wcs", "-log"]
+    if metadata.ra_deg is not None and metadata.dec_deg is not None:
+        command.extend(["-ra", f"{metadata.ra_deg / 15.0:.8f}", "-spd", f"{metadata.dec_deg + 90.0:.8f}"])
+    if metadata.fov_height_deg is not None:
+        command.extend(["-fov", f"{metadata.fov_height_deg:.8f}"])
     if log:
-        log(f"Plate solving with ASTAP: {' '.join(command)}")
+        log(f"ASTAP star database found: {database}")
+        if metadata.ra_deg is not None and metadata.dec_deg is not None:
+            log(
+                "ASTAP solve hints: "
+                f"ra_hours={metadata.ra_deg / 15.0:.6f}, "
+                f"spd={metadata.dec_deg + 90.0:.6f}, "
+                f"fov_height_deg={metadata.fov_height_deg if metadata.fov_height_deg is not None else 'unknown'}"
+            )
+        log(f"Plate solving with ASTAP experimental fast path: {' '.join(command)}")
     try:
-        completed = subprocess.run(command, cwd=str(input_path.parent), capture_output=True, text=True, timeout=180, check=False)
+        completed = subprocess.run(command, cwd=str(input_path.parent), capture_output=True, text=True, timeout=8, check=False)
     except Exception as exc:
         return PlateSolveResult(False, "unknown", None, None, None, None, None, None, None, "astap", str(exc))
 

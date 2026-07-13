@@ -40,7 +40,7 @@ from .image_io import (
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
 from .image_math import add_bright_star_fraction, add_images, add_weighted_star_layer, subtract_images
-from .plate_solver import solve_image, write_plate_solve_debug, write_wcs_enriched_fits
+from .plate_solver import find_astap_database, find_astap_executable, solve_image, write_plate_solve_debug, write_wcs_enriched_fits
 from .python_color_calibration import python_fallback_color_calibration
 from .settings import AppSettings
 from .siril_cli import (
@@ -650,11 +650,11 @@ def _apply_reflection_nebula_color_preserve(image: np.ndarray, write_log: LogCal
 
     lum = _rgb_luminance(rgb).astype(np.float32)
     chroma = rgb - lum[..., None]
-    warm_bias = np.array([0.038, 0.008, -0.030], dtype=np.float32).reshape(1, 1, 3)
-    warm = np.clip(lum[..., None] + chroma * (1.0 + nebula[..., None] * 1.35) + warm_bias * nebula[..., None], 0.0, 1.0)
+    warm = np.clip(lum[..., None] + chroma * (1.0 + nebula[..., None] * 0.72), 0.0, 1.0)
     warm_lum = _rgb_luminance(warm).astype(np.float32)
     warm = np.clip(warm * (lum / np.maximum(warm_lum, 1e-5))[..., None], 0.0, 1.0)
-    rgb = np.clip(rgb * (1.0 - nebula[..., None] * 0.68) + warm * (nebula[..., None] * 0.68), 0.0, 1.0)
+    rgb = np.clip(rgb * (1.0 - nebula[..., None] * 0.42) + warm * (nebula[..., None] * 0.42), 0.0, 1.0)
+    write_log("Reflection nebula fallback: preserved measured RGB chroma; no fixed warm/red color vector applied.")
 
     lum = _rgb_luminance(rgb).astype(np.float32)
     green_excess = np.maximum(0.0, rgb[..., 1] - (rgb[..., 0] * 0.58 + rgb[..., 2] * 0.42))
@@ -1487,10 +1487,7 @@ def _orient_like_reference(image: np.ndarray, reference: np.ndarray, write_log: 
         f"{label} orientation scores: "
         + ", ".join(f"{name}={score:.5f}" for name, _, score in scores)
     )
-    if best_name != "original" and best_score > original_score + 0.035:
-        write_log(f"{label} orientation corrected using {best_name}.")
-        return np.ascontiguousarray(best_image)
-    write_log(f"{label} orientation preserved.")
+    write_log(f"{label} orientation preserved; automatic flip correction is disabled for pipeline safety.")
     return arr
 
 
@@ -1518,6 +1515,9 @@ def _run_siril_calibration(
 
     siril_exe = find_siril_executable(Path(settings.siril_folder))
     if not siril_exe:
+        if object_type == "nebula":
+            write_log("Siril executable not found; preserving measured RGB for nebula natural finish.")
+            return _run_nebula_measured_rgb_fallback(working, stretched, calibrated, write_log)
         write_log("Siril executable not found; using Python fallback color calibration.")
         return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
 
@@ -1536,10 +1536,25 @@ def _run_siril_calibration(
     pcc_available = mode == "Siril Photometric" and bool(pcc_command)
     if object_type == "nebula" and not pcc_available:
         if mode == "Siril Photometric":
-            write_log("Nebula SPCC/PCC metadata unavailable; using non-photometric measured-RGB fallback.")
+            write_log("Nebula SPCC/PCC metadata unavailable; using Siril background extraction plus non-photometric measured-RGB fallback.")
+            if local_spcc_catalog:
+                astap_exe = find_astap_executable()
+                write_log(f"Local Gaia SPCC catalog found: {local_spcc_catalog}")
+                if astap_exe:
+                    astap_db = find_astap_database(astap_exe)
+                    write_log(f"ASTAP found for plate-solving fallback: {astap_exe}")
+                    if astap_db:
+                        write_log(f"ASTAP star database found: {astap_db}")
+                    else:
+                        write_log("ASTAP star database not found; SPCC cannot plate-solve unsolved FITS files yet.")
+                else:
+                    write_log("ASTAP executable not found; SPCC still requires solved WCS metadata or ASTAP plate solving.")
+            else:
+                write_log("Local Gaia SPCC catalog not found; SPCC/PCC cannot use local Gaia calibration.")
         else:
-            write_log("Nebula non-photometric color mode; using measured-RGB fallback without Siril local color script.")
-        return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
+            write_log("Nebula non-photometric color mode; using Siril background extraction before measured-RGB fallback finish.")
+        write_log("Nebula non-photometric fallback selected before Siril local color scripts.")
+        return _run_nebula_measured_rgb_fallback(working, stretched, calibrated, write_log)
     if pcc_available:
         siril_input = job_folder / original.name
         if siril_input.resolve() != original.resolve():
@@ -1660,10 +1675,10 @@ def _run_siril_calibration(
             if object_type == "nebula":
                 write_log(
                     "SPCC/PCC failed, using non-photometric color fallback. "
-                    "Bypassing Siril local color script to preserve measured RGB and original orientation. "
+                    "Bypassing Siril/Python color scripts to preserve measured RGB and original orientation. "
                     f"Error: {exc}"
                 )
-                return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
+                return _run_nebula_measured_rgb_fallback(working, stretched, calibrated, write_log)
             write_log(
                 "Siril PCC failed; trying Siril local background/color calibration before Python fallback. "
                 f"Error: {exc}"
@@ -1697,6 +1712,12 @@ def _run_siril_calibration(
             catalog_calibration_path = "fallback"
             write_log("Siril local fallback color calibration succeeded.")
         elif mode == "Basic":
+            if object_type == "nebula":
+                write_log(
+                    f"Siril {mode} failed; preserving measured RGB for nebula natural finish. "
+                    f"Error: {exc}"
+                )
+                return _run_nebula_measured_rgb_fallback(working, stretched, calibrated, write_log)
             write_log(f"Siril {mode} failed; using Python fallback color calibration. Error: {exc}")
             return _run_python_fallback_calibration(working, stretched, calibrated, settings, write_log)
         else:
@@ -1834,6 +1855,24 @@ def _run_python_fallback_calibration(
     else:
         calibrated_image = apply_broadband_look(python_color, write_log)
     save_tiff(calibrated, calibrated_image, write_log)
+    _log_existing_image(calibrated, write_log, "calibrated.tif")
+    shutil.copy2(calibrated, stretched)
+    _log_existing_image(stretched, write_log, "stretched.tif")
+    return calibrated
+
+
+def _run_nebula_measured_rgb_fallback(
+    working: Path,
+    stretched: Path,
+    calibrated: Path,
+    write_log: LogCallback,
+) -> Path:
+    source = load_image(working, write_log)
+    write_log(
+        "Nebula non-photometric fallback: preserving measured RGB pixels; "
+        "no Siril local color script, no Python color rebalance, no synthetic hue injection."
+    )
+    save_tiff(calibrated, source, write_log)
     _log_existing_image(calibrated, write_log, "calibrated.tif")
     shutil.copy2(calibrated, stretched)
     _log_existing_image(stretched, write_log, "stretched.tif")
@@ -2170,7 +2209,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         else:
             write_log("SPCC/PCC failed, using non-photometric color fallback.")
             write_log("Nebula natural RGB pipeline: SPCC/PCC unavailable; using conservative measured-RGB fallback to avoid painted color.")
-        write_log("Nebula natural RGB pipeline: using Siril-calibrated RGB with internal masked sky denoise; skipping legacy StarNet color-separation composer.")
+        write_log(
+            "Nebula natural RGB pipeline: measured RGB only; no synthetic color painting, "
+            "no warm_bias/red_bias/cyan_bias, no HOO/showcase color mapping."
+        )
+        write_log("Nebula natural RGB pipeline: using calibrated/measured RGB with internal masked sky denoise; skipping legacy StarNet color-separation composer.")
         working_reference = load_image(working, write_log)
         natural_nebula = apply_natural_nebula_rgb_look(
             load_image(current, write_log),

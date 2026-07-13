@@ -261,7 +261,7 @@ def _fallback_remove_green(rgb: np.ndarray, log: LogCallback | None) -> np.ndarr
     return output
 
 
-def _duoband_emission_green_control(rgb: np.ndarray, log: LogCallback | None) -> np.ndarray:
+def _safe_background_green_control(rgb: np.ndarray, log: LogCallback | None) -> np.ndarray:
     luminance = _luminance(rgb)
     sky_mask = luminance < np.percentile(luminance, 55.0)
     if int(np.count_nonzero(sky_mask)) < 256:
@@ -273,11 +273,11 @@ def _duoband_emission_green_control(rgb: np.ndarray, log: LogCallback | None) ->
         return rgb
 
     output = rgb.copy()
-    neutral_green = 0.58 * output[..., 0] + 0.42 * output[..., 2]
+    neutral_green = 0.50 * output[..., 0] + 0.50 * output[..., 2]
     excess = np.maximum(0.0, output[..., 1] - neutral_green)
     sky_weight = np.clip(
-        (np.percentile(luminance, 78.0) - luminance)
-        / max(1e-6, np.percentile(luminance, 78.0) - np.percentile(luminance, 3.0)),
+        (np.percentile(luminance, 70.0) - luminance)
+        / max(1e-6, np.percentile(luminance, 70.0) - np.percentile(luminance, 5.0)),
         0.0,
         1.0,
     )
@@ -287,27 +287,61 @@ def _duoband_emission_green_control(rgb: np.ndarray, log: LogCallback | None) ->
         0.0,
         1.0,
     )
-    reduction = np.clip((0.88 * sky_weight + 0.55) * (1.0 - star_weight * 0.70), 0.0, 0.95)
+    # Only remove a measured green cast from dark sky. Do not boost red or
+    # recolor target signal; this is a non-photometric fallback.
+    reduction = np.clip(sky_weight * (1.0 - star_weight * 0.85) * 0.42, 0.0, 0.42)
     output[..., 1] = np.clip(output[..., 1] - excess * reduction, 0.0, 1.0)
-
-    red_signal = np.clip(
-        (output[..., 0] - np.percentile(output[..., 0], 55.0))
-        / max(1e-6, np.percentile(output[..., 0], 99.2) - np.percentile(output[..., 0], 55.0)),
-        0.0,
-        1.0,
-    )
-    emission_boost = np.clip(red_signal * (1.0 - star_weight) * 0.22, 0.0, 0.22)
-    output[..., 0] = np.clip(output[..., 0] * (1.0 + emission_boost), 0.0, 1.0)
 
     if log:
         after = np.median(output[sky_mask], axis=0)
         log(
-            "Python duo-band green control: "
+            "Python fallback background green control: "
             f"sky_before_RGB={sky[0]:.5f}, {sky[1]:.5f}, {sky[2]:.5f}, "
             f"sky_after_RGB={after[0]:.5f}, {after[1]:.5f}, {after[2]:.5f}, "
             f"mean_reduction={float(np.mean(reduction)):.5f}"
         )
     return np.clip(output, 0.0, 1.0)
+
+
+def _restore_measured_chroma(
+    rgb: np.ndarray,
+    reference: np.ndarray,
+    log: LogCallback | None,
+    *,
+    strength: float = 0.34,
+) -> np.ndarray:
+    """Amplify measured RGB chroma without assigning preset nebula colors."""
+    luminance = _luminance(rgb)
+    reference_luminance = _luminance(reference)
+    reference_chroma = reference - reference_luminance[..., None]
+
+    signal = np.clip(
+        (luminance - np.percentile(luminance, 38.0))
+        / max(1e-6, np.percentile(luminance, 99.1) - np.percentile(luminance, 38.0)),
+        0.0,
+        1.0,
+    )
+    star_weight = np.clip(
+        (luminance - np.percentile(luminance, 96.8))
+        / max(1e-6, np.percentile(luminance, 99.95) - np.percentile(luminance, 96.8)),
+        0.0,
+        1.0,
+    )
+    sky_weight = np.clip(1.0 - signal * 1.35, 0.0, 1.0)
+    chroma_gain = np.clip(1.0 + signal[..., None] * strength - sky_weight[..., None] * 0.18, 0.72, 1.42)
+    restored = np.clip(luminance[..., None] + reference_chroma * chroma_gain, 0.0, 1.0)
+
+    mix = np.clip(signal[..., None] * (1.0 - star_weight[..., None] * 0.78) * 0.58, 0.0, 0.58)
+    output = np.clip(rgb * (1.0 - mix) + restored * mix, 0.0, 1.0)
+    if log:
+        before_chroma = float(np.median(np.max(rgb, axis=2) - np.min(rgb, axis=2)))
+        after_chroma = float(np.median(np.max(output, axis=2) - np.min(output, axis=2)))
+        log(
+            "Python fallback measured chroma restore: "
+            f"strength={strength:.2f}, mean_mix={float(np.mean(mix)):.5f}, "
+            f"median_chroma_before={before_chroma:.5f}, median_chroma_after={after_chroma:.5f}"
+        )
+    return output
 
 
 def _color_calibrate(rgb: np.ndarray, log: LogCallback | None) -> np.ndarray:
@@ -378,11 +412,23 @@ def _neutralize_sky(rgb: np.ndarray, log: LogCallback | None) -> np.ndarray:
             log("Python sky neutralization skipped: not enough dark sky pixels.")
         return rgb
     sky = np.median(rgb[mask], axis=0)
-    output = np.clip(rgb - (sky * 0.90).reshape(1, 1, 3), 0.0, 1.0)
+    neutral = float(np.mean(sky))
+    gains = np.clip(neutral / np.maximum(sky, 1e-4), 0.86, 1.14)
+    balanced = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
+    sky_weight = np.clip(
+        (np.percentile(luminance, 54.0) - luminance)
+        / max(1e-6, np.percentile(luminance, 54.0) - np.percentile(luminance, 4.0)),
+        0.0,
+        1.0,
+    )
+    output = np.clip(rgb * (1.0 - sky_weight[..., None] * 0.55) + balanced * (sky_weight[..., None] * 0.55), 0.0, 1.0)
     after = np.median(output[mask], axis=0)
     if log:
         log(f"Python sky median before RGB={sky[0]:.5f}, {sky[1]:.5f}, {sky[2]:.5f}")
-        log(f"Python sky median after RGB={after[0]:.5f}, {after[1]:.5f}, {after[2]:.5f}")
+        log(
+            f"Python sky median after RGB={after[0]:.5f}, {after[1]:.5f}, {after[2]:.5f}; "
+            f"gains={gains[0]:.3f},{gains[1]:.3f},{gains[2]:.3f}"
+        )
     return output
 
 
@@ -403,10 +449,11 @@ def python_fallback_color_calibration(
     rgb = _auto_mtf_stretch(rgb, target_background=0.125, log=log, label="Python first")
     rgb = _extract_background(rgb, log)
     rgb = _neutralize_background(rgb, log)
+    measured_reference = rgb.copy()
     rgb = _color_calibrate(rgb, log)
-    rgb = _duoband_emission_green_control(rgb, log)
+    rgb = _safe_background_green_control(rgb, log)
     rgb = _second_mtf(rgb, midpoint=second_midpoint, log=log)
-    rgb = _duoband_emission_green_control(rgb, log)
     rgb = _neutralize_sky(rgb, log)
-    rgb = _duoband_emission_green_control(rgb, log)
+    rgb = _safe_background_green_control(rgb, log)
+    rgb = _restore_measured_chroma(rgb, measured_reference, log)
     return _to_uint16(rgb)
