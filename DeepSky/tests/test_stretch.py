@@ -56,6 +56,22 @@ class WeakNebulaStretchTests(unittest.TestCase):
         self.assertGreater(channel_medians[0], channel_medians[1])
         self.assertGreater(channel_medians[1], channel_medians[2])
 
+    def test_low_confidence_preset_is_linked_and_capped_between_weak_and_full(self) -> None:
+        image = self._synthetic_stack()
+        source = image.astype(np.float32) / 65535.0
+        weak = astrophotography_stretch(image, "seestar_weak_nebula").astype(np.float32) / 65535.0
+        guarded = astrophotography_stretch(image, "seestar_low_confidence_nebula").astype(np.float32) / 65535.0
+        positive = np.mean(source, axis=2) > 0.0
+        lift = np.mean(guarded, axis=2)[positive] / np.mean(source, axis=2)[positive]
+        self.assertGreater(float(np.median(lift)), 1.12)
+        self.assertLessEqual(float(np.max(lift)), 1.721)
+        self.assertGreater(float(np.median(guarded)), float(np.median(weak)))
+
+        center = guarded[120:190, 95:150]
+        channel_medians = np.median(center, axis=(0, 1))
+        self.assertGreater(channel_medians[0], channel_medians[1])
+        self.assertGreater(channel_medians[1], channel_medians[2])
+
     def test_measured_color_finish_lifts_nebula_without_lifting_empty_sky(self) -> None:
         height, width = 320, 240
         yy, xx = np.mgrid[:height, :width]

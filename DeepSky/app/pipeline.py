@@ -17,6 +17,7 @@ from .goal_look import (
     apply_cosmos_style_nebula_finish,
     apply_goal_look,
     apply_color_preserving_nebula_arcsinh,
+    apply_conservative_measured_chroma,
     apply_masked_richardson_lucy_nebula,
     apply_measured_color_to_nebula_detail,
     apply_multiscale_starless_nebula_detail,
@@ -121,7 +122,7 @@ def _stretch_strength_for(base: str, stretch_level: str) -> str:
 def _adjust_stretch_strength(base_strength: str, stretch_level: str) -> str:
     ladders = (
         ["gentle", "slight", "normal", "aggressive", "extra_aggressive"],
-        ["seestar_weak_nebula", "seestar_slight", "seestar", "seestar_aggressive", "seestar_extra_aggressive"],
+        ["seestar_weak_nebula", "seestar_low_confidence_nebula", "seestar_slight", "seestar", "seestar_aggressive", "seestar_extra_aggressive"],
     )
     for ladder in ladders:
         if base_strength in ladder:
@@ -213,6 +214,46 @@ def _looks_like_weak_snr_nebula_raw(analysis: object | None) -> bool:
         and shadow_fraction > 0.990
         and midtone_fraction < 0.0015
     )
+
+
+def _low_confidence_nebula_signal_metrics(image: np.ndarray) -> dict[str, float]:
+    """Measure non-stellar object contrast for high-pedestal raw frames."""
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return {"pedestal": 0.0, "star_masked_contrast": 1.0, "star_masked_relative_contrast": 1.0}
+    rgb = arr[..., :3].astype(np.float32)
+    if np.issubdtype(arr.dtype, np.integer):
+        rgb /= max(1.0, float(np.iinfo(arr.dtype).max))
+    elif rgb.size and float(np.nanmax(rgb)) > 1.0:
+        rgb /= 65535.0
+    rgb = np.nan_to_num(rgb, nan=0.0, posinf=0.0, neginf=0.0)
+    lum = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+    # Detect compact bright stars from both absolute brightness and local
+    # contrast, then exclude their halos before judging the object signal.
+    local = lum - cv2.GaussianBlur(lum, (0, 0), 3.0)
+    star_seed = (lum > np.percentile(lum, 99.65)) & (local > np.percentile(local, 98.0))
+    star_mask = cv2.dilate(star_seed.astype(np.uint8), np.ones((17, 17), np.uint8)) > 0
+    samples = lum[~star_mask]
+    if samples.size < 1024:
+        samples = lum.reshape(-1)
+    pedestal = float(np.median(samples))
+    contrast = max(0.0, float(np.percentile(samples, 99.9)) - pedestal)
+    relative = contrast / max(pedestal, 1e-6)
+    return {
+        "pedestal": pedestal,
+        "star_masked_contrast": contrast,
+        "star_masked_relative_contrast": relative,
+    }
+
+
+def _looks_like_low_confidence_high_pedestal_nebula(image: np.ndarray) -> tuple[bool, dict[str, float]]:
+    metrics = _low_confidence_nebula_signal_metrics(image)
+    low_confidence = (
+        metrics["pedestal"] > 0.025
+        and metrics["star_masked_relative_contrast"] < 0.15
+    )
+    return bool(low_confidence), metrics
 
 
 def _to_float01(image: np.ndarray) -> np.ndarray:
@@ -2082,7 +2123,16 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         analysis,
         original.name,
     )
-    weak_snr_nebula_raw = object_type == "nebula" and _looks_like_weak_snr_nebula_raw(analysis)
+    low_confidence_nebula_raw = False
+    low_confidence_metrics: dict[str, float] = {}
+    if object_type == "nebula" and not green_duoband_raw and not use_prestretched:
+        raw_image_for_quality = load_image(original, write_log)
+        low_confidence_nebula_raw, low_confidence_metrics = _looks_like_low_confidence_high_pedestal_nebula(
+            raw_image_for_quality
+        )
+    weak_snr_nebula_raw = object_type == "nebula" and (
+        _looks_like_weak_snr_nebula_raw(analysis) or low_confidence_nebula_raw
+    )
     lifted_duoband_gradient_raw = False
     reflection_style_nebula_hint = False
     use_natural_nebula_pipeline = mode == PipelineMode.FULL and object_type == "nebula"
@@ -2090,6 +2140,14 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("Nebula audit: using one calibrated nebula pipeline; no object-specific color branches.")
         if weak_snr_nebula_raw:
             write_log("Weak-SNR nebula frame detected; using conservative stretch and heavier sky chroma cleanup.")
+        if low_confidence_nebula_raw:
+            write_log(
+                "Low-confidence high-pedestal nebula signal detected after bright-star masking: "
+                f"pedestal={low_confidence_metrics['pedestal']:.5f}, "
+                f"star_masked_contrast={low_confidence_metrics['star_masked_contrast']:.5f}, "
+                f"relative_contrast={low_confidence_metrics['star_masked_relative_contrast']:.3f}; "
+                "using weak stretch and conservative detail recovery."
+            )
 
     gradient_galaxy_siril = False
     gradient_galaxy_spread = 0.0
@@ -2217,6 +2275,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             )
             stretch_source_image = working_image if lifted_duoband_gradient_raw else load_image(original, write_log)
             stretch_source_image = _flatten_lifted_duoband_gradient(stretch_source_image, write_log)
+        elif low_confidence_nebula_raw:
+            base_strength = "seestar_slight"
+            baseline_reason = f"high-pedestal low-contrast nebula using restrained SeeStar stretch with conservative post-processing ({baseline_reason})"
         elif weak_snr_nebula_raw:
             base_strength = "seestar_weak_nebula"
             baseline_reason = f"weak-SNR nebula using capped linked-luminance micro-stretch ({baseline_reason})"
@@ -2324,22 +2385,65 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
         if not deepsnr_exe:
             raise FileNotFoundError("DeepSNR executable not found. Update the DeepSNR path in settings.")
-        write_log("Nebula hybrid pipeline: applying masked Richardson-Lucy before aggressive denoise.")
+        write_log("Nebula hybrid pipeline: applying color-preserving arcsinh before denoise.")
         nebula_arcsinh = job_folder / "nebula_color_preserving_arcsinh.tif"
         arcsinh_image = apply_color_preserving_nebula_arcsinh(load_image(current, write_log), write_log)
         save_tiff(nebula_arcsinh, arcsinh_image, write_log)
         nebula_deconvolved = job_folder / "nebula_deconvolved.tif"
-        deconvolved_image = apply_masked_richardson_lucy_nebula(load_image(nebula_arcsinh, write_log), write_log)
+        if low_confidence_nebula_raw:
+            write_log("Low-confidence nebula guard: skipping Richardson-Lucy to avoid sharpening gradients, noise, and star residuals.")
+            deconvolved_image = arcsinh_image
+        else:
+            write_log("Nebula hybrid pipeline: applying masked Richardson-Lucy before aggressive denoise.")
+            deconvolved_image = apply_masked_richardson_lucy_nebula(load_image(nebula_arcsinh, write_log), write_log)
         save_tiff(nebula_deconvolved, deconvolved_image, write_log)
         write_log(f"Nebula hybrid DeepSNR executable: {deepsnr_exe}")
         run_deepsnr(nebula_deconvolved, denoised, deepsnr_exe, write_log)
-        detail_preserved_denoise = blend_masked_nebula_denoise(
-            load_image(nebula_deconvolved, write_log),
-            load_image(denoised, write_log),
-            write_log,
-        )
+        if low_confidence_nebula_raw:
+            write_log("Low-confidence nebula guard: keeping full DeepSNR result; pre-denoise texture recovery disabled.")
+            detail_preserved_denoise = load_image(denoised, write_log)
+        else:
+            detail_preserved_denoise = blend_masked_nebula_denoise(
+                load_image(nebula_deconvolved, write_log),
+                load_image(denoised, write_log),
+                write_log,
+            )
         save_tiff(denoised, detail_preserved_denoise, write_log)
         _log_existing_image(denoised, write_log, "hybrid denoised.tif")
+
+        if low_confidence_nebula_raw:
+            write_log(
+                "Low-confidence nebula guard: stopping after full-frame denoise; "
+                "StarNet separation and color/detail recomposition are disabled to preserve natural star profiles."
+            )
+            restored_color = apply_conservative_measured_chroma(
+                load_image(denoised, write_log),
+                load_image(calibrated, write_log),
+                write_log,
+            )
+            corrected_final = _orient_like_reference(
+                restored_color,
+                working_reference,
+                write_log,
+                "Low-confidence nebula final",
+            )
+            save_tiff(final, corrected_final, write_log)
+            _log_existing_image(final, write_log, "low-confidence denoised final.tif")
+            save_png(final_png, load_image(final, write_log), write_log)
+            after_preview = job_folder / "after_preview.png"
+            calibrated_preview = job_folder / "calibrated_preview.png"
+            make_preview(final, after_preview, log=write_log, stretch_for_display=False)
+            make_preview(calibrated, calibrated_preview, log=write_log, stretch_for_display=False)
+            write_log(f"Final image: {final}")
+            write_log("Done.")
+            return {
+                "job_folder": job_folder,
+                "before_preview": before_preview,
+                "after_preview": after_preview,
+                "final": final,
+                "png": final_png,
+                "log": log_file,
+            }
 
         starnet_exe = find_executable(Path(settings.starnet_folder))
         if not starnet_exe:
@@ -2351,7 +2455,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         subtract_images(denoised, starless_test, starless_test_stars)
         _log_existing_image(starless_test_stars, write_log, "hybrid stars.tif")
 
-        if green_duoband_raw:
+        if low_confidence_nebula_raw:
+            write_log("Low-confidence nebula guard: skipping broad June lift and multiscale sharpening.")
+            june_detail = load_image(starless_test, write_log)
+            measured_color_reference = load_image(calibrated, write_log)
+        elif green_duoband_raw:
             write_log("Green duo-band hybrid: skipping broadband June lift to keep the background dark.")
             june_detail = load_image(starless_test, write_log)
             measured_color_reference = load_image(calibrated, write_log)
@@ -2362,12 +2470,14 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 natural_hybrid=True,
             )
             measured_color_reference = load_image(calibrated, write_log)
-        june_detail = apply_multiscale_starless_nebula_detail(june_detail, write_log)
+        if not low_confidence_nebula_raw:
+            june_detail = apply_multiscale_starless_nebula_detail(june_detail, write_log)
         colored_detail = apply_measured_color_to_nebula_detail(
             june_detail,
             measured_color_reference,
             write_log,
             star_layer=load_image(starless_test_stars, write_log),
+            detail_scale=0.20 if low_confidence_nebula_raw else 1.0,
         )
         save_tiff(starless_test, colored_detail, write_log)
         _log_existing_image(starless_test, write_log, "colored June-detail starless.tif")

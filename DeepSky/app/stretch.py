@@ -64,6 +64,23 @@ def astrophotography_stretch(image: np.ndarray, strength: str = "normal") -> np.
             curved = np.arcsinh(1.8 * data) / np.arcsinh(1.8)
             stretched = np.clip(data * 0.78 + curved * 0.22, 0.0, 1.0)
         return (stretched * 65535.0).astype(np.uint16)
+    if strength == "seestar_low_confidence_nebula":
+        # Intermediate linked stretch for high-pedestal, low-contrast stacks.
+        # It reveals a real cluster/nebula core without the per-channel black
+        # subtraction that can turn a shallow gradient into false structure.
+        data = np.clip(_as_float01(arr), 0.0, 1.0)
+        if data.ndim == 3 and data.shape[-1] in (3, 4):
+            rgb = data[..., :3]
+            luminance = np.mean(rgb, axis=2)
+            curved = np.arcsinh(3.2 * luminance) / np.arcsinh(3.2)
+            target_luminance = luminance * 0.58 + curved * 0.42
+            scale = np.clip(target_luminance / np.maximum(luminance, 1e-6), 0.0, 1.72)
+            stretched = data.copy()
+            stretched[..., :3] = np.clip(rgb * scale[..., None], 0.0, 1.0)
+        else:
+            curved = np.arcsinh(3.2 * data) / np.arcsinh(3.2)
+            stretched = np.clip(data * 0.58 + curved * 0.42, 0.0, 1.0)
+        return (stretched * 65535.0).astype(np.uint16)
     if strength == "seestar_extra_aggressive":
         stretch_kwargs = {
             "background_percentile": 0.03,

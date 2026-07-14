@@ -2168,6 +2168,83 @@ def apply_color_preserving_nebula_arcsinh(
     return _to_uint16(result)
 
 
+def apply_conservative_measured_chroma(
+    image: np.ndarray,
+    color_reference: np.ndarray,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    """Restore calibrated low-frequency color without changing luminance."""
+    detail = _to_float01(np.asarray(image))
+    reference = _to_float01(np.asarray(color_reference))
+    if detail.ndim != 3 or detail.shape[-1] < 3 or reference.ndim != 3:
+        return np.asarray(image)
+    if reference.shape[:2] != detail.shape[:2]:
+        reference = cv2.resize(reference, (detail.shape[1], detail.shape[0]), interpolation=cv2.INTER_AREA)
+
+    lum = _luminance(detail).astype(np.float32)
+    ref_lum = _luminance(reference).astype(np.float32)
+    chroma_ratio = (reference - ref_lum[..., None]) / np.maximum(ref_lum[..., None], 0.018)
+    chroma_ratio = cv2.GaussianBlur(np.clip(chroma_ratio, -0.72, 0.72).astype(np.float32), (0, 0), 1.35)
+
+    broad = cv2.GaussianBlur(lum, (0, 0), 18.0)
+    low = float(np.percentile(broad, 38.0))
+    high = float(np.percentile(broad, 99.0))
+    signal = np.clip((broad - low) / max(1e-6, high - low), 0.0, 1.0) ** 0.78
+    quiet = signal < 0.12
+    if np.count_nonzero(quiet) > 1024:
+        sky_chroma = np.median(chroma_ratio[quiet], axis=0)
+        chroma_ratio -= sky_chroma[None, None, :]
+
+    chroma_magnitude = np.sqrt(np.sum(chroma_ratio * chroma_ratio, axis=2))
+    chroma_scale = max(1e-6, float(np.percentile(chroma_magnitude, 97.0)))
+    confidence = np.clip(chroma_magnitude / chroma_scale, 0.0, 1.0) ** 0.72
+    _, structure, star_protect = _detail_nebula_mask(lum)
+    strength = np.clip(
+        confidence * (0.42 + signal * 0.88) * (1.0 - star_protect * 0.96),
+        0.0,
+        1.12,
+    )
+    colored = np.clip(lum[..., None] * (1.0 + chroma_ratio * strength[..., None]), 0.0, 1.0)
+    colored_lum = _luminance(colored).astype(np.float32)
+    colored = np.clip(colored * (lum / np.maximum(colored_lum, 1e-5))[..., None], 0.0, 1.0)
+
+    # Very weak broadband stacks can retain calibrated red chroma while the
+    # denoised luminance falls below display visibility.  Lift only pixels with
+    # an independently measured positive red/cyan ratio and coherent signal.
+    ref_cyan = (reference[..., 1] + reference[..., 2]) * 0.5
+    red_ratio = np.log2((reference[..., 0] + 0.012) / (ref_cyan + 0.012))
+    red_confidence = np.clip((red_ratio - 0.025) / 0.52, 0.0, 1.0)
+    red_confidence = cv2.GaussianBlur(red_confidence.astype(np.float32), (0, 0), 1.8)
+    red_signal = np.clip(red_confidence * signal * (1.0 - star_protect * 0.97), 0.0, 1.0)
+    coherent_object = np.clip(
+        signal * (structure**0.72) * (1.0 - star_protect * 0.97),
+        0.0,
+        1.0,
+    )
+    coherent_object = cv2.GaussianBlur(coherent_object.astype(np.float32), (0, 0), 1.6)
+    lifted_lum = np.clip(
+        lum
+        + red_signal * (1.0 - lum) * 0.018
+        + coherent_object * (1.0 - lum) * 0.085,
+        0.0,
+        1.0,
+    )
+    colored_lum = _luminance(colored).astype(np.float32)
+    colored = np.clip(colored * (lifted_lum / np.maximum(colored_lum, 1e-5))[..., None], 0.0, 1.0)
+    if log:
+        red_excess = colored[..., 0] - (colored[..., 1] + colored[..., 2]) * 0.5
+        log(
+            "Restored conservative calibrated chroma on denoised luminance: "
+            f"strength_mean={float(np.mean(strength)):.5f}, "
+            f"strength_p95={float(np.percentile(strength, 95.0)):.5f}, "
+            f"positive_red_fraction={float(np.mean(red_excess > 0.0)):.5f}, "
+            f"red_signal_mean={float(np.mean(red_signal)):.5f}, "
+            f"coherent_object_mean={float(np.mean(coherent_object)):.5f}, "
+            f"star_protect_mean={float(np.mean(star_protect)):.5f}"
+        )
+    return _to_uint16(colored)
+
+
 def apply_masked_richardson_lucy_nebula(
     image: np.ndarray,
     log: LogCallback | None = None,
@@ -2426,6 +2503,7 @@ def apply_measured_color_to_nebula_detail(
     log: LogCallback | None = None,
     *,
     star_layer: np.ndarray | None = None,
+    detail_scale: float = 1.0,
 ) -> np.ndarray:
     """Transfer measured RGB chroma while preserving the detailed luminance exactly.
 
@@ -2479,6 +2557,12 @@ def apply_measured_color_to_nebula_detail(
             # Colored rings are much more conspicuous than neutral optical
             # bloom.  Keep luminance intact and remove only chroma near stars.
             chroma_strength *= (1.0 - star_halo[..., None] * 0.92)
+    else:
+        # Conservative full-frame routes intentionally skip StarNet.  Derive
+        # compact star protection from luminance so calibrated chroma is not
+        # exaggerated in bright cores or their immediate halos.
+        _, _, star_halo = _detail_nebula_mask(detail_lum)
+        chroma_strength *= (1.0 - star_halo[..., None] * 0.92)
     colored = np.clip(detail_lum[..., None] * (1.0 + chroma_ratio * chroma_strength), 0.0, 1.0)
     colored_lum = _luminance(colored).astype(np.float32)
     colored = np.clip(colored * (detail_lum / np.maximum(colored_lum, 1e-5))[..., None], 0.0, 1.0)
@@ -2519,11 +2603,14 @@ def apply_measured_color_to_nebula_detail(
     # Denoise first, then selectively restore real multiscale structure from
     # the pre-denoise luminance.  This avoids the globally smooth, silky look
     # without bringing noise back into the background.
+    detail_scale = float(np.clip(detail_scale, 0.0, 1.0))
     pre_crisp_lum = _luminance(colored).astype(np.float32)
-    colored = _apply_nebula_crispness(colored, detail_lum, signal, structure, star_halo)
+    crisp_candidate = _apply_nebula_crispness(colored, detail_lum, signal, structure, star_halo)
+    colored = np.clip(colored * (1.0 - detail_scale) + crisp_candidate * detail_scale, 0.0, 1.0)
     crisp_delta = float(np.mean(np.abs(_luminance(colored) - pre_crisp_lum)))
     pre_visibility_lum = _luminance(colored).astype(np.float32)
-    colored = _apply_structured_nebula_visibility_lift(colored, signal, structure, star_halo)
+    visibility_candidate = _apply_structured_nebula_visibility_lift(colored, signal, structure, star_halo)
+    colored = np.clip(colored * (1.0 - detail_scale) + visibility_candidate * detail_scale, 0.0, 1.0)
     visibility_delta = float(np.mean(_luminance(colored) - pre_visibility_lum))
 
     # Moderate saturation from calibrated per-pixel chroma only.  The
@@ -2551,7 +2638,8 @@ def apply_measured_color_to_nebula_detail(
             f"sky_denoise_mean={float(np.mean(sky)):.5f}; star_halo_mean={float(np.mean(star_halo)):.5f}; "
             f"crisp_delta={crisp_delta:.7f}; visibility_delta={visibility_delta:.7f}; "
             f"red_cyan_ratio_mean={float(np.mean(ratio_confidence * signal)):.5f}; "
-            f"cyan_filament_mean={float(np.mean(cyan_filament_gate * signal)):.5f}"
+            f"cyan_filament_mean={float(np.mean(cyan_filament_gate * signal)):.5f}; "
+            f"detail_scale={detail_scale:.2f}"
         )
     return _to_uint16(colored)
 
