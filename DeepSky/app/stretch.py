@@ -81,6 +81,23 @@ def astrophotography_stretch(image: np.ndarray, strength: str = "normal") -> np.
             curved = np.arcsinh(3.2 * data) / np.arcsinh(3.2)
             stretched = np.clip(data * 0.58 + curved * 0.42, 0.0, 1.0)
         return (stretched * 65535.0).astype(np.uint16)
+    if strength == "seestar_coherent_nebula":
+        # Stronger linked-luminance stretch for faint-scaled frames whose
+        # star-masked object contrast is high.  Unlike per-channel stretching,
+        # this exposes broad emission without neutralizing measured red/cyan.
+        data = np.clip(_as_float01(arr), 0.0, 1.0)
+        if data.ndim == 3 and data.shape[-1] in (3, 4):
+            rgb = data[..., :3]
+            luminance = np.mean(rgb, axis=2)
+            curved = np.arcsinh(5.0 * luminance) / np.arcsinh(5.0)
+            target_luminance = luminance * 0.28 + curved * 0.72
+            scale = np.clip(target_luminance / np.maximum(luminance, 1e-6), 0.0, 4.50)
+            stretched = data.copy()
+            stretched[..., :3] = np.clip(rgb * scale[..., None], 0.0, 1.0)
+        else:
+            curved = np.arcsinh(5.0 * data) / np.arcsinh(5.0)
+            stretched = np.clip(data * 0.28 + curved * 0.72, 0.0, 1.0)
+        return (stretched * 65535.0).astype(np.uint16)
     if strength == "seestar_extra_aggressive":
         stretch_kwargs = {
             "background_percentile": 0.03,

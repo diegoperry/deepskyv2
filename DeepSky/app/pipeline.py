@@ -122,7 +122,7 @@ def _stretch_strength_for(base: str, stretch_level: str) -> str:
 def _adjust_stretch_strength(base_strength: str, stretch_level: str) -> str:
     ladders = (
         ["gentle", "slight", "normal", "aggressive", "extra_aggressive"],
-        ["seestar_weak_nebula", "seestar_low_confidence_nebula", "seestar_slight", "seestar", "seestar_aggressive", "seestar_extra_aggressive"],
+        ["seestar_weak_nebula", "seestar_low_confidence_nebula", "seestar_coherent_nebula", "seestar_slight", "seestar", "seestar_aggressive", "seestar_extra_aggressive"],
     )
     for ladder in ladders:
         if base_strength in ladder:
@@ -2124,15 +2124,29 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         original.name,
     )
     low_confidence_nebula_raw = False
+    coherent_faint_scaled_nebula_raw = False
+    extended_red_emission_nebula_raw = False
     low_confidence_metrics: dict[str, float] = {}
+    absolute_weak_nebula_raw = object_type == "nebula" and _looks_like_weak_snr_nebula_raw(analysis)
     if object_type == "nebula" and not green_duoband_raw and not use_prestretched:
         raw_image_for_quality = load_image(original, write_log)
         low_confidence_nebula_raw, low_confidence_metrics = _looks_like_low_confidence_high_pedestal_nebula(
             raw_image_for_quality
         )
+        coherent_faint_scaled_nebula_raw = bool(
+            absolute_weak_nebula_raw
+            and low_confidence_metrics["pedestal"] < 0.025
+            and low_confidence_metrics["star_masked_relative_contrast"] > 0.50
+        )
+        extended_red_emission_nebula_raw = bool(
+            coherent_faint_scaled_nebula_raw
+            and red_emission_dominance(raw_image_for_quality) >= 2.40
+        )
     weak_snr_nebula_raw = object_type == "nebula" and (
-        _looks_like_weak_snr_nebula_raw(analysis) or low_confidence_nebula_raw
+        (absolute_weak_nebula_raw and not coherent_faint_scaled_nebula_raw)
+        or low_confidence_nebula_raw
     )
+    conservative_full_frame_nebula = low_confidence_nebula_raw or extended_red_emission_nebula_raw
     lifted_duoband_gradient_raw = False
     reflection_style_nebula_hint = False
     use_natural_nebula_pipeline = mode == PipelineMode.FULL and object_type == "nebula"
@@ -2147,6 +2161,18 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 f"star_masked_contrast={low_confidence_metrics['star_masked_contrast']:.5f}, "
                 f"relative_contrast={low_confidence_metrics['star_masked_relative_contrast']:.3f}; "
                 "using weak stretch and conservative detail recovery."
+            )
+        if coherent_faint_scaled_nebula_raw:
+            write_log(
+                "Faint-scaled but coherent nebula signal detected after bright-star masking: "
+                f"pedestal={low_confidence_metrics['pedestal']:.5f}, "
+                f"relative_contrast={low_confidence_metrics['star_masked_relative_contrast']:.3f}; "
+                "overriding the absolute-percentile weak classification."
+            )
+        if extended_red_emission_nebula_raw:
+            write_log(
+                "Extended measured red-emission field detected; using full-frame denoise/color restoration "
+                "to preserve broad emission and natural bright-star profiles."
             )
 
     gradient_galaxy_siril = False
@@ -2166,7 +2192,15 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
 
     nebula_auto_pcc_command = None
     galaxy_auto_pcc_command = None
-    skip_catalog_pcc = getattr(settings, "pcc_failure_policy", "continue") == "continue_without_pcc"
+    skip_catalog_pcc = (
+        getattr(settings, "pcc_failure_policy", "continue") == "continue_without_pcc"
+        or extended_red_emission_nebula_raw
+    )
+    if extended_red_emission_nebula_raw and settings.color_calibration_mode != "Off":
+        write_log(
+            "Skipping catalog PCC for a faint-scaled coherent emission frame; "
+            "the calibrated catalog background solve would suppress its measured extended RGB signal."
+        )
     if mode == PipelineMode.FULL and object_type == "nebula" and settings.color_calibration_mode != "Off" and not skip_catalog_pcc:
         nebula_auto_pcc_command = build_siril_pcc_command(
             catalog_calibration_input,
@@ -2180,7 +2214,10 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         else:
             write_log("Nebula Siril catalog color calibration unavailable; FITS is missing usable WCS/plate-solve metadata.")
     elif mode == PipelineMode.FULL and object_type == "nebula" and settings.color_calibration_mode != "Off":
-        write_log("Siril catalog color calibration skipped by user choice; using non-catalog Siril color calibration.")
+        if extended_red_emission_nebula_raw:
+            write_log("Siril catalog color calibration skipped by measured-signal guard; using the calibrated RGB frame directly.")
+        else:
+            write_log("Siril catalog color calibration skipped by user choice; using non-catalog Siril color calibration.")
     if mode == PipelineMode.FULL and object_type == "galaxy" and settings.color_calibration_mode != "Off" and not skip_catalog_pcc:
         galaxy_auto_pcc_command = build_siril_pcc_command(
             catalog_calibration_input,
@@ -2278,6 +2315,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         elif low_confidence_nebula_raw:
             base_strength = "seestar_slight"
             baseline_reason = f"high-pedestal low-contrast nebula using restrained SeeStar stretch with conservative post-processing ({baseline_reason})"
+        elif coherent_faint_scaled_nebula_raw:
+            base_strength = "seestar_coherent_nebula"
+            baseline_reason = f"faint-scaled coherent nebula using linked-luminance stretch ({baseline_reason})"
         elif weak_snr_nebula_raw:
             base_strength = "seestar_weak_nebula"
             baseline_reason = f"weak-SNR nebula using capped linked-luminance micro-stretch ({baseline_reason})"
@@ -2390,8 +2430,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         arcsinh_image = apply_color_preserving_nebula_arcsinh(load_image(current, write_log), write_log)
         save_tiff(nebula_arcsinh, arcsinh_image, write_log)
         nebula_deconvolved = job_folder / "nebula_deconvolved.tif"
-        if low_confidence_nebula_raw:
-            write_log("Low-confidence nebula guard: skipping Richardson-Lucy to avoid sharpening gradients, noise, and star residuals.")
+        if conservative_full_frame_nebula:
+            write_log("Conservative full-frame nebula guard: skipping Richardson-Lucy to avoid sharpening gradients and bright-star residuals.")
             deconvolved_image = arcsinh_image
         else:
             write_log("Nebula hybrid pipeline: applying masked Richardson-Lucy before aggressive denoise.")
@@ -2399,8 +2439,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         save_tiff(nebula_deconvolved, deconvolved_image, write_log)
         write_log(f"Nebula hybrid DeepSNR executable: {deepsnr_exe}")
         run_deepsnr(nebula_deconvolved, denoised, deepsnr_exe, write_log)
-        if low_confidence_nebula_raw:
-            write_log("Low-confidence nebula guard: keeping full DeepSNR result; pre-denoise texture recovery disabled.")
+        if conservative_full_frame_nebula:
+            write_log("Conservative full-frame nebula guard: keeping full DeepSNR result; pre-denoise texture recovery disabled.")
             detail_preserved_denoise = load_image(denoised, write_log)
         else:
             detail_preserved_denoise = blend_masked_nebula_denoise(
@@ -2411,24 +2451,25 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         save_tiff(denoised, detail_preserved_denoise, write_log)
         _log_existing_image(denoised, write_log, "hybrid denoised.tif")
 
-        if low_confidence_nebula_raw:
+        if conservative_full_frame_nebula:
             write_log(
-                "Low-confidence nebula guard: stopping after full-frame denoise; "
+                "Conservative nebula guard: stopping after full-frame denoise and measured-color restoration; "
                 "StarNet separation and color/detail recomposition are disabled to preserve natural star profiles."
             )
             restored_color = apply_conservative_measured_chroma(
                 load_image(denoised, write_log),
                 load_image(calibrated, write_log),
                 write_log,
+                preserve_extended_chroma=extended_red_emission_nebula_raw,
             )
             corrected_final = _orient_like_reference(
                 restored_color,
                 working_reference,
                 write_log,
-                "Low-confidence nebula final",
+                "Conservative full-frame nebula final",
             )
             save_tiff(final, corrected_final, write_log)
-            _log_existing_image(final, write_log, "low-confidence denoised final.tif")
+            _log_existing_image(final, write_log, "conservative full-frame denoised final.tif")
             save_png(final_png, load_image(final, write_log), write_log)
             after_preview = job_folder / "after_preview.png"
             calibrated_preview = job_folder / "calibrated_preview.png"

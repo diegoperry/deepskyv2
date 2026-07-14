@@ -7,6 +7,7 @@ import numpy as np
 
 from app.goal_look import (
     apply_color_preserving_nebula_arcsinh,
+    apply_conservative_measured_chroma,
     apply_masked_richardson_lucy_nebula,
     apply_multiscale_starless_nebula_detail,
     _apply_nebula_crispness,
@@ -72,6 +73,18 @@ class WeakNebulaStretchTests(unittest.TestCase):
         self.assertGreater(channel_medians[0], channel_medians[1])
         self.assertGreater(channel_medians[1], channel_medians[2])
 
+    def test_coherent_nebula_preset_preserves_rgb_ratios_at_stronger_lift(self) -> None:
+        image = self._synthetic_stack()
+        source = image.astype(np.float32) / 65535.0
+        stretched = astrophotography_stretch(image, "seestar_coherent_nebula").astype(np.float32) / 65535.0
+        valid = (np.mean(source, axis=2) > 0.02) & (source[..., 1] > 1e-4) & (stretched[..., 1] > 1e-4)
+        lift = np.mean(stretched, axis=2)[valid] / np.mean(source, axis=2)[valid]
+        self.assertGreater(float(np.median(lift)), 1.70)
+        self.assertLessEqual(float(np.max(lift)), 4.501)
+        before_ratio = np.median(source[..., 0][valid] / source[..., 1][valid])
+        after_ratio = np.median(stretched[..., 0][valid] / stretched[..., 1][valid])
+        self.assertAlmostEqual(float(after_ratio), float(before_ratio), delta=0.004)
+
     def test_measured_color_finish_lifts_nebula_without_lifting_empty_sky(self) -> None:
         height, width = 320, 240
         yy, xx = np.mgrid[:height, :width]
@@ -93,6 +106,32 @@ class WeakNebulaStretchTests(unittest.TestCase):
         center_rgb = np.median(finished[140:180, 100:140], axis=(0, 1))
         self.assertGreater(center_rgb[0], center_rgb[1])
         self.assertGreater(center_rgb[1], center_rgb[2])
+
+    def test_extended_chroma_guard_keeps_broad_red_emission(self) -> None:
+        height, width = 180, 220
+        yy, xx = np.mgrid[:height, :width]
+        emission = np.exp(-((xx - 145.0) / 54.0) ** 2).astype(np.float32)
+        detail_lum = 0.012 + emission * 0.075
+        detail = np.repeat(detail_lum[..., None], 3, axis=2)
+        reference = np.stack(
+            [detail_lum * (1.0 + emission * 0.75), detail_lum * (1.0 - emission * 0.12), detail_lum * (1.0 - emission * 0.22)],
+            axis=-1,
+        )
+        image = (np.clip(detail, 0.0, 1.0) * 65535.0).astype(np.uint16)
+        color = (np.clip(reference, 0.0, 1.0) * 65535.0).astype(np.uint16)
+
+        guarded = apply_conservative_measured_chroma(
+            image,
+            color,
+            preserve_extended_chroma=True,
+        ).astype(np.float32) / 65535.0
+        band = emission > 0.65
+        sky = emission < 0.02
+        red_excess = guarded[..., 0] - (guarded[..., 1] + guarded[..., 2]) * 0.5
+
+        self.assertGreater(float(np.median(red_excess[band])), 0.010)
+        self.assertGreater(float(np.median(np.mean(guarded[band], axis=1))), float(np.median(detail_lum[band])))
+        self.assertLess(float(np.median(np.mean(guarded[sky], axis=1))), 0.020)
 
     def test_nebula_crispness_restores_object_structure_not_sky(self) -> None:
         height, width = 180, 220

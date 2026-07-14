@@ -2172,6 +2172,8 @@ def apply_conservative_measured_chroma(
     image: np.ndarray,
     color_reference: np.ndarray,
     log: LogCallback | None = None,
+    *,
+    preserve_extended_chroma: bool = False,
 ) -> np.ndarray:
     """Restore calibrated low-frequency color without changing luminance."""
     detail = _to_float01(np.asarray(image))
@@ -2191,7 +2193,7 @@ def apply_conservative_measured_chroma(
     high = float(np.percentile(broad, 99.0))
     signal = np.clip((broad - low) / max(1e-6, high - low), 0.0, 1.0) ** 0.78
     quiet = signal < 0.12
-    if np.count_nonzero(quiet) > 1024:
+    if not preserve_extended_chroma and np.count_nonzero(quiet) > 1024:
         sky_chroma = np.median(chroma_ratio[quiet], axis=0)
         chroma_ratio -= sky_chroma[None, None, :]
 
@@ -2199,10 +2201,14 @@ def apply_conservative_measured_chroma(
     chroma_scale = max(1e-6, float(np.percentile(chroma_magnitude, 97.0)))
     confidence = np.clip(chroma_magnitude / chroma_scale, 0.0, 1.0) ** 0.72
     _, structure, star_protect = _detail_nebula_mask(lum)
+    star_attenuation = 0.18 if preserve_extended_chroma else 0.96
+    base_chroma = 0.60 if preserve_extended_chroma else 0.42
+    signal_chroma = 1.15 if preserve_extended_chroma else 0.88
+    maximum_chroma = 1.45 if preserve_extended_chroma else 1.12
     strength = np.clip(
-        confidence * (0.42 + signal * 0.88) * (1.0 - star_protect * 0.96),
+        confidence * (base_chroma + signal * signal_chroma) * (1.0 - star_protect * star_attenuation),
         0.0,
-        1.12,
+        maximum_chroma,
     )
     colored = np.clip(lum[..., None] * (1.0 + chroma_ratio * strength[..., None]), 0.0, 1.0)
     colored_lum = _luminance(colored).astype(np.float32)
@@ -2222,10 +2228,12 @@ def apply_conservative_measured_chroma(
         1.0,
     )
     coherent_object = cv2.GaussianBlur(coherent_object.astype(np.float32), (0, 0), 1.6)
+    red_lift = 0.050 if preserve_extended_chroma else 0.018
+    structure_lift = 0.200 if preserve_extended_chroma else 0.085
     lifted_lum = np.clip(
         lum
-        + red_signal * (1.0 - lum) * 0.018
-        + coherent_object * (1.0 - lum) * 0.085,
+        + red_signal * (1.0 - lum) * red_lift
+        + coherent_object * (1.0 - lum) * structure_lift,
         0.0,
         1.0,
     )
@@ -2235,6 +2243,7 @@ def apply_conservative_measured_chroma(
         red_excess = colored[..., 0] - (colored[..., 1] + colored[..., 2]) * 0.5
         log(
             "Restored conservative calibrated chroma on denoised luminance: "
+            f"preserve_extended_chroma={preserve_extended_chroma}, "
             f"strength_mean={float(np.mean(strength)):.5f}, "
             f"strength_p95={float(np.percentile(strength, 95.0)):.5f}, "
             f"positive_red_fraction={float(np.mean(red_excess > 0.0)):.5f}, "
