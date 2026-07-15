@@ -391,6 +391,32 @@ def create_nebula_local_color_script(
     return script_path
 
 
+def create_background_extraction_script(
+    input_path: Path,
+    output_path: Path,
+    work_dir: Path,
+) -> Path:
+    """Create a Siril background-only script with no color calibration.
+
+    This is intentionally independent from PCC/SPCC so linear narrowband and
+    duo-band frames can use Siril's spatial background model without applying a
+    broadband catalog color solution.
+    """
+    script_path = Path(work_dir) / "siril_background_only.ssf"
+    input_name = _relative_or_name(Path(input_path), Path(work_dir))
+    output_stem = Path(output_path).with_suffix("").name
+    lines = [
+        SIRIL_REQUIRES_COMMAND,
+        "# DeepSky canonical nebula background extraction only",
+        f'load "{input_name}"',
+        "subsky 2",
+        SAVE_FITS_COMMAND.format(output_stem=output_stem),
+        "close",
+    ]
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return script_path
+
+
 def create_photometric_color_script(
     input_path: Path,
     output_path: Path,
@@ -420,10 +446,12 @@ def create_photometric_color_script(
         SIRIL_REQUIRES_COMMAND,
         "# DeepSky Siril catalog color calibration",
         f'load "{input_name}"',
-        "# Siril background extraction before color calibration",
-        "subsky 2",
-        pcc_command,
     ]
+    if Path(input_path).stem != "siril_background_only":
+        lines.extend(["# Siril background extraction before color calibration", "subsky 2"])
+    else:
+        lines.append("# Background extraction already completed by canonical nebula stage 2")
+    lines.append(pcc_command)
     if apply_scnr:
         lines.append(SCNR_COMMAND)
     amount = _saturation_amount(color_saturation)

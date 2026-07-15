@@ -72,6 +72,15 @@ def analyze_input_stretch(path: Path) -> StretchAnalysis:
     raw_p50 = float(np.percentile(finite_luminance, 50) / raw_scale) if finite_luminance.size else 0.0
     raw_p99 = float(np.percentile(finite_luminance, 99) / raw_scale) if finite_luminance.size else 0.0
     raw_p999 = float(np.percentile(finite_luminance, 99.9) / raw_scale) if finite_luminance.size else 0.0
+    # Some stacked FITS products retain a large unsigned additive pedestal.
+    # Their absolute median can resemble a stretched image even though nearly
+    # all non-stellar data remains packed into a narrow linear range.  Judge
+    # that condition from pedestal-relative width rather than vendor metadata.
+    additive_pedestal_linear = bool(
+        raw_p50 > 0.14
+        and (raw_p99 - raw_p50) < 0.030
+        and (raw_p999 - raw_p50) < 0.080
+    )
     luminance = _normalize_for_histogram(raw_luminance)
 
     p01, p1, p10, p50, p90, p99 = [float(np.percentile(luminance, p)) for p in (0.1, 1, 10, 50, 90, 99)]
@@ -95,8 +104,13 @@ def analyze_input_stretch(path: Path) -> StretchAnalysis:
     if bright_fraction > 0.005 and dynamic_width < 0.96:
         score += 1
 
-    low_absolute_signal = raw_p50 < 0.14 and raw_p99 < 0.20 and raw_p999 < 0.35
-    if low_absolute_signal and score <= 3:
+    low_absolute_signal = (
+        (raw_p50 < 0.14 and raw_p99 < 0.20 and raw_p999 < 0.35)
+        or additive_pedestal_linear
+    )
+    if additive_pedestal_linear:
+        score = min(score, 2)
+    elif low_absolute_signal and score <= 3:
         score = min(score, 2)
 
     if score >= 5 or (p50 > 0.075 and background_lift > 0.04 and shadow_fraction < 0.40 and not low_absolute_signal):
@@ -136,6 +150,7 @@ def analyze_input_stretch(path: Path) -> StretchAnalysis:
             "raw_p50": raw_p50,
             "raw_p99": raw_p99,
             "raw_p999": raw_p999,
+            "additive_pedestal_linear": float(additive_pedestal_linear),
             "score": float(score),
         },
         recommended_mode=recommended_mode,

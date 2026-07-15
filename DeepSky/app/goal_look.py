@@ -2142,6 +2142,577 @@ def _detail_nebula_mask(lum: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nda
     return signal, structure, np.clip(star_protect, 0.0, 1.0)
 
 
+def apply_canonical_nebula_composite(
+    starless_image: np.ndarray,
+    working_reference: np.ndarray,
+    calibrated_reference: np.ndarray,
+    log: LogCallback | None = None,
+    *,
+    include_stars: bool = True,
+    structure_reference: np.ndarray | None = None,
+    diagnostics: dict[str, np.ndarray] | None = None,
+) -> np.ndarray:
+    """Canonical measured-RGB nebula composite for all supported nebula data."""
+    starless = _to_float01(starless_image)
+    working = _to_float01(working_reference)
+    calibrated = _to_float01(calibrated_reference)
+    structure_source = calibrated if structure_reference is None else _to_float01(structure_reference)
+    if starless.shape != working.shape:
+        working = cv2.resize(working, (starless.shape[1], starless.shape[0]), interpolation=cv2.INTER_AREA)
+    if calibrated.shape != starless.shape:
+        calibrated = cv2.resize(calibrated, (starless.shape[1], starless.shape[0]), interpolation=cv2.INTER_AREA)
+    if structure_source.shape != starless.shape:
+        structure_source = cv2.resize(
+            structure_source,
+            (starless.shape[1], starless.shape[0]),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    def quantile_tone(lum: np.ndarray) -> np.ndarray:
+        source = np.percentile(lum, [1.0, 50.0, 90.0, 99.0, 99.9, 100.0]).astype(np.float32)
+        source = np.maximum.accumulate(source + np.arange(source.size, dtype=np.float32) * 1e-7)
+        target = np.asarray([0.012, 0.043, 0.054, 0.235, 0.480, 1.0], dtype=np.float32)
+        return np.interp(lum, source, target).astype(np.float32)
+
+    working_lum = _luminance(working)
+    calibrated_lum = _luminance(calibrated)
+    structure_lum = _luminance(structure_source)
+    starless_lum = _luminance(starless)
+
+    # StarNet supplies a stellar footprint, not the default nebula canvas.
+    # Keep the smooth full-resolution denoised image everywhere except where
+    # the StarNet residual or raw compact response identifies an actual star.
+    starnet_residual = np.clip(structure_lum - starless_lum, 0.0, 1.0)
+    residual_low, residual_high = np.percentile(starnet_residual, [97.8, 99.92])
+    residual_star = np.clip(
+        (starnet_residual - residual_low) / max(float(residual_high - residual_low), 1e-6),
+        0.0,
+        1.0,
+    )
+    raw_compact = np.clip(working_lum - cv2.GaussianBlur(working_lum, (0, 0), 2.0), 0.0, None)
+    compact_low0, compact_high0 = np.percentile(raw_compact, [98.4, 99.94])
+    compact_star = np.clip(
+        (raw_compact - compact_low0) / max(float(compact_high0 - compact_low0), 1e-6),
+        0.0,
+        1.0,
+    )
+    starnet_star_agreement = np.sqrt(np.clip(residual_star * compact_star, 0.0, 1.0))
+    bright_core = working_lum > np.percentile(working_lum, 99.55)
+    starnet_star_seed = (
+        (starnet_star_agreement > 0.12)
+        | ((residual_star > 0.72) & bright_core)
+    ).astype(np.float32)
+    starnet_star_seed = cv2.morphologyEx(
+        starnet_star_seed,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+    )
+    starnet_footprint = cv2.dilate(
+        starnet_star_seed,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+    )
+    starnet_footprint = np.clip(cv2.GaussianBlur(starnet_footprint, (0, 0), 1.8), 0.0, 1.0)
+    # StarNet removal errors extend beyond the compact core footprint.  Build a
+    # separate, wider rejection layer for confidence/detail estimation so the
+    # characteristic bright/dark donut is never classified as nebulosity.
+    # This layer is not used to enlarge the rendered stars.
+    star_artifact_reject = cv2.dilate(
+        starnet_star_seed,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)),
+    )
+    star_artifact_reject = np.clip(
+        cv2.GaussianBlur(star_artifact_reject.astype(np.float32), (0, 0), 3.2),
+        0.0,
+        1.0,
+    )
+    # A neural star-removal cavity is wider than either the optical core or the
+    # high-confidence artifact ring.  Build a solid repair footprint from the
+    # complete continuous StarNet response so recombination covers the cavity
+    # rather than blending against its dark interior edge.
+    star_cavity_repair = cv2.morphologyEx(
+        (starnet_footprint > 0.05).astype(np.float32),
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+    )
+    star_cavity_repair = cv2.dilate(
+        star_cavity_repair,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+    )
+    star_cavity_repair = np.clip(
+        cv2.GaussianBlur(star_cavity_repair.astype(np.float32), (0, 0), 1.6),
+        0.0,
+        1.0,
+    )
+
+    # Estimate local SNR before selecting the canvas.  Extended, confident
+    # signal keeps the denoised full-frame luminance; empty sky and stellar
+    # footprints use the StarNet canvas so halos and background mottling do not
+    # leak into the composite.
+    noise_residual = np.abs(structure_lum - cv2.GaussianBlur(structure_lum, (0, 0), 1.15))
+    noise_map = cv2.GaussianBlur(noise_residual.astype(np.float32), (0, 0), 6.0) * 1.4826
+    broad_signal_lum = cv2.GaussianBlur(structure_lum, (0, 0), 12.0)
+    local_background = cv2.GaussianBlur(structure_lum, (0, 0), 96.0)
+    local_signal = np.clip(broad_signal_lum - local_background, 0.0, 1.0)
+    snr_map = local_signal / np.maximum(noise_map * 3.2, 1e-5)
+    snr_confidence = np.clip((snr_map - 1.25) / 4.75, 0.0, 1.0) ** 0.78
+    snr_confidence = cv2.GaussianBlur(snr_confidence.astype(np.float32), (0, 0), 2.2)
+    measured_chroma = np.max(calibrated, axis=2) - np.min(calibrated, axis=2)
+    measured_chroma = cv2.GaussianBlur(measured_chroma.astype(np.float32), (0, 0), 8.0)
+    chroma_low, chroma_high = np.percentile(measured_chroma, [72.0, 99.5])
+    chroma_confidence = np.clip(
+        (measured_chroma - chroma_low) / max(float(chroma_high - chroma_low), 1e-6),
+        0.0,
+        1.0,
+    ) ** 0.82
+    canvas_signal = np.maximum(snr_confidence, chroma_confidence * 0.82)
+    nebula_canvas_support = np.clip(
+        np.maximum(
+            (canvas_signal ** 0.82) * (1.0 - starnet_footprint),
+            star_cavity_repair if include_stars else np.zeros_like(star_cavity_repair),
+        ),
+        0.0,
+        1.0,
+    )
+    starless = np.clip(
+        structure_source * nebula_canvas_support[..., None]
+        + starless * (1.0 - nebula_canvas_support[..., None]),
+        0.0,
+        1.0,
+    )
+    starless_lum = _luminance(starless)
+    working_tone = quantile_tone(working_lum)
+    working_ratio = np.clip(working / np.maximum(working_lum[..., None], 1e-4), 0.12, 4.5)
+    calibrated_ratio = np.clip(calibrated / np.maximum(calibrated_lum[..., None], 1e-4), 0.12, 4.5)
+
+    red_excess = np.clip(calibrated[..., 0] - 0.5 * (calibrated[..., 1] + calibrated[..., 2]), 0.0, 1.0)
+    red_excess = cv2.GaussianBlur(red_excess, (0, 0), 3.0)
+    warm_low, warm_high = np.percentile(red_excess, [72.0, 99.6])
+    warm = np.clip((red_excess - warm_low) / max(float(warm_high - warm_low), 1e-5), 0.0, 1.0) ** 1.15
+    warm = cv2.GaussianBlur(warm.astype(np.float32), (0, 0), 2.0)
+
+    height, width = starless_lum.shape
+    y_distance = np.minimum(np.arange(height), np.arange(height)[::-1]) / max(height * 0.07, 1.0)
+    x_distance = np.minimum(np.arange(width), np.arange(width)[::-1]) / max(width * 0.04, 1.0)
+    edge = np.clip(np.minimum(y_distance[:, None], x_distance[None, :]), 0.0, 1.0).astype(np.float32)
+    edge = edge * edge * (3.0 - 2.0 * edge)
+    warm *= edge
+    # Dark pillars have little red excess by definition, so the raw emission
+    # mask contains holes exactly over the structure we need to preserve.
+    # Close only compact holes inside the measured nebula footprint; this does
+    # not grow the mask into unrelated sky.
+    structure_warm = cv2.morphologyEx(
+        warm.astype(np.float32),
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+    )
+    structure_warm = cv2.GaussianBlur(np.maximum(warm, structure_warm), (0, 0), 1.6)
+    structure_warm *= edge
+    nebula_confidence = np.clip(
+        np.maximum(structure_warm, snr_confidence * 0.72)
+        * edge
+        * (1.0 - star_artifact_reject),
+        0.0,
+        1.0,
+    )
+
+    # A late, restrained RL pass is intentional here.  The earlier pipeline
+    # deconvolution precedes both DeepSNR and StarNet, which can soften the
+    # recovered structure.  Work on starless luminance only, and blend the RL
+    # delta through measured warm/structure confidence with raw-star exclusion.
+    compact = np.clip(working_lum - cv2.GaussianBlur(working_lum, (0, 0), 2.0), 0.0, None)
+    star_low, star_high = np.percentile(compact, [98.6, 99.85])
+    rl_star_protect = np.clip(
+        (compact - star_low) / max(float(star_high - star_low), 1e-6),
+        0.0,
+        1.0,
+    )
+    rl_star_protect = cv2.dilate(
+        rl_star_protect.astype(np.float32),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+    )
+    rl_star_protect = cv2.GaussianBlur(rl_star_protect, (0, 0), 1.4)
+    # StarNet can alter extended nebulosity while removing stars.  Restore the
+    # smooth post-denoise luminance directly inside the measured nebula support
+    # before sharpening.  Star exclusion prevents this from copying stellar
+    # cores back into the starless layer; both positive knots and negative dust
+    # lanes are recovered from real full-resolution data.
+    structure_restore_mask = np.clip(
+        (nebula_confidence ** 0.72) * (1.0 - rl_star_protect),
+        0.0,
+        0.88,
+    )
+    structure_delta = np.clip(
+        structure_lum - starless_lum,
+        -(0.035 + starless_lum * 0.10),
+        0.035 + starless_lum * 0.10,
+    )
+    starless_lum = np.clip(
+        starless_lum + structure_delta * structure_restore_mask * 0.68,
+        0.0,
+        1.0,
+    )
+    structure_band = np.abs(
+        cv2.GaussianBlur(starless_lum, (0, 0), 1.1)
+        - cv2.GaussianBlur(starless_lum, (0, 0), 4.5)
+    )
+    structure_scale = max(float(np.percentile(structure_band, 98.5)), 1e-6)
+    structure_confidence = np.clip(structure_band / structure_scale, 0.0, 1.0) ** 0.72
+    rl_mask = np.clip(
+        (nebula_confidence ** 0.72) * (0.22 + structure_confidence * 0.78) * (1.0 - rl_star_protect),
+        0.0,
+        0.92,
+    )
+    kernel_1d = cv2.getGaussianKernel(7, 1.10).astype(np.float32)
+    psf = kernel_1d @ kernel_1d.T
+    psf /= max(float(np.sum(psf)), 1e-6)
+    estimate = np.clip(starless_lum, 1e-5, 1.0).copy()
+    for _ in range(8):
+        blurred = cv2.filter2D(estimate, -1, psf, borderType=cv2.BORDER_REFLECT)
+        relative = starless_lum / np.maximum(blurred, 1e-5)
+        estimate *= cv2.filter2D(relative, -1, psf, borderType=cv2.BORDER_REFLECT)
+        estimate = np.clip(estimate, 0.0, 1.0)
+    rl_delta = np.clip(estimate - starless_lum, -(0.018 + starless_lum * 0.10), 0.018 + starless_lum * 0.10)
+    deconvolved_lum = np.clip(starless_lum + rl_delta * rl_mask * 0.12, 0.0, 1.0)
+
+    # Recover the detail that the starless layer no longer contains from the
+    # calibrated luminance.  Bilateral prefiltering keeps RL from treating the
+    # raw sky grain as structure; the same star/nebula confidence masks govern
+    # the transfer, so no calibrated star core reaches the final nebula layer.
+    calibrated_seed = cv2.bilateralFilter(
+        structure_lum.astype(np.float32),
+        d=0,
+        sigmaColor=0.035,
+        sigmaSpace=3.0,
+    )
+    calibrated_estimate = np.clip(calibrated_seed, 1e-5, 1.0).copy()
+    for _ in range(4):
+        blurred = cv2.filter2D(calibrated_estimate, -1, psf, borderType=cv2.BORDER_REFLECT)
+        relative = calibrated_seed / np.maximum(blurred, 1e-5)
+        calibrated_estimate *= cv2.filter2D(relative, -1, psf, borderType=cv2.BORDER_REFLECT)
+        calibrated_estimate = np.clip(calibrated_estimate, 0.0, 1.0)
+    donor_small = calibrated_estimate - cv2.GaussianBlur(calibrated_estimate, (0, 0), 4.0)
+    donor_medium = (
+        cv2.GaussianBlur(calibrated_estimate, (0, 0), 4.0)
+        - cv2.GaussianBlur(calibrated_estimate, (0, 0), 14.0)
+    )
+    # The medium band carries real dust-lane and pillar separation.  Keep only
+    # a restrained amount of the smallest band: on weak data that band is
+    # dominated by residual shot noise and was responsible for the gritty,
+    # over-deconvolved look in bright nebula cores.
+    donor_band = donor_medium
+    donor_samples = np.abs(donor_band[(nebula_confidence > 0.18) & (rl_star_protect < 0.12)])
+    donor_scale = float(np.percentile(donor_samples, 98.0)) if donor_samples.size > 1024 else 0.0
+    if donor_scale > 1e-6:
+        donor_normalized = np.clip(donor_band / donor_scale, -1.0, 1.0)
+        donor_normalized = np.where(donor_normalized < 0.0, donor_normalized * 1.24, donor_normalized * 0.74)
+        donor_detail = donor_normalized * 0.016
+        donor_mask = np.clip(
+            (nebula_confidence ** 0.70) * (0.30 + structure_confidence * 0.70) * (1.0 - rl_star_protect),
+            0.0,
+            0.88,
+        )
+        deconvolved_lum = np.clip(deconvolved_lum + donor_detail * donor_mask, 0.0, 1.0)
+    starless_tone = quantile_tone(deconvolved_lum)
+
+    ratio = working_ratio * (1.0 - warm[..., None]) + calibrated_ratio * warm[..., None]
+    # Preserve per-pixel measured ratios, but compress extreme raw duo-band
+    # chroma before the nonlinear luminance map.  Expanding those ratios here
+    # clipped the red channel in strong emission cores and erased the very
+    # yellow/brown variations and dust lanes we had just recovered.
+    ratio = 1.0 + (ratio - 1.0) * (1.05 + 0.70 * warm[..., None])
+    quiet_interior = (edge > 0.98) & (warm < 0.04) & (starless_tone < np.percentile(starless_tone, 58.0))
+    if np.count_nonzero(quiet_interior) > 1024:
+        measured_sky_ratio = np.median(working_ratio[quiet_interior], axis=0).astype(np.float32)
+        ratio = ratio * edge[..., None] + measured_sky_ratio[None, None, :] * (1.0 - edge[..., None])
+    # Lift only measured nebula signal.  Do not lower the warm structure toward
+    # the black point: that hid the pillars even when their contrast survived.
+    object_lum = np.clip(starless_tone * (1.0 + 0.07 * warm), 0.0, 1.0)
+    result = np.clip(ratio * object_lum[..., None], 0.0, 1.0)
+    result *= object_lum[..., None] / np.maximum(_luminance(result)[..., None], 1e-5)
+
+    # Stars already live in the corrected full-resolution canvas.  Keep this as
+    # a protection mask; do not construct and opacity-blend a second star image.
+    star_mask = np.clip(
+        star_cavity_repair if include_stars else np.zeros_like(star_cavity_repair),
+        0.0,
+        1.0,
+    )
+
+    result = np.clip(result, 0.0, 1.0).astype(np.float32)
+    # Separation seams need optical-scale smoothing in the quiet sky, but the
+    # same full-frame blur erases compact dust lanes and knots.  Recover only
+    # measured luminance structure under the continuous warm-signal mask;
+    # chroma remains untouched and star cores remain protected.
+    detail_lum = _luminance(result).astype(np.float32)
+    softened = cv2.GaussianBlur(result, (0, 0), 2.5)
+    softened = (
+        softened * (1.0 - star_mask[..., None])
+        + result * star_mask[..., None]
+    )
+    # Build a genuinely smooth nebula base.  Compact lanes are restored below
+    # from a denoised, dark-only structural band instead of retaining all
+    # high-frequency texture in an edge-preserving filter.
+    nebula_base = cv2.GaussianBlur(result, (0, 0), 2.0)
+    nebula_lum = _luminance(nebula_base).astype(np.float32)
+    structure_seed = cv2.bilateralFilter(
+        structure_lum.astype(np.float32),
+        d=0,
+        sigmaColor=0.030,
+        sigmaSpace=2.6,
+    )
+    lane_band = (
+        cv2.GaussianBlur(structure_seed, (0, 0), 2.2)
+        - cv2.GaussianBlur(structure_seed, (0, 0), 8.0)
+    )
+    lane_samples = np.abs(lane_band[(nebula_confidence > 0.18) & (rl_star_protect < 0.12)])
+    lane_scale = float(np.percentile(lane_samples, 98.0)) if lane_samples.size > 1024 else 0.0
+    if lane_scale > 1e-6:
+        lane_detail = np.clip(lane_band / lane_scale, -1.0, 1.0)
+        # Dark structure carries the pillars/dust lanes; positive detail is
+        # deliberately weaker so residual bright grain is not resurrected.
+        lane_detail = np.where(lane_detail < 0.0, lane_detail * 0.055, lane_detail * 0.002)
+    else:
+        lane_detail = np.zeros_like(nebula_lum, dtype=np.float32)
+    broad_detail = cv2.GaussianBlur(detail_lum, (0, 0), 4.0) - cv2.GaussianBlur(detail_lum, (0, 0), 12.0)
+    enhanced_lum = np.clip(nebula_lum + broad_detail * 0.28 + lane_detail, 0.0, 1.0)
+    # HDR-style negative local ratio for dust lanes and pillars.  Only values
+    # darker than their immediate surroundings are strengthened; positive
+    # microtexture is never boosted.
+    local_reference = cv2.GaussianBlur(structure_seed, (0, 0), 11.0)
+    local_log_ratio = np.log(
+        (structure_seed + 0.012) / np.maximum(local_reference + 0.012, 1e-5)
+    )
+    dark_lane_ratio = np.minimum(local_log_ratio, 0.0)
+    lane_ratio_mask = np.clip(nebula_confidence * (1.0 - rl_star_protect), 0.0, 1.0)
+    enhanced_lum *= np.exp(np.clip(dark_lane_ratio * lane_ratio_mask * 0.72, -0.42, 0.0))
+    enhanced_lum = np.clip(enhanced_lum, 0.0, 1.0)
+    enhanced = nebula_base * (enhanced_lum / np.maximum(nebula_lum, 1e-5))[..., None]
+    detail_protect = cv2.GaussianBlur((nebula_confidence ** 0.68).astype(np.float32), (0, 0), 1.2)
+    detail_protect *= 1.0 - np.clip(np.maximum(star_mask * 0.92, rl_star_protect), 0.0, 1.0)
+    result = softened * (1.0 - detail_protect[..., None]) + enhanced * detail_protect[..., None]
+    # Chrominance is cleaned independently from luminance: strong in low-SNR
+    # background, restrained in confident nebulosity, and neutral with respect
+    # to the measured per-pixel hue.
+    result_lum = _luminance(result).astype(np.float32)
+    result_chroma = result - result_lum[..., None]
+    chroma_sky = cv2.GaussianBlur(result_chroma.astype(np.float32), (0, 0), 2.4)
+    chroma_nebula = cv2.GaussianBlur(result_chroma.astype(np.float32), (0, 0), 0.72)
+    chroma_support = np.clip(nebula_confidence * (1.0 - starnet_footprint), 0.0, 1.0)[..., None]
+    clean_chroma = chroma_sky * (1.0 - chroma_support) + chroma_nebula * chroma_support
+    result = np.clip(result_lum[..., None] + clean_chroma, 0.0, 1.0)
+    clean_lum = _luminance(result).astype(np.float32)
+    result *= result_lum[..., None] / np.maximum(clean_lum[..., None], 1e-5)
+    if include_stars:
+        # Restrained positive-only stellar crisping.  The nebula is excluded by
+        # the compact StarNet footprint, and negative halos cannot be created.
+        final_lum = _luminance(result).astype(np.float32)
+        star_highpass = np.maximum(
+            final_lum - cv2.GaussianBlur(final_lum, (0, 0), 1.05),
+            0.0,
+        )
+        crisp_lum = np.clip(final_lum + star_highpass * starnet_footprint * 0.28, 0.0, 1.0)
+        result *= crisp_lum[..., None] / np.maximum(final_lum[..., None], 1e-5)
+        # Saturated duo-band stars often clip one channel first, producing gray
+        # centers and colored rims.  Use measured pre-separation luminance and a
+        # continuous footprint-weighted chroma compression; nebula pixels are
+        # never region-filled or recolored.
+        measured_star_lum = np.maximum(crisp_lum, working_tone * 0.94)
+        neutral_star = np.repeat(measured_star_lum[..., None], 3, axis=2)
+        neutral_weight = np.clip(
+            np.maximum(starnet_footprint * 0.90, star_artifact_reject * 0.55),
+            0.0,
+            0.90,
+        )[..., None]
+        result = result * (1.0 - neutral_weight) + neutral_star * neutral_weight
+    result = np.clip(result, 0.0, 1.0)
+    if diagnostics is not None:
+        def diagnostic_rgb(layer: np.ndarray, *, normalize: bool = False) -> np.ndarray:
+            data = np.asarray(layer, dtype=np.float32)
+            if normalize:
+                scale = max(float(np.percentile(data, 99.5)), 1e-6)
+                data = np.clip(data / scale, 0.0, 1.0)
+            return _to_uint16(np.repeat(np.clip(data, 0.0, 1.0)[..., None], 3, axis=2))
+
+        diagnostics["noise_map"] = diagnostic_rgb(noise_map, normalize=True)
+        diagnostics["snr_confidence"] = diagnostic_rgb(snr_confidence)
+        diagnostics["star_footprint"] = diagnostic_rgb(starnet_footprint)
+        diagnostics["star_artifact_reject"] = diagnostic_rgb(star_artifact_reject)
+        diagnostics["star_cavity_repair"] = diagnostic_rgb(star_cavity_repair)
+        diagnostics["nebula_confidence"] = diagnostic_rgb(nebula_confidence)
+        diagnostics["background_confidence"] = diagnostic_rgb(
+            np.clip((1.0 - nebula_confidence) * (1.0 - starnet_footprint), 0.0, 1.0)
+        )
+        diagnostics["masked_nebula_canvas"] = _to_uint16(starless)
+    if log:
+        log(
+            "Staged nebula composite: full-resolution denoised nebula canvas, StarNet used only in stellar footprints, "
+            f"noise_mean={float(np.mean(noise_map)):.6f}, snr_confidence_mean={float(np.mean(snr_confidence)):.5f}, "
+            f"star_footprint_mean={float(np.mean(starnet_footprint)):.5f}; dedicated luminance detail, "
+            "chroma denoise, and raw-profile star restoration."
+        )
+    return _to_uint16(result)
+
+
+# Backward-compatible public name for older callers and saved tests.  New
+# pipeline code uses the canonical name; there is no separate additive route.
+apply_additive_pedestal_duoband_finish = apply_canonical_nebula_composite
+
+
+def apply_universal_nebula_cosmetic_cleanup(
+    image: np.ndarray,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    """Remove compact cosmetic defects without reshaping nebula structure.
+
+    Every detector is local, continuous, and limited to small connected
+    components or statistically abnormal border pixels.  Replacements come
+    from the surrounding measured RGB; no target color or synthetic fill is
+    introduced.
+    """
+    rgb = _to_float01(image).astype(np.float32)
+    height, width = rgb.shape[:2]
+    lum = _luminance(rgb).astype(np.float32)
+    local_rgb = cv2.medianBlur(rgb, 3)
+    local_lum = _luminance(local_rgb).astype(np.float32)
+    residual = rgb - local_rgb
+
+    compact = np.clip(lum - cv2.GaussianBlur(lum, (0, 0), 1.6), 0.0, None)
+    star_threshold = max(float(np.percentile(compact, 99.35)), 0.006)
+    star_core = (compact > star_threshold).astype(np.uint8)
+    star_protect = cv2.dilate(
+        star_core,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+    ).astype(np.float32)
+    star_protect = cv2.GaussianBlur(star_protect, (0, 0), 1.1)
+
+    def retain_small_components(seed: np.ndarray, maximum_area: int) -> np.ndarray:
+        binary = np.asarray(seed, dtype=np.uint8)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        kept = np.zeros_like(binary, dtype=np.uint8)
+        for label in range(1, count):
+            if int(stats[label, cv2.CC_STAT_AREA]) <= maximum_area:
+                kept[labels == label] = 1
+        return kept.astype(np.float32)
+
+    # Single-channel positive impulses: hot pixels and isolated RGB speckles.
+    positive = np.max(residual, axis=2)
+    channel_spread = np.max(residual, axis=2) - np.min(residual, axis=2)
+    ordered_residual = np.sort(residual, axis=2)
+    single_channel_impulse = (
+        (ordered_residual[..., 2] > 0.020)
+        & ((ordered_residual[..., 2] - ordered_residual[..., 1]) > 0.016)
+    )
+    hot_level = max(float(np.percentile(positive, 99.97)), 0.020)
+    color_level = max(float(np.percentile(channel_spread, 99.95)), 0.018)
+    hot_seed = (
+        (positive > hot_level)
+        & (channel_spread > color_level)
+        & ((star_protect < 0.08) | single_channel_impulse)
+    )
+    hot_mask = retain_small_components(hot_seed, 8)
+
+    # Colored noise clumps are detected from chroma disagreement with their
+    # local neighborhood, restricted away from real stars and bright structure.
+    chroma = rgb - lum[..., None]
+    smooth_chroma = cv2.GaussianBlur(chroma, (0, 0), 1.5)
+    chroma_error = np.sqrt(np.sum((chroma - smooth_chroma) ** 2, axis=2))
+    chroma_level = max(float(np.percentile(chroma_error, 99.75)), 0.014)
+    colored_seed = (
+        (chroma_error > chroma_level)
+        & (lum < np.percentile(lum, 88.0))
+        & (star_protect < 0.06)
+    )
+    colored_mask = retain_small_components(colored_seed, 36)
+
+    # Residual StarNet dots are tiny luminance impulses not supported by a
+    # measured stellar core.  Both bright and dark compact defects are handled.
+    lum_error = np.abs(lum - local_lum)
+    dot_level = max(float(np.percentile(lum_error, 99.94)), 0.020)
+    dot_seed = (lum_error > dot_level) & (star_protect < 0.04)
+    dot_mask = retain_small_components(dot_seed, 10)
+
+    # Correct only statistically abnormal annular pixels around detected stars.
+    core_wide = cv2.dilate(star_core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+    core_inner = cv2.dilate(star_core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    annulus = (core_wide > core_inner).astype(np.float32)
+    negative_ring = np.clip(local_lum - lum, 0.0, None)
+    ring_level = max(float(np.percentile(negative_ring[annulus > 0], 99.0)) if np.any(annulus > 0) else 0.0, 0.010)
+    ring_mask = np.clip(
+        annulus * np.maximum(negative_ring / max(ring_level * 2.0, 1e-5) - 0.5, 0.0),
+        0.0,
+        0.55,
+    )
+    ring_mask = cv2.GaussianBlur(ring_mask.astype(np.float32), (0, 0), 0.8)
+
+    # Border cleanup is conditional: ordinary edge pixels are untouched.  Only
+    # edge pixels whose chroma/local residual is anomalous relative to the
+    # interior are blended toward the measured local neighborhood.
+    border_y = max(4, int(round(height * 0.018)))
+    border_x = max(4, int(round(width * 0.018)))
+    edge = np.zeros((height, width), dtype=np.float32)
+    edge[:border_y, :] = 1.0
+    edge[-border_y:, :] = 1.0
+    edge[:, :border_x] = 1.0
+    edge[:, -border_x:] = 1.0
+    border_error = np.maximum(chroma_error / max(chroma_level, 1e-5), lum_error / max(dot_level, 1e-5))
+    border_mask = np.clip(edge * (border_error - 1.0) * 0.45, 0.0, 0.72)
+    border_mask = cv2.GaussianBlur(border_mask.astype(np.float32), (0, 0), 1.0)
+
+    point_mask = np.clip(np.maximum.reduce([hot_mask, colored_mask * 0.82, dot_mask * 0.72]), 0.0, 1.0)
+    point_mask = cv2.GaussianBlur(point_mask.astype(np.float32), (0, 0), 0.45)
+    cleanup_mask = np.clip(np.maximum.reduce([point_mask, ring_mask, border_mask]), 0.0, 0.88)
+    cleaned = np.clip(rgb * (1.0 - cleanup_mask[..., None]) + local_rgb * cleanup_mask[..., None], 0.0, 1.0)
+    # A confirmed one-channel impulse has no plausible stellar RGB support.
+    # Replace its center completely; the softened mask above handles its edge.
+    impulse_center = hot_mask * single_channel_impulse.astype(np.float32)
+    cleaned = cleaned * (1.0 - impulse_center[..., None]) + local_rgb * impulse_center[..., None]
+
+    if log:
+        log(
+            "Canonical nebula cosmetic cleanup: "
+            f"hot_pixels={int(np.count_nonzero(hot_mask))}, "
+            f"colored_speckles={int(np.count_nonzero(colored_mask))}, "
+            f"residual_dots={int(np.count_nonzero(dot_mask))}, "
+            f"ring_mean={float(np.mean(ring_mask)):.6f}, "
+            f"border_mean={float(np.mean(border_mask)):.6f}."
+        )
+    return _to_uint16(cleaned)
+
+
+def apply_measured_nebula_background_neutralization(
+    image: np.ndarray,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    """Neutralize only statistically quiet sky before color calibration."""
+    rgb = _to_float01(image).astype(np.float32)
+    lum = _luminance(rgb).astype(np.float32)
+    chroma = np.max(rgb, axis=2) - np.min(rgb, axis=2)
+    compact = np.clip(lum - cv2.GaussianBlur(lum, (0, 0), 1.8), 0.0, None)
+    quiet = (
+        (lum < np.percentile(lum, 48.0))
+        & (chroma < np.percentile(chroma, 72.0))
+        & (compact < np.percentile(compact, 97.0))
+    )
+    if np.count_nonzero(quiet) < 2048:
+        if log:
+            log("Measured nebula background neutralization skipped: insufficient quiet-sky samples.")
+        return _to_uint16(rgb)
+    medians = np.median(rgb[quiet], axis=0).astype(np.float32)
+    neutral = float(np.mean(medians))
+    gains = np.clip(neutral / np.maximum(medians, 1e-5), 0.78, 1.24)
+    neutralized = np.clip(rgb * gains.reshape(1, 1, 3), 0.0, 1.0)
+    support = cv2.GaussianBlur(quiet.astype(np.float32), (0, 0), 5.0)
+    support = np.clip(support * 0.92, 0.0, 0.92)[..., None]
+    result = rgb * (1.0 - support) + neutralized * support
+    if log:
+        log(
+            "Measured nebula background neutralization: "
+            f"samples={int(np.count_nonzero(quiet))}, "
+            f"background_before={medians.tolist()}, gains={gains.tolist()}."
+        )
+    return _to_uint16(np.clip(result, 0.0, 1.0))
+
+
 def apply_color_preserving_nebula_arcsinh(
     image: np.ndarray,
     log: LogCallback | None = None,
@@ -2152,18 +2723,44 @@ def apply_color_preserving_nebula_arcsinh(
         return arr
     rgb = _to_float01(arr)
     lum = _luminance(rgb).astype(np.float32)
-    black = float(np.percentile(lum, 1.0)) * 0.35
+    low = float(np.percentile(lum, 0.5))
+    median = float(np.percentile(lum, 50.0))
+    # Keep the black point just below measured sky.  Multiplying the pedestal
+    # by an arbitrary fraction leaves high-pedestal linear stacks almost
+    # unstretched; measuring the lower tail gives the nonlinear stage a real
+    # display range while retaining faint signal below the median.
+    black = max(0.0, low - max((median - low) * 0.08, 2.0 / 65535.0))
     white = float(np.percentile(lum, 99.85))
     normalized = np.clip((lum - black) / max(1e-6, white - black), 0.0, 1.0)
-    curved = np.arcsinh(normalized * 4.0) / np.arcsinh(4.0)
-    target_normalized = np.clip(normalized * 0.72 + curved * 0.28, 0.0, 1.0)
-    target_lum = np.clip(black + target_normalized * (white - black), 0.0, 1.0)
-    scale = np.clip(target_lum / np.maximum(lum, 1e-5), 0.0, 1.34)
+    curved = np.arcsinh(normalized * 6.0) / np.arcsinh(6.0)
+    target_lum = np.clip(normalized * 0.22 + curved * 0.78, 0.0, 1.0)
+    # Normalize the display exposure without clipping highlights.  This makes
+    # high-pedestal and low-pedestal linear stacks converge on the same sky
+    # brightness instead of inheriting an arbitrary sensor pedestal.
+    target_median = float(np.percentile(target_lum, 50.0))
+    desired_median = 0.075
+    if target_median > 1e-5:
+        exposure = np.clip(
+            desired_median * (1.0 - target_median)
+            / max(target_median * (1.0 - desired_median), 1e-6),
+            0.035,
+            4.0,
+        )
+        target_lum = np.clip(
+            target_lum * exposure / np.maximum(1.0 - target_lum * (1.0 - exposure), 1e-5),
+            0.0,
+            1.0,
+        )
+    else:
+        exposure = 1.0
+    scale = np.clip(target_lum / np.maximum(lum, 1e-5), 0.0, 32.0)
     result = np.clip(rgb * scale[..., None], 0.0, 1.0)
     if log:
         log(
             "Applied color-preserving linked arcsinh nebula lift: "
-            f"black={black:.6f}, white={white:.6f}, median_scale={float(np.median(scale[lum > 1e-5])):.3f}"
+            f"black={black:.6f}, white={white:.6f}, exposure={float(exposure):.3f}, "
+            f"output_median={float(np.median(target_lum)):.3f}, "
+            f"median_scale={float(np.median(scale[lum > 1e-5])):.3f}"
         )
     return _to_uint16(result)
 
@@ -2188,6 +2785,34 @@ def apply_conservative_measured_chroma(
     chroma_ratio = (reference - ref_lum[..., None]) / np.maximum(ref_lum[..., None], 0.018)
     chroma_ratio = cv2.GaussianBlur(np.clip(chroma_ratio, -0.72, 0.72).astype(np.float32), (0, 0), 1.35)
 
+    # Sensor/stack pedestals can make real emission chroma only a tiny fraction
+    # of total RGB.  Recover it from the measured local residual rather than
+    # boosting absolute channel values or assigning a palette.
+    reference_sigma = max(24.0, min(reference.shape[:2]) / 55.0)
+    reference_background = cv2.GaussianBlur(reference, (0, 0), reference_sigma)
+    residual_rgb = reference - reference_background
+    residual_lum = _luminance(residual_rgb).astype(np.float32)
+    residual_chroma = residual_rgb - residual_lum[..., None]
+    residual_floor = max(float(np.percentile(np.abs(residual_lum), 68.0)) * 1.8, 0.0020)
+    residual_ratio = np.clip(
+        residual_chroma / np.maximum(np.abs(residual_lum)[..., None], residual_floor),
+        -1.10,
+        1.10,
+    )
+    positive_residual = np.clip(residual_lum, 0.0, None)
+    residual_high = max(float(np.percentile(positive_residual, 99.2)), residual_floor * 2.0)
+    residual_confidence = np.clip(
+        (positive_residual - residual_floor * 0.55) / max(residual_high - residual_floor * 0.55, 1e-6),
+        0.0,
+        1.0,
+    ) ** 0.72
+    residual_confidence = cv2.GaussianBlur(residual_confidence.astype(np.float32), (0, 0), 1.1)
+    chroma_ratio = np.clip(
+        chroma_ratio + residual_ratio * residual_confidence[..., None] * 1.00,
+        -1.15,
+        1.15,
+    )
+
     broad = cv2.GaussianBlur(lum, (0, 0), 18.0)
     low = float(np.percentile(broad, 38.0))
     high = float(np.percentile(broad, 99.0))
@@ -2210,6 +2835,9 @@ def apply_conservative_measured_chroma(
         0.0,
         maximum_chroma,
     )
+    # The residual term improves the color estimate; it does not receive an
+    # independent saturation gain.  One shared confidence strength keeps the
+    # result calibrated and prevents saturated color islands.
     colored = np.clip(lum[..., None] * (1.0 + chroma_ratio * strength[..., None]), 0.0, 1.0)
     colored_lum = _luminance(colored).astype(np.float32)
     colored = np.clip(colored * (lum / np.maximum(colored_lum, 1e-5))[..., None], 0.0, 1.0)
@@ -2299,6 +2927,9 @@ def blend_masked_nebula_denoise(
     detail_source: np.ndarray,
     denoised_image: np.ndarray,
     log: LogCallback | None = None,
+    *,
+    maximum_detail_mix: float = 0.58,
+    detail_strength_override: float | None = None,
 ) -> np.ndarray:
     """Reduce denoise strength only where coherent nebula structure is present."""
     source = _to_float01(np.asarray(detail_source))
@@ -2308,10 +2939,13 @@ def blend_masked_nebula_denoise(
     lum = _luminance(source).astype(np.float32)
     signal, structure, star_protect = _detail_nebula_mask(lum)
     detail_strength = float(np.clip(0.065 / max(1e-5, float(np.percentile(lum, 90.0))), 0.45, 1.0))
+    if detail_strength_override is not None:
+        detail_strength = float(np.clip(detail_strength_override, 0.0, 1.0))
+    maximum_detail_mix = float(np.clip(maximum_detail_mix, 0.0, 0.92))
     detail_mix = np.clip(
-        signal * (structure**0.74) * (1.0 - star_protect * 0.96) * 0.58 * detail_strength,
+        signal * (structure**0.74) * (1.0 - star_protect * 0.96) * maximum_detail_mix * detail_strength,
         0.0,
-        0.58,
+        maximum_detail_mix,
     )
     result = np.clip(denoised * (1.0 - detail_mix[..., None]) + source * detail_mix[..., None], 0.0, 1.0)
     if log:
