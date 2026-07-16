@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import cv2
 import numpy as np
 from astropy.io import fits
 
@@ -34,7 +35,11 @@ from app.web_legacy_150_pipeline import (
     _should_run_early_nebula_deepsnr,
     run_pipeline as expected_web_legacy_150_pipeline,
 )
-from app.web_legacy_150_goal_look import clean_starless_nebula_background
+from app.web_legacy_150_goal_look import (
+    _apply_reference_nebula_tone_grade,
+    _neutralize_nebula_sky_field,
+    clean_starless_nebula_background,
+)
 
 
 class WebPipelineRoutingTests(unittest.TestCase):
@@ -99,6 +104,47 @@ class WebPipelineRoutingTests(unittest.TestCase):
         cleaned_spread = np.percentile(cleaned_lum[sky], 90) - np.percentile(cleaned_lum[sky], 10)
         self.assertLess(cleaned_spread, source_spread * 0.45)
         self.assertGreater(float(np.max(cleaned[..., 0] - cleaned[..., 1])), 0.18)
+
+    def test_final_nebula_sky_neutralization_removes_blobs_and_preserves_object(self) -> None:
+        height, width = 240, 320
+        yy, xx = np.mgrid[:height, :width].astype(np.float32)
+        blobs = 0.035 * np.sin(xx / 34.0) + 0.028 * np.cos(yy / 27.0)
+        sky = 0.045 + blobs
+        body = np.exp(-(((xx - 168.0) / 42.0) ** 2 + ((yy - 121.0) / 36.0) ** 2))
+        image = np.stack(
+            [sky + body * 0.30, sky * 1.10 + body * 0.12, sky * 0.92 + body * 0.08],
+            axis=2,
+        ).astype(np.float32)
+        signal = cv2.GaussianBlur(body.astype(np.float32), (0, 0), 3.0)
+
+        neutralized = _neutralize_nebula_sky_field(image, signal)
+        before_lum = np.mean(image, axis=2)
+        after_lum = np.mean(neutralized, axis=2)
+        sky_mask = body < 0.025
+        before_spread = float(np.percentile(before_lum[sky_mask], 90) - np.percentile(before_lum[sky_mask], 10))
+        after_spread = float(np.percentile(after_lum[sky_mask], 90) - np.percentile(after_lum[sky_mask], 10))
+        core = body > 0.70
+
+        self.assertLess(after_spread, before_spread * 0.18)
+        self.assertGreater(float(np.median(after_lum[core]) - np.median(after_lum[sky_mask])), 0.09)
+
+    def test_reference_nebula_grade_lifts_sky_and_restrains_red_core(self) -> None:
+        height, width = 180, 240
+        yy, xx = np.mgrid[:height, :width].astype(np.float32)
+        body = np.exp(-(((xx - 122.0) / 34.0) ** 2 + ((yy - 91.0) / 29.0) ** 2))
+        image = np.zeros((height, width, 3), dtype=np.float32)
+        image[:] = np.array([0.011, 0.008, 0.009], dtype=np.float32)
+        image += body[..., None] * np.array([0.48, 0.19, 0.16], dtype=np.float32)
+        signal = cv2.GaussianBlur(body.astype(np.float32), (0, 0), 2.5)
+
+        graded = _apply_reference_nebula_tone_grade(image, signal)
+        sky = body < 0.01
+        core = body > 0.80
+
+        self.assertGreater(float(np.median(graded[sky, 0])), 0.045)
+        self.assertGreater(float(np.median(graded[sky, 2])), float(np.median(graded[sky, 1])) * 1.45)
+        self.assertLess(float(np.median(graded[core, 0])), float(np.median(image[core, 0])) * 0.82)
+        self.assertGreater(float(np.median(graded[core, 1] / np.maximum(graded[core, 0], 1e-5))), 0.40)
 
     def test_canonical_nebula_stage_order_is_complete(self) -> None:
         self.assertEqual(len(CANONICAL_NEBULA_STAGES), 19)

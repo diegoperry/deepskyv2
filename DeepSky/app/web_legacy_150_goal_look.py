@@ -2752,6 +2752,142 @@ def _restore_bright_native_nebula_color(
     return np.clip(restored * (lum / np.maximum(restored_lum, 1e-5))[..., None], 0.0, 1.0)
 
 
+def _suppress_dark_sky_chroma_artifacts(
+    image: np.ndarray,
+    signal: np.ndarray,
+    star_halo: np.ndarray,
+) -> np.ndarray:
+    """Remove isolated colored StarNet contours without softening luminance."""
+    rgb = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
+    lum = _luminance(rgb).astype(np.float32)
+    chroma = rgb - lum[..., None]
+    smooth_chroma = cv2.GaussianBlur(chroma.astype(np.float32), (0, 0), 2.8)
+    chroma_residual = np.max(np.abs(chroma - smooth_chroma), axis=2)
+    chroma_extent = np.max(rgb, axis=2) - np.min(rgb, axis=2)
+
+    quiet_sky = np.clip(
+        np.clip(
+            (0.20 - np.clip(np.asarray(signal, dtype=np.float32), 0.0, 1.0)) / 0.14,
+            0.0,
+            1.0,
+        )
+        * (1.0 - np.clip(np.asarray(star_halo, dtype=np.float32), 0.0, 1.0) * 0.98)
+        * np.clip((0.16 - lum) / 0.12, 0.0, 1.0),
+        0.0,
+        1.0,
+    )
+    residual_score = np.clip((chroma_residual - 0.004) / 0.026, 0.0, 1.0)
+    color_score = np.clip((chroma_extent - 0.012) / 0.075, 0.0, 1.0)
+    artifact = np.clip(
+        quiet_sky * color_score * (0.72 + residual_score * 0.28),
+        0.0,
+        0.97,
+    )
+    artifact = cv2.GaussianBlur(artifact.astype(np.float32), (0, 0), 0.85)
+
+    cleaned_chroma = smooth_chroma * 0.12
+    cleaned = np.clip(
+        lum[..., None]
+        + chroma * (1.0 - artifact[..., None])
+        + cleaned_chroma * artifact[..., None],
+        0.0,
+        1.0,
+    )
+    cleaned_lum = _luminance(cleaned).astype(np.float32)
+    return np.clip(cleaned * (lum / np.maximum(cleaned_lum, 1e-5))[..., None], 0.0, 1.0)
+
+
+def _neutralize_nebula_sky_field(
+    image: np.ndarray,
+    signal: np.ndarray,
+) -> np.ndarray:
+    """Replace low-confidence broad blobs with one measured constant sky."""
+    rgb = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
+    lum = _luminance(rgb).astype(np.float32)
+    confidence = np.clip(np.asarray(signal, dtype=np.float32), 0.0, 1.0)
+
+    # Preserve coherent nebula bodies and their softly connected envelopes.
+    object_support = np.clip((confidence - 0.13) / 0.24, 0.0, 1.0) ** 0.72
+    object_support = cv2.GaussianBlur(object_support.astype(np.float32), (0, 0), 5.0)
+    sky_mix = np.clip(np.clip(1.0 - object_support * 1.08, 0.0, 1.0) ** 1.35, 0.0, 0.98)
+
+    quiet = (confidence < 0.075) & (lum < np.percentile(lum, 68.0))
+    if int(np.count_nonzero(quiet)) < 2048:
+        quiet = confidence < 0.10
+    sky_rgb = (
+        np.median(rgb[quiet], axis=0).astype(np.float32)
+        if int(np.count_nonzero(quiet)) >= 2048
+        else np.median(rgb.reshape(-1, 3), axis=0).astype(np.float32)
+    )
+    sky_lum = float(_luminance(sky_rgb.reshape(1, 1, 3))[0, 0])
+    sky_direction = sky_rgb / max(sky_lum, 1e-5)
+    sky_direction = np.clip(sky_direction, 0.82, 1.18)
+
+    # Keep tiny natural grain but remove low/mid-frequency luminance islands.
+    fine_lum = lum - cv2.GaussianBlur(lum, (0, 0), 7.0)
+    fine_scale = max(1e-6, float(np.percentile(np.abs(fine_lum[quiet]), 97.0))) if int(np.count_nonzero(quiet)) >= 2048 else 0.01
+    fine_lum = np.clip(fine_lum, -fine_scale, fine_scale) * 0.16
+    constant_lum = np.clip(sky_lum + fine_lum, 0.003, 0.16)
+    constant_sky = np.clip(constant_lum[..., None] * sky_direction.reshape(1, 1, 3), 0.0, 1.0)
+
+    return np.clip(
+        rgb * (1.0 - sky_mix[..., None])
+        + constant_sky * sky_mix[..., None],
+        0.0,
+        1.0,
+    )
+
+
+def _apply_reference_nebula_tone_grade(
+    image: np.ndarray,
+    signal: np.ndarray,
+) -> np.ndarray:
+    """Give cleaned nebula data a restrained plum-sky, copper-pink presentation."""
+    rgb = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
+    confidence = np.clip(np.asarray(signal, dtype=np.float32), 0.0, 1.0)
+    object_mix = cv2.GaussianBlur(
+        (np.clip((confidence - 0.07) / 0.31, 0.0, 1.0) ** 0.72).astype(np.float32),
+        (0, 0),
+        4.0,
+    )
+    sky_mix = np.clip(1.0 - object_mix * 1.05, 0.0, 1.0) ** 1.18
+
+    # The reference sky is deliberately lifted, but remains below the faint
+    # emission. Applying this only to low-confidence pixels prevents a color
+    # wash from being painted across real nebulosity.
+    target_sky = np.array([0.058, 0.031, 0.054], dtype=np.float32)
+    graded = rgb * (1.0 - sky_mix[..., None]) + target_sky * sky_mix[..., None]
+
+    lum = _luminance(graded).astype(np.float32)
+    target_sky_lum = float(_luminance(target_sky.reshape(1, 1, 3))[0, 0])
+    above_sky = np.clip(
+        (lum - target_sky_lum) / max(1.0 - target_sky_lum, 1e-5),
+        0.0,
+        1.0,
+    )
+    # A soft photographic shoulder brings the bright M16 core into the same
+    # tonal family as its outer dust instead of leaving a neon-red hotspot.
+    compressed_lum = target_sky_lum + (1.0 - target_sky_lum) * (above_sky ** 1.42)
+    desired_lum = lum * (1.0 - object_mix) + compressed_lum * object_mix
+    graded = np.clip(graded * (desired_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
+
+    # Preserve measured color variation while gently moving red emission
+    # toward copper-pink. Highlights become creamier through selective chroma
+    # compression rather than a flat replacement hue.
+    warm = graded * np.array([0.93, 1.08, 1.01], dtype=np.float32).reshape(1, 1, 3)
+    warm_lum = _luminance(warm).astype(np.float32)
+    warm = np.clip(warm * (desired_lum / np.maximum(warm_lum, 1e-5))[..., None], 0.0, 1.0)
+    highlight = np.clip((desired_lum - 0.12) / 0.34, 0.0, 1.0) * object_mix
+    neutral = np.repeat(desired_lum[..., None], 3, axis=2)
+    warm = warm * (1.0 - highlight[..., None] * 0.25) + neutral * highlight[..., None] * 0.25
+    return np.clip(
+        graded * (1.0 - object_mix[..., None] * 0.72)
+        + warm * object_mix[..., None] * 0.72,
+        0.0,
+        1.0,
+    )
+
+
 def apply_measured_color_to_nebula_detail(
     detail_image: np.ndarray,
     color_reference: np.ndarray,
@@ -2921,6 +3057,9 @@ def apply_measured_color_to_nebula_detail(
     colored = np.clip(saturated * (final_lum / np.maximum(saturated_lum, 1e-5))[..., None], 0.0, 1.0)
     colored = _apply_adaptive_nebula_display_stretch(colored, signal, star_halo, log)
     colored = _restore_bright_native_nebula_color(colored, detail, signal, star_halo)
+    colored = _neutralize_nebula_sky_field(colored, signal)
+    colored = _apply_reference_nebula_tone_grade(colored, signal)
+    colored = _suppress_dark_sky_chroma_artifacts(colored, signal, star_halo)
 
     if log:
         log(
