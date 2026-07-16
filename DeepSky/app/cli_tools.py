@@ -13,6 +13,17 @@ STARNET_COMMAND = ["{exe}", "-i", "{input}", "-o", "{output}"]
 REALESRGAN_COMMAND = ["{exe}", "-i", "{input}", "-o", "{output}", "-n", "{model}"]
 
 
+class ToolExecutionError(RuntimeError):
+    def __init__(self, tool_name: str, return_code: int, output: str) -> None:
+        self.tool_name = tool_name
+        self.return_code = return_code
+        self.output = output
+        detail = f"{tool_name} exited with code {return_code}"
+        if output.strip():
+            detail = f"{detail}: {output.strip()[-800:]}"
+        super().__init__(detail)
+
+
 def find_executable(tool_folder: Path) -> Path | None:
     tool_folder = Path(tool_folder)
     if tool_folder.is_file() and tool_folder.suffix.lower() == ".exe":
@@ -91,12 +102,14 @@ def _run_tool(
         text=True,
     )
     assert process.stdout is not None
+    output_lines: list[str] = []
     for line in process.stdout:
+        output_lines.append(line.rstrip())
         if log:
             log(line.rstrip())
     return_code = process.wait()
     if return_code != 0:
-        raise RuntimeError(f"{exe.name} exited with code {return_code}")
+        raise ToolExecutionError(exe.name, return_code, "\n".join(output_lines))
     if not output_path.exists():
         raise RuntimeError(f"{exe.name} finished but did not create {output_path.name}")
 

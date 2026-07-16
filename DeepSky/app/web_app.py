@@ -26,7 +26,7 @@ from io import BytesIO
 
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
-from .cli_tools import find_executable, run_realesrgan
+from .cli_tools import ToolExecutionError, find_executable, run_realesrgan
 from .pipeline import PccCalibrationFailed
 from .web_legacy_150_pipeline import (
     PccCalibrationFailed as WebLegacyPccCalibrationFailed,
@@ -150,6 +150,26 @@ def _build_png_export_with_footer(
     buffer = BytesIO()
     canvas.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def _realesrgan_error_message(exc: Exception) -> str:
+    if isinstance(exc, ToolExecutionError):
+        code = exc.return_code
+        output = exc.output.strip()
+        if code in {3221225781, -1073741515}:
+            return (
+                "Real-ESRGAN could not start because Windows is missing a runtime DLL. "
+                "On the VPS, install the Microsoft Visual C++ 2015-2022 x64 Redistributable "
+                "and make sure Vulkan is available through the GPU driver or Vulkan runtime "
+                "(vulkan-1.dll)."
+            )
+        if "vk" in output.lower() or "vulkan" in output.lower():
+            return (
+                "Real-ESRGAN started but could not access Vulkan. Install/update the VPS GPU driver "
+                "or Vulkan runtime, then restart the web app."
+            )
+        return f"Real-ESRGAN failed with exit code {code}. {output[-500:] if output else 'No CLI output was returned.'}"
+    return str(exc) or "Real-ESRGAN failed."
 
 
 @dataclass
@@ -3849,14 +3869,18 @@ def restore_job_pixel(job_id: str, user: AuthUser = Depends(require_user)) -> di
         )
     except Exception as exc:
         logger.exception("Pixel Restoration failed for job %s", job_id)
+        failure_message = _realesrgan_error_message(exc)
         with jobs_lock:
             job = jobs.get(job_id)
             if job:
                 job.stage = "Complete"
                 job.progress = 100
-                job.warnings.append("Pixel Restoration failed. The original DeepSky output is unchanged.")
-                job.log.append(f"Pixel Restoration failed: {exc}")
-        raise HTTPException(status_code=500, detail="Pixel Restoration failed. The original output is unchanged.") from exc
+                job.warnings.append(f"Pixel Restoration failed: {failure_message}")
+                job.log.append(f"Pixel Restoration failed: {failure_message}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Pixel Restoration failed. {failure_message} The original output is unchanged.",
+        ) from exc
 
     with jobs_lock:
         job = jobs.get(job_id)

@@ -24,9 +24,11 @@ from app.siril_cli import create_background_extraction_script
 from app.settings import default_settings
 from app.web_app import (
     _configure_web_pipeline_settings,
+    _realesrgan_error_message,
     _run_job,
     run_web_legacy_150_pipeline,
 )
+from app.cli_tools import ToolExecutionError
 from app.web_legacy_150_pipeline import (
     PipelineMode as WebLegacyPipelineMode,
     _should_run_early_nebula_deepsnr,
@@ -39,6 +41,12 @@ class WebPipelineRoutingTests(unittest.TestCase):
     def test_web_worker_is_pinned_to_nebula_filament_commit_150(self) -> None:
         self.assertIs(run_web_legacy_150_pipeline, expected_web_legacy_150_pipeline)
         self.assertIn("run_web_legacy_150_pipeline(", inspect.getsource(_run_job))
+
+    def test_realesrgan_windows_missing_dll_error_is_actionable(self) -> None:
+        message = _realesrgan_error_message(ToolExecutionError("realesrgan-ncnn-vulkan.exe", 3221225781, ""))
+        self.assertIn("runtime DLL", message)
+        self.assertIn("Visual C++", message)
+        self.assertIn("Vulkan", message)
 
     def test_early_deepsnr_is_restricted_to_linear_nebula_inputs(self) -> None:
         linear = SimpleNamespace(recommended_mode="linear")
