@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -26,13 +27,70 @@ from app.web_app import (
     _run_job,
     run_web_legacy_150_pipeline,
 )
-from app.web_legacy_150_pipeline import run_pipeline as expected_web_legacy_150_pipeline
+from app.web_legacy_150_pipeline import (
+    PipelineMode as WebLegacyPipelineMode,
+    _should_run_early_nebula_deepsnr,
+    run_pipeline as expected_web_legacy_150_pipeline,
+)
+from app.web_legacy_150_goal_look import clean_starless_nebula_background
 
 
 class WebPipelineRoutingTests(unittest.TestCase):
     def test_web_worker_is_pinned_to_nebula_filament_commit_150(self) -> None:
         self.assertIs(run_web_legacy_150_pipeline, expected_web_legacy_150_pipeline)
         self.assertIn("run_web_legacy_150_pipeline(", inspect.getsource(_run_job))
+
+    def test_early_deepsnr_is_restricted_to_linear_nebula_inputs(self) -> None:
+        linear = SimpleNamespace(recommended_mode="linear")
+        stretched = SimpleNamespace(recommended_mode="pre_stretched")
+        self.assertTrue(
+            _should_run_early_nebula_deepsnr(
+                object_type="nebula",
+                mode=WebLegacyPipelineMode.FULL,
+                input_mode="auto",
+                use_prestretched=False,
+                analysis=linear,
+            )
+        )
+        self.assertFalse(
+            _should_run_early_nebula_deepsnr(
+                object_type="nebula",
+                mode=WebLegacyPipelineMode.FULL,
+                input_mode="auto",
+                use_prestretched=True,
+                analysis=stretched,
+            )
+        )
+        self.assertFalse(
+            _should_run_early_nebula_deepsnr(
+                object_type="galaxy",
+                mode=WebLegacyPipelineMode.FULL,
+                input_mode="linear",
+                use_prestretched=False,
+                analysis=linear,
+            )
+        )
+
+    def test_starless_background_cleanup_flattens_sky_and_preserves_colored_core(self) -> None:
+        height, width = 256, 384
+        yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
+        gradient = 0.05 + 0.12 * (xx / width) + 0.06 * np.sin(yy / 27.0)
+        image = np.stack([gradient * 0.95, gradient * 1.08, gradient], axis=2)
+        core = np.exp(-(((xx - width * 0.53) / 35.0) ** 2 + ((yy - height * 0.47) / 28.0) ** 2))
+        image[..., 0] += core * 0.42
+        image[..., 1] += core * 0.12
+        image[..., 2] += core * 0.06
+        source = np.clip(image * 65535.0, 0.0, 65535.0).astype(np.uint16)
+
+        cleaned = clean_starless_nebula_background(source).astype(np.float32) / 65535.0
+        source_float = source.astype(np.float32) / 65535.0
+        sky = core < 0.03
+        source_lum = np.mean(source_float, axis=2)
+        cleaned_lum = np.mean(cleaned, axis=2)
+        source_spread = np.percentile(source_lum[sky], 90) - np.percentile(source_lum[sky], 10)
+        cleaned_spread = np.percentile(cleaned_lum[sky], 90) - np.percentile(cleaned_lum[sky], 10)
+        self.assertLess(cleaned_spread, source_spread * 0.45)
+        self.assertGreater(float(np.max(cleaned[..., 0] - cleaned[..., 1])), 0.18)
 
     def test_canonical_nebula_stage_order_is_complete(self) -> None:
         self.assertEqual(len(CANONICAL_NEBULA_STAGES), 19)
@@ -210,13 +268,13 @@ class WebPipelineRoutingTests(unittest.TestCase):
             pre_stretched=False,
             stretch_level="Standard",
             siril_deconvolution=False,
-            star_setting="Starless",
+            star_setting="Standard",
             pcc_failure_policy="continue",
         )
 
         self.assertEqual(settings.object_type, "Nebula")
         self.assertEqual(settings.pcc_failure_policy, "continue_without_pcc")
-        self.assertEqual(settings.star_handling_mode, "Slight Star Reduction")
+        self.assertEqual(settings.star_handling_mode, "Standard")
         self.assertFalse(settings.starless_test_enabled)
         self.assertEqual(settings.color_calibration_mode, "Basic")
         self.assertEqual(settings.nebula_color_separation, "Strong")

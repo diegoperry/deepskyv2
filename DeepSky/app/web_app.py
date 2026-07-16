@@ -2866,7 +2866,7 @@ def _html() -> str:
         selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
       );
       const starSetting =
-        selectedObjectType === "Star Cluster" ? "Standard" : "Slight Star Reduction";
+        selectedObjectType === "Galaxy" ? "Slight Star Reduction" : "Standard";
       data.append("star_setting", starSetting);
       data.append("starless_test", "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
@@ -3175,7 +3175,11 @@ def _configure_web_pipeline_settings(
     # legacy starless-test route.
     if selected_object == "Nebula":
         settings.pcc_failure_policy = "continue_without_pcc"
-        settings.star_handling_mode = "Slight Star Reduction"
+        settings.star_handling_mode = (
+            star_setting
+            if star_setting in {"Standard", "Slight Star Reduction", "Starless"}
+            else "Standard"
+        )
     else:
         settings.pcc_failure_policy = pcc_failure_policy
         settings.star_handling_mode = (

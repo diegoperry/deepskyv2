@@ -30,6 +30,7 @@ from .web_legacy_150_goal_look import (
     blend_broadband_background_denoise,
     blend_masked_nebula_denoise,
     chroma_percentile,
+    clean_starless_nebula_background,
     compose_pixinsight_nebula_layers,
     reflection_nebula_bias,
     red_emission_dominance,
@@ -50,6 +51,7 @@ from .python_color_calibration import python_fallback_color_calibration
 from .settings import AppSettings
 from .siril_cli import (
     build_siril_pcc_command,
+    create_background_extraction_script,
     create_basic_color_script,
     create_nebula_local_color_script,
     create_photometric_color_script,
@@ -103,6 +105,116 @@ def _normalized_input_mode(settings: AppSettings) -> str:
     if value == "linear":
         return "linear"
     return "auto"
+
+
+def _should_run_early_nebula_deepsnr(
+    *,
+    object_type: str,
+    mode: PipelineMode,
+    input_mode: str,
+    use_prestretched: bool,
+    analysis: object | None,
+) -> bool:
+    """Use DeepSNR early only when the input is confidently linear RGB."""
+    if object_type != "nebula" or mode != PipelineMode.FULL or use_prestretched:
+        return False
+    if input_mode == "linear":
+        return True
+    return bool(analysis is not None and getattr(analysis, "recommended_mode", None) == "linear")
+
+
+def _run_early_linear_nebula_deepsnr(
+    source: Path,
+    output: Path,
+    settings: AppSettings,
+    write_log: LogCallback,
+) -> Path | None:
+    """Run DeepSNR v2 with extra tile overlap on a full-resolution linear RGB TIFF."""
+    image = load_image(source, write_log)
+    if image.ndim != 3 or image.shape[-1] < 3:
+        write_log("Early DeepSNR skipped: the nebula working image is not three-channel RGB.")
+        return None
+    if min(image.shape[:2]) < 512:
+        write_log("Early DeepSNR skipped: DeepSNR requires both image dimensions to be at least 512 pixels.")
+        return None
+    deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
+    if not deepsnr_exe:
+        write_log("Early DeepSNR skipped: executable not found; retaining the #150 fallback ordering.")
+        return None
+    write_log(
+        "Early linear DeepSNR: calibrated/integrated 16-bit RGB, model=2, stride=256; "
+        "running before deconvolution and nonlinear stretch."
+    )
+    try:
+        run_deepsnr(source, output, deepsnr_exe, write_log, model=2, stride=256)
+    except Exception as exc:
+        write_log(f"Early DeepSNR failed; retaining the #150 fallback ordering. Error: {exc}")
+        return None
+    _log_existing_image(output, write_log, "early_linear_deepsnr.tif")
+    return output
+
+
+def _prepare_early_nebula_deepsnr_source(
+    working: Path,
+    original: Path,
+    job_folder: Path,
+    settings: AppSettings,
+    write_log: LogCallback,
+) -> Path:
+    """Background-correct a linear master before DeepSNR without changing its RGB reference."""
+    siril_exe = find_siril_executable(Path(settings.siril_folder))
+    if siril_exe:
+        background_output = job_folder / "early_siril_background_only.fit"
+        background_script = create_background_extraction_script(
+            original,
+            background_output,
+            job_folder,
+        )
+        try:
+            write_log("Early DeepSNR preparation: running independent Siril background extraction (no PCC/SPCC).")
+            run_siril_script(siril_exe, background_script, job_folder, write_log)
+            if background_output.exists():
+                prepared = job_folder / "early_linear_background_corrected.tif"
+                # Siril preserves the FITS pedestal.  DeepSNR and the protected
+                # stretch expect the same background-subtracted 16-bit working
+                # scale as the normal FITS loader, so normalize only after the
+                # spatial background model has been removed.
+                convert_to_working_tiff(background_output, prepared, write_log)
+                prepared_image = load_image(prepared, write_log)
+                residual_spread = _working_background_spread(prepared_image)
+                if residual_spread > 0.55:
+                    write_log(
+                        "Early Siril background model left a strong measured residual; "
+                        f"applying the full-resolution OpenCV residual model (spread={residual_spread:.3f})."
+                    )
+                    save_tiff(
+                        prepared,
+                        _flatten_lifted_duoband_gradient(prepared_image, write_log),
+                        write_log,
+                    )
+                _log_existing_image(prepared, write_log, "early linear Siril background-corrected source")
+                return prepared
+            write_log("Early Siril background extraction produced no FITS output; using measured fallback.")
+        except Exception as exc:
+            write_log(f"Early Siril background extraction failed; using measured fallback. Error: {exc}")
+
+    source = load_image(working, write_log)
+    spread = _working_background_spread(source)
+    if spread <= 0.55:
+        write_log(
+            "Early DeepSNR preparation: measured background is sufficiently flat; "
+            f"leaving linear pixels unchanged (spread={spread:.3f})."
+        )
+        return working
+
+    prepared = job_folder / "early_linear_background_corrected.tif"
+    write_log(
+        "Early DeepSNR preparation: strong measured linear gradient detected; "
+        f"applying full-resolution OpenCV background model first (spread={spread:.3f})."
+    )
+    save_tiff(prepared, _flatten_lifted_duoband_gradient(source, write_log), write_log)
+    _log_existing_image(prepared, write_log, "early linear measured background-corrected source")
+    return prepared
 
 
 def _normalized_stretch_level(settings: AppSettings) -> str:
@@ -2147,6 +2259,34 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         or bool(galaxy_auto_pcc_command)
     )
 
+    early_nebula_deepsnr_eligible = _should_run_early_nebula_deepsnr(
+        object_type=object_type,
+        mode=mode,
+        input_mode=input_mode,
+        use_prestretched=use_prestretched,
+        analysis=analysis,
+    )
+    early_nebula_deepsnr_path = job_folder / "early_linear_deepsnr.tif"
+    early_nebula_deepsnr_used = False
+    early_nebula_source = working
+    if early_nebula_deepsnr_eligible and not should_use_siril_calibration:
+        early_nebula_source = _prepare_early_nebula_deepsnr_source(
+            working,
+            original,
+            job_folder,
+            settings,
+            write_log,
+        )
+        early_nebula_deepsnr_used = (
+            _run_early_linear_nebula_deepsnr(
+                early_nebula_source,
+                early_nebula_deepsnr_path,
+                settings,
+                write_log,
+            )
+            is not None
+        )
+
     if should_use_siril_calibration:
         if siril_deconvolution_requested and not gradient_galaxy_siril and not use_prestretched and mode == PipelineMode.FULL:
             write_log("Siril deconvolution requested; routing galaxy run through Siril calibration path.")
@@ -2194,7 +2334,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(stretched, write_log, "stretched.tif")
         _log_existing_image(calibrated, write_log, "calibrated.tif")
     elif use_protected_raw_finish:
-        working_image = working_image_for_routing
+        working_image = (
+            load_image(early_nebula_deepsnr_path, write_log)
+            if early_nebula_deepsnr_used
+            else working_image_for_routing
+        )
         green_duoband_raw = object_type == "nebula" and _looks_like_green_duoband_raw(
             working_image,
             analysis,
@@ -2215,8 +2359,9 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 (("duo" in normalized_name and "band" in normalized_name) or "dual band" in normalized_name or "dualband" in normalized_name)
                 and _working_background_spread(working_image) > 0.55
             )
-            stretch_source_image = working_image if lifted_duoband_gradient_raw else load_image(original, write_log)
-            stretch_source_image = _flatten_lifted_duoband_gradient(stretch_source_image, write_log)
+            stretch_source_image = working_image
+            if not early_nebula_deepsnr_used:
+                stretch_source_image = _flatten_lifted_duoband_gradient(stretch_source_image, write_log)
         elif weak_snr_nebula_raw:
             base_strength = "seestar_weak_nebula"
             baseline_reason = f"weak-SNR nebula using capped linked-luminance micro-stretch ({baseline_reason})"
@@ -2270,7 +2415,21 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     else:
         _run_siril_calibration(original, working, stretched, calibrated, job_folder, settings, write_log)
 
-    current = calibrated
+    if early_nebula_deepsnr_eligible and should_use_siril_calibration:
+        siril_linear_source = job_folder / "siril_calibrated.tif"
+        if not siril_linear_source.exists():
+            siril_linear_source = calibrated
+        early_nebula_deepsnr_used = (
+            _run_early_linear_nebula_deepsnr(
+                siril_linear_source,
+                early_nebula_deepsnr_path,
+                settings,
+                write_log,
+            )
+            is not None
+        )
+
+    current = early_nebula_deepsnr_path if early_nebula_deepsnr_used else calibrated
     preserve_siril_galaxy_finish = gradient_galaxy_siril
     skip_siril_galaxy_star_reduction = (
         preserve_siril_galaxy_finish
@@ -2317,29 +2476,46 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         )
         natural_nebula = _orient_like_reference(natural_nebula, working_reference, write_log, "Natural nebula final")
 
-        # Restore the June processing order: denoise before separation, enhance
-        # the starless luminance, then add measured color without replacing that
-        # luminance.  This keeps real filament/dust structure out of the color
-        # and denoise layers.
-        deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
-        if not deepsnr_exe:
-            raise FileNotFoundError("DeepSNR executable not found. Update the DeepSNR path in settings.")
-        write_log("Nebula hybrid pipeline: applying masked Richardson-Lucy before aggressive denoise.")
         nebula_arcsinh = job_folder / "nebula_color_preserving_arcsinh.tif"
-        arcsinh_image = apply_color_preserving_nebula_arcsinh(load_image(current, write_log), write_log)
-        save_tiff(nebula_arcsinh, arcsinh_image, write_log)
         nebula_deconvolved = job_folder / "nebula_deconvolved.tif"
-        deconvolved_image = apply_masked_richardson_lucy_nebula(load_image(nebula_arcsinh, write_log), write_log)
-        save_tiff(nebula_deconvolved, deconvolved_image, write_log)
-        write_log(f"Nebula hybrid DeepSNR executable: {deepsnr_exe}")
-        run_deepsnr(nebula_deconvolved, denoised, deepsnr_exe, write_log)
-        detail_preserved_denoise = blend_masked_nebula_denoise(
-            load_image(nebula_deconvolved, write_log),
-            load_image(denoised, write_log),
-            write_log,
-        )
-        save_tiff(denoised, detail_preserved_denoise, write_log)
-        _log_existing_image(denoised, write_log, "hybrid denoised.tif")
+        if early_nebula_deepsnr_used:
+            write_log(
+                "Nebula linear workflow: DeepSNR complete; applying masked Richardson-Lucy "
+                "before the color-preserving nonlinear stretch."
+            )
+            deconvolved_image = apply_masked_richardson_lucy_nebula(
+                load_image(current, write_log),
+                write_log,
+            )
+            save_tiff(nebula_deconvolved, deconvolved_image, write_log)
+            arcsinh_image = apply_color_preserving_nebula_arcsinh(deconvolved_image, write_log)
+            save_tiff(nebula_arcsinh, arcsinh_image, write_log)
+            save_tiff(denoised, arcsinh_image, write_log)
+            _log_existing_image(denoised, write_log, "early-denoised deconvolved stretched.tif")
+        else:
+            write_log(
+                "Nebula #150 fallback workflow: applying arcsinh, masked Richardson-Lucy, "
+                "then DeepSNR because an eligible linear RGB master was unavailable."
+            )
+            arcsinh_image = apply_color_preserving_nebula_arcsinh(load_image(current, write_log), write_log)
+            save_tiff(nebula_arcsinh, arcsinh_image, write_log)
+            deconvolved_image = apply_masked_richardson_lucy_nebula(
+                load_image(nebula_arcsinh, write_log),
+                write_log,
+            )
+            save_tiff(nebula_deconvolved, deconvolved_image, write_log)
+            deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
+            if not deepsnr_exe:
+                raise FileNotFoundError("DeepSNR executable not found. Update the DeepSNR path in settings.")
+            write_log(f"Nebula fallback DeepSNR executable: {deepsnr_exe}")
+            run_deepsnr(nebula_deconvolved, denoised, deepsnr_exe, write_log)
+            detail_preserved_denoise = blend_masked_nebula_denoise(
+                load_image(nebula_deconvolved, write_log),
+                load_image(denoised, write_log),
+                write_log,
+            )
+            save_tiff(denoised, detail_preserved_denoise, write_log)
+            _log_existing_image(denoised, write_log, "hybrid fallback denoised.tif")
 
         starnet_exe = find_executable(Path(settings.starnet_folder))
         if not starnet_exe:
@@ -2350,14 +2526,27 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless_test, write_log, "hybrid starless.tif")
         subtract_images(denoised, starless_test, starless_test_stars)
         _log_existing_image(starless_test_stars, write_log, "hybrid stars.tif")
+        pre_starnet_reference = load_image(denoised, write_log)
+        raw_star_layer = load_image(starless_test_stars, write_log)
 
         if green_duoband_raw:
             write_log("Green duo-band hybrid: skipping broadband June lift to keep the background dark.")
-            june_detail = load_image(starless_test, write_log)
+            june_detail = clean_starless_nebula_background(
+                load_image(starless_test, write_log),
+                write_log,
+                reference_image=pre_starnet_reference,
+                star_layer=raw_star_layer,
+            )
             measured_color_reference = load_image(calibrated, write_log)
         else:
-            june_detail = apply_starless_nebula_detail(
+            cleaned_starless = clean_starless_nebula_background(
                 load_image(starless_test, write_log),
+                write_log,
+                reference_image=pre_starnet_reference,
+                star_layer=raw_star_layer,
+            )
+            june_detail = apply_starless_nebula_detail(
+                cleaned_starless,
                 write_log,
                 natural_hybrid=True,
             )
@@ -2367,18 +2556,21 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             june_detail,
             measured_color_reference,
             write_log,
-            star_layer=load_image(starless_test_stars, write_log),
+            star_layer=raw_star_layer,
         )
         save_tiff(starless_test, colored_detail, write_log)
         _log_existing_image(starless_test, write_log, "colored June-detail starless.tif")
         if starless_only_requested:
             write_log("Starless enabled; keeping colored June-detail starless image.")
             shutil.copy2(starless_test, final)
-        else:
+        elif star_handling_mode == "slight":
             keep_fraction = 0.16 if weak_snr_nebula_raw else 0.18
             write_log(f"Slight Star Reduction enabled; recombining brightest {keep_fraction:.0%} of StarNet star layer.")
             threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
             write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
+        else:
+            write_log("Standard stars enabled; recombining the complete measured StarNet star layer.")
+            add_images(starless_test, starless_test_stars, final)
         corrected_final = _orient_like_reference(load_image(final, write_log), working_reference, write_log, "Natural nebula StarNet final")
         save_tiff(final, corrected_final, write_log)
         _log_existing_image(final, write_log, "star-reduced final.tif")

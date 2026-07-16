@@ -102,8 +102,20 @@ def run_deepsnr(
     output_path: Path,
     executable_path: Path,
     log: LogCallback | None = None,
+    *,
+    model: int | None = None,
+    stride: int | None = None,
 ) -> None:
-    _run_tool(DEEPSNR_COMMAND, executable_path, input_path, output_path, log)
+    command = list(DEEPSNR_COMMAND)
+    if model is not None:
+        if model not in {1, 2}:
+            raise ValueError("DeepSNR model must be 1 or 2.")
+        command.extend(["--model", str(model)])
+    if stride is not None:
+        if stride < 2 or stride > 512 or stride % 2:
+            raise ValueError("DeepSNR stride must be an even integer between 2 and 512.")
+        command.extend(["--stride", str(stride)])
+    _run_tool(command, executable_path, input_path, output_path, log)
 
 
 def run_starnet(

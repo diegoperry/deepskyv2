@@ -2142,6 +2142,249 @@ def _detail_nebula_mask(lum: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nda
     return signal, structure, np.clip(star_protect, 0.0, 1.0)
 
 
+def clean_starless_nebula_background(
+    image: np.ndarray,
+    log: LogCallback | None = None,
+    *,
+    reference_image: np.ndarray | None = None,
+    star_layer: np.ndarray | None = None,
+) -> np.ndarray:
+    """Flatten low-confidence StarNet sky while preserving coherent colored nebula structure."""
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+    rgb = _to_float01(arr)
+    lum = _luminance(rgb).astype(np.float32)
+    reference = rgb
+    if reference_image is not None:
+        candidate = _to_float01(np.asarray(reference_image))
+        if candidate.shape == rgb.shape:
+            reference = candidate
+
+    chroma = (np.max(rgb, axis=2) - np.min(rgb, axis=2)).astype(np.float32)
+    chroma_low = float(np.percentile(chroma, 58.0))
+    chroma_high = float(np.percentile(chroma, 99.4))
+    color_confidence = np.clip(
+        (chroma - chroma_low) / max(1e-6, chroma_high - chroma_low),
+        0.0,
+        1.0,
+    ) ** 0.72
+
+    fine = cv2.GaussianBlur(lum, (0, 0), 2.0)
+    medium = cv2.GaussianBlur(lum, (0, 0), 16.0)
+    coherent = np.abs(fine - medium)
+    structure_low = float(np.percentile(coherent, 72.0))
+    structure_high = float(np.percentile(coherent, 99.3))
+    structure_confidence = np.clip(
+        (coherent - structure_low) / max(1e-6, structure_high - structure_low),
+        0.0,
+        1.0,
+    ) ** 0.76
+
+    bright_low = float(np.percentile(medium, 72.0))
+    bright_high = float(np.percentile(medium, 99.2))
+    bright_signal = np.clip(
+        (medium - bright_low) / max(1e-6, bright_high - bright_low),
+        0.0,
+        1.0,
+    )
+    # StarNet's broad residual islands can have edges, so structure alone is
+    # not enough evidence to protect a region.  Require supporting measured
+    # chroma or coherent bright signal before preserving it as nebula.
+    supported_structure = structure_confidence * np.clip(
+        color_confidence * 0.82 + bright_signal * 0.48,
+        0.0,
+        1.0,
+    )
+
+    # Broad, channel-coherent emission is measured on the pre-StarNet image.
+    # This protects low-surface-brightness H-alpha walls even when the starless
+    # layer itself has weak local contrast.  Spatial smoothing prevents
+    # isolated red noise from qualifying as extended emission.
+    reference_red_excess = np.maximum(
+        reference[..., 0] - np.maximum(reference[..., 1], reference[..., 2]) * 0.88,
+        0.0,
+    ).astype(np.float32)
+    emission_sigma = max(7.0, min(lum.shape) * 0.010)
+    broad_red_emission = cv2.GaussianBlur(reference_red_excess, (0, 0), emission_sigma)
+    emission_low = float(np.percentile(broad_red_emission, 62.0))
+    emission_high = float(np.percentile(broad_red_emission, 99.1))
+    broad_red_emission = np.clip(
+        (broad_red_emission - emission_low) / max(1e-6, emission_high - emission_low),
+        0.0,
+        1.0,
+    ) ** 0.78
+    broad_red_emission = cv2.GaussianBlur(broad_red_emission.astype(np.float32), (0, 0), emission_sigma * 0.72)
+
+    nebula_seed = np.clip(
+        color_confidence * 0.94
+        + supported_structure * 0.78
+        + bright_signal * np.maximum(color_confidence, supported_structure) * 0.56,
+        0.0,
+        1.0,
+    )
+    nebula_seed = np.clip(np.maximum(nebula_seed, broad_red_emission * 0.82), 0.0, 1.0)
+    nebula_core = cv2.GaussianBlur((nebula_seed**0.82).astype(np.float32), (0, 0), 4.0)
+    nebula_envelope = cv2.GaussianBlur(nebula_core.astype(np.float32), (0, 0), 18.0)
+    faint_color_low = float(np.percentile(chroma, 34.0))
+    faint_color_high = float(np.percentile(chroma, 97.0))
+    faint_color = np.clip(
+        (chroma - faint_color_low) / max(1e-6, faint_color_high - faint_color_low),
+        0.0,
+        1.0,
+    ) ** 0.82
+    height, width = lum.shape
+    envelope_sigma = max(30.0, min(height, width) * 0.045)
+    core_proximity = cv2.GaussianBlur(
+        nebula_core.astype(np.float32),
+        (0, 0),
+        envelope_sigma,
+    )
+    proximity_scale = max(1e-6, float(np.percentile(core_proximity, 99.2)))
+    core_proximity = np.clip(core_proximity / proximity_scale, 0.0, 1.0) ** 0.72
+    faint_connected_envelope = cv2.GaussianBlur(
+        (faint_color * core_proximity).astype(np.float32),
+        (0, 0),
+        8.0,
+    )
+    protect = np.clip(
+        np.maximum.reduce(
+            [
+                nebula_core,
+                nebula_envelope * 0.74,
+                faint_connected_envelope * 0.88,
+                core_proximity * 0.34,
+            ]
+        ),
+        0.0,
+        1.0,
+    )
+
+    y_distance = np.minimum(np.arange(height), np.arange(height)[::-1]).astype(np.float32)
+    x_distance = np.minimum(np.arange(width), np.arange(width)[::-1]).astype(np.float32)
+    edge_support = np.minimum(
+        np.clip(y_distance[:, None] / max(8.0, height * 0.055), 0.0, 1.0),
+        np.clip(x_distance[None, :] / max(8.0, width * 0.055), 0.0, 1.0),
+    )
+    edge_support = cv2.GaussianBlur(edge_support.astype(np.float32), (0, 0), 3.0)
+    protect *= edge_support
+
+    star_halo = np.zeros_like(lum, dtype=np.float32)
+    star_residual_halo = np.zeros_like(lum, dtype=np.float32)
+    if star_layer is not None:
+        stars = _to_float01(np.asarray(star_layer))
+        if stars.shape == rgb.shape:
+            star_lum = np.max(stars, axis=2).astype(np.float32)
+            star_low = float(np.percentile(star_lum, 98.8))
+            star_high = float(np.percentile(star_lum, 99.97))
+            star_seed = np.clip(
+                (star_lum - star_low) / max(1e-6, star_high - star_low),
+                0.0,
+                1.0,
+            ) ** 0.82
+            compact_halo = cv2.GaussianBlur(star_seed.astype(np.float32), (0, 0), 7.0)
+            broad_halo = cv2.GaussianBlur(star_seed.astype(np.float32), (0, 0), 17.0)
+            star_halo = np.clip(compact_halo * 1.45 + broad_halo * 0.82, 0.0, 1.0)
+            bright_low = float(np.percentile(star_lum, 99.55))
+            bright_high = float(np.percentile(star_lum, 99.985))
+            bright_seed = np.clip(
+                (star_lum - bright_low) / max(1e-6, bright_high - bright_low),
+                0.0,
+                1.0,
+            ) ** 0.72
+            bright_compact = cv2.GaussianBlur(bright_seed.astype(np.float32), (0, 0), 8.0)
+            bright_broad = cv2.GaussianBlur(bright_seed.astype(np.float32), (0, 0), 28.0)
+            star_residual_halo = np.clip(bright_compact * 1.35 + bright_broad * 1.20, 0.0, 1.0)
+            protect *= np.clip(1.0 - star_halo * (1.0 - broad_red_emission * 0.90) * 0.86, 0.0, 1.0)
+
+    sky_mask = np.clip((1.0 - protect * 1.16), 0.0, 1.0)
+    sky_mask = np.maximum(sky_mask, star_halo * (1.0 - broad_red_emission * 0.88))
+    sky_mask = cv2.GaussianBlur((sky_mask**1.10).astype(np.float32), (0, 0), 5.0)
+    quiet = (sky_mask > 0.72) & (lum < np.percentile(lum, 62.0))
+    if int(np.count_nonzero(quiet)) < 512:
+        quiet = sky_mask > 0.62
+    sky_color = (
+        np.median(rgb[quiet], axis=0).astype(np.float32)
+        if int(np.count_nonzero(quiet)) >= 512
+        else np.median(rgb.reshape(-1, 3), axis=0).astype(np.float32)
+    )
+
+    broad_field = np.stack(
+        [cv2.GaussianBlur(rgb[..., channel], (0, 0), 52.0) for channel in range(3)],
+        axis=2,
+    )
+    small_residual = rgb - broad_field
+    flat_sky = np.clip(
+        sky_color.reshape(1, 1, 3) * 0.58 + small_residual * 0.14,
+        0.0,
+        1.0,
+    )
+    flat_lum = _luminance(flat_sky).astype(np.float32)
+    flat_sky = np.clip(
+        flat_lum[..., None]
+        + (flat_sky - flat_lum[..., None]) * 0.24,
+        0.0,
+        1.0,
+    )
+    sky_mix = np.clip(sky_mask[..., None] * 0.95, 0.0, 0.95)
+    output = np.clip(rgb * (1.0 - sky_mix) + flat_sky * sky_mix, 0.0, 1.0)
+
+    # Restore only a low-opacity, spatially connected outer envelope.  This
+    # retains faint real emission around the protected core while keeping
+    # unrelated StarNet islands flattened elsewhere in the frame.
+    outer_restore = np.clip(
+        core_proximity
+        * (0.07 + faint_color * 0.76)
+        * (1.0 - nebula_core * 0.62)
+        * edge_support,
+        0.0,
+        0.68,
+    )
+    output = np.clip(
+        output * (1.0 - outer_restore[..., None]) + rgb * outer_restore[..., None],
+        0.0,
+        1.0,
+    )
+
+    star_residual_repair = np.zeros_like(lum, dtype=np.float32)
+    if star_layer is not None and float(np.max(star_residual_halo)) > 0.01:
+        repair_mask = np.clip((star_residual_halo - 0.018) / 0.24, 0.0, 1.0) ** 0.64
+        repair_mask *= np.clip(1.0 - nebula_core * 0.18, 0.0, 1.0)
+        mask8 = (repair_mask > 0.045).astype(np.uint8) * 255
+        if int(np.count_nonzero(mask8)) > 0:
+            radius = max(3, int(round(min(height, width) * 0.006)))
+            kernel_size = radius * 2 + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            mask8 = cv2.dilate(mask8, kernel, iterations=1)
+            output8 = np.clip(output * 255.0, 0, 255).astype(np.uint8)
+            repaired8 = cv2.inpaint(output8, mask8, max(3, radius), cv2.INPAINT_TELEA)
+            repaired = repaired8.astype(np.float32) / 255.0
+            star_residual_repair = cv2.GaussianBlur(repair_mask.astype(np.float32), (0, 0), max(2.2, radius * 0.55))
+            star_residual_repair = np.clip(star_residual_repair * 1.18, 0.0, 0.96)
+            output = np.clip(
+                output * (1.0 - star_residual_repair[..., None])
+                + repaired * star_residual_repair[..., None],
+                0.0,
+                1.0,
+            )
+
+    if log:
+        before_spread = float(np.percentile(lum[quiet], 90.0) - np.percentile(lum[quiet], 10.0)) if int(np.count_nonzero(quiet)) >= 512 else 0.0
+        output_lum = _luminance(output).astype(np.float32)
+        after_spread = float(np.percentile(output_lum[quiet], 90.0) - np.percentile(output_lum[quiet], 10.0)) if int(np.count_nonzero(quiet)) >= 512 else 0.0
+        log(
+            "Cleaned StarNet starless background: "
+            f"sky_mask_mean={float(np.mean(sky_mask)):.5f}, "
+            f"nebula_protect_mean={float(np.mean(protect)):.5f}, "
+            f"broad_red_mean={float(np.mean(broad_red_emission)):.5f}, "
+            f"star_halo_mean={float(np.mean(star_halo)):.5f}, "
+            f"star_residual_repair_mean={float(np.mean(star_residual_repair)):.5f}, "
+            f"outer_restore_mean={float(np.mean(outer_restore)):.5f}, "
+            f"sky_spread={before_spread:.5f}->{after_spread:.5f}."
+        )
+    return _to_uint16(output)
+
+
 def apply_color_preserving_nebula_arcsinh(
     image: np.ndarray,
     log: LogCallback | None = None,
@@ -2420,6 +2663,95 @@ def _apply_structured_nebula_visibility_lift(
     return np.clip(rgb * (lifted_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
 
 
+def _apply_adaptive_nebula_display_stretch(
+    image: np.ndarray,
+    signal: np.ndarray,
+    star_halo: np.ndarray,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    """Lift an under-rendered wide-dynamic-range nebula into display range."""
+    rgb = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
+    lum = _luminance(rgb).astype(np.float32)
+    median = float(np.median(lum))
+    p90 = float(np.percentile(lum, 90.0))
+    if median >= 0.025 or p90 < 0.060:
+        return rgb
+
+    # Bright stars can set the upper range while the nebula remains clustered
+    # below a few percent. A linked curve preserves measured RGB ratios and is
+    # enabled only for that measurable under-rendering failure mode.
+    gamma = float(np.clip(np.log(0.055) / np.log(max(median, 0.002)), 0.62, 0.88))
+    curved_lum = np.power(np.clip(lum, 0.0, 1.0), gamma)
+    confidence = np.clip(np.asarray(signal, dtype=np.float32), 0.0, 1.0)
+    stars = np.clip(np.asarray(star_halo, dtype=np.float32), 0.0, 1.0)
+    blend = np.clip((0.72 + confidence * 0.28) * (1.0 - stars * 0.30), 0.0, 1.0)
+    target_lum = np.clip(lum * (1.0 - blend) + curved_lum * blend, 0.0, 1.0)
+    floor = (1.0 - confidence) * (1.0 - stars) * 0.006
+    target_lum = np.maximum(target_lum, floor)
+    result = np.clip(rgb * (target_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
+    zero_lum = lum <= 1e-5
+    if np.any(zero_lum):
+        neutral_floor = np.repeat(floor[..., None], 3, axis=2)
+        result[zero_lum] = neutral_floor[zero_lum]
+    if log:
+        log(
+            "Applied adaptive nebula display stretch: "
+            f"median={median:.5f}->{float(np.median(_luminance(result))):.5f}; "
+            f"p90={p90:.5f}; gamma={gamma:.3f}."
+        )
+    return result
+
+
+def _restore_bright_native_nebula_color(
+    image: np.ndarray,
+    native_detail: np.ndarray,
+    signal: np.ndarray,
+    star_halo: np.ndarray,
+) -> np.ndarray:
+    """Bypass chroma transfer on bright structure and retain its native RGB."""
+    rgb = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
+    native = np.clip(np.asarray(native_detail, dtype=np.float32), 0.0, 1.0)
+    if native.shape != rgb.shape:
+        return rgb
+    lum = _luminance(rgb).astype(np.float32)
+    native_lum = _luminance(native).astype(np.float32)
+    broad_native = cv2.GaussianBlur(native_lum, (0, 0), 5.0)
+    bright_low = float(np.percentile(broad_native, 96.0))
+    bright_high = float(np.percentile(broad_native, 99.75))
+    bright_structure = np.clip(
+        (broad_native - bright_low) / max(1e-6, bright_high - bright_low),
+        0.0,
+        1.0,
+    ) ** 0.72
+    # Expand the exclusion around the complete bright complex. A tight mask
+    # leaves a transferred-color rim around its native center, which is the
+    # exact "painted red" failure this guard is intended to prevent.
+    radius = max(13, int(round(min(native_lum.shape) * 0.018)))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+    bright_structure = cv2.dilate(bright_structure.astype(np.float32), kernel, iterations=1)
+    bright_structure = cv2.GaussianBlur(bright_structure.astype(np.float32), (0, 0), max(5.0, radius * 0.42))
+    native_mix = np.clip(
+        bright_structure
+        * (0.42 + np.clip(np.asarray(signal, dtype=np.float32), 0.0, 1.0) * 0.58)
+        * (1.0 - np.clip(np.asarray(star_halo, dtype=np.float32), 0.0, 1.0) * 0.96),
+        0.0,
+        0.995,
+    )
+    native_at_output_lum = np.clip(
+        native * (lum / np.maximum(native_lum, 1e-5))[..., None],
+        0.0,
+        1.0,
+    )
+    restored = np.clip(
+        rgb * (1.0 - native_mix[..., None])
+        + native_at_output_lum * native_mix[..., None],
+        0.0,
+        1.0,
+    )
+    restored_lum = _luminance(restored).astype(np.float32)
+    return np.clip(restored * (lum / np.maximum(restored_lum, 1e-5))[..., None], 0.0, 1.0)
+
+
 def apply_measured_color_to_nebula_detail(
     detail_image: np.ndarray,
     color_reference: np.ndarray,
@@ -2460,6 +2792,39 @@ def apply_measured_color_to_nebula_detail(
     signal = np.clip((broad - low) / max(1e-6, high - low), 0.0, 1.0) ** 0.72
     signal = cv2.GaussianBlur(signal.astype(np.float32), (0, 0), 2.2)
 
+    # Preserve faint measured-color structure that is spatially connected to
+    # the confidently detected nebula.  Without this extension the later sky
+    # black point can classify the dim outer envelope as empty background,
+    # producing a sticker-like boundary around the bright core.
+    reference_chroma_distance = (np.max(reference, axis=2) - np.min(reference, axis=2)).astype(np.float32)
+    faint_low = float(np.percentile(reference_chroma_distance, 36.0))
+    faint_high = float(np.percentile(reference_chroma_distance, 98.2))
+    faint_measured_color = np.clip(
+        (reference_chroma_distance - faint_low) / max(1e-6, faint_high - faint_low),
+        0.0,
+        1.0,
+    ) ** 0.82
+    connection_sigma = max(28.0, min(detail_lum.shape) * 0.042)
+    signal_proximity = cv2.GaussianBlur(signal.astype(np.float32), (0, 0), connection_sigma)
+    signal_proximity /= max(1e-6, float(np.percentile(signal_proximity, 99.2)))
+    signal_proximity = np.clip(signal_proximity, 0.0, 1.0) ** 0.74
+    faint_connected_signal = cv2.GaussianBlur(
+        (faint_measured_color * signal_proximity).astype(np.float32),
+        (0, 0),
+        6.0,
+    )
+    signal = np.clip(
+        np.maximum.reduce(
+            [
+                signal,
+                faint_connected_signal * 0.62,
+                signal_proximity * 0.12,
+            ]
+        ),
+        0.0,
+        1.0,
+    )
+
     # Keep empty sky neutral and restrained while allowing actual nebulosity to
     # retain the measured red/cyan balance from calibration.
     chroma_strength = 0.17 + signal[..., None] * (
@@ -2496,6 +2861,18 @@ def apply_measured_color_to_nebula_detail(
     # enlarging stars, or pushing red-brown emission toward white.
     object_lift = np.clip(signal * (1.0 - star_halo * 0.96), 0.0, 1.0) ** 0.82
     dark_lum = np.clip(dark_lum + object_lift * (1.0 - dark_lum) * 0.055, 0.0, 1.0)
+    outer_lift = np.clip(
+        faint_connected_signal
+        * (1.0 - star_halo * 0.96)
+        * (1.0 - signal * 0.42),
+        0.0,
+        1.0,
+    )
+    dark_lum = np.clip(
+        dark_lum + outer_lift * (1.0 - dark_lum) * 0.115,
+        0.0,
+        1.0,
+    )
     current_lum = _luminance(colored).astype(np.float32)
     colored = np.clip(colored * (dark_lum / np.maximum(current_lum, 1e-5))[..., None], 0.0, 1.0)
     detail_lum = dark_lum
@@ -2542,11 +2919,15 @@ def apply_measured_color_to_nebula_detail(
     saturated = np.clip(final_lum[..., None] + (colored - final_lum[..., None]) * saturation_gain[..., None], 0.0, 1.0)
     saturated_lum = _luminance(saturated).astype(np.float32)
     colored = np.clip(saturated * (final_lum / np.maximum(saturated_lum, 1e-5))[..., None], 0.0, 1.0)
+    colored = _apply_adaptive_nebula_display_stretch(colored, signal, star_halo, log)
+    colored = _restore_bright_native_nebula_color(colored, detail, signal, star_halo)
 
     if log:
         log(
             "Applied measured chroma to June-detail luminance: "
             f"signal_mean={float(np.mean(signal)):.5f}; "
+            f"faint_connected_mean={float(np.mean(faint_connected_signal)):.5f}; "
+            f"outer_lift_mean={float(np.mean(outer_lift)):.5f}; "
             f"detail_luminance_delta={float(np.mean(np.abs(_luminance(colored) - detail_lum))):.7f}; "
             f"sky_denoise_mean={float(np.mean(sky)):.5f}; star_halo_mean={float(np.mean(star_halo)):.5f}; "
             f"crisp_delta={crisp_delta:.7f}; visibility_delta={visibility_delta:.7f}; "
