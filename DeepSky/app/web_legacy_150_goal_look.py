@@ -2842,7 +2842,7 @@ def _apply_reference_nebula_tone_grade(
     image: np.ndarray,
     signal: np.ndarray,
 ) -> np.ndarray:
-    """Give cleaned nebula data a restrained plum-sky, copper-pink presentation."""
+    """Give cleaned nebula data a restrained charcoal-sky, copper-pink presentation."""
     rgb = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
     confidence = np.clip(np.asarray(signal, dtype=np.float32), 0.0, 1.0)
     object_mix = cv2.GaussianBlur(
@@ -2852,10 +2852,11 @@ def _apply_reference_nebula_tone_grade(
     )
     sky_mix = np.clip(1.0 - object_mix * 1.05, 0.0, 1.0) ** 1.18
 
-    # The reference sky is deliberately lifted, but remains below the faint
-    # emission. Applying this only to low-confidence pixels prevents a color
-    # wash from being painted across real nebulosity.
-    target_sky = np.array([0.058, 0.031, 0.054], dtype=np.float32)
+    # Keep the floor slightly lifted and genuinely neutral. Even a small blue
+    # bias combines with residual red from the star layer and reads purple.
+    # Applying this only to low-confidence pixels prevents a gray wash from
+    # being painted across real nebulosity.
+    target_sky = np.array([0.046, 0.046, 0.046], dtype=np.float32)
     graded = rgb * (1.0 - sky_mix[..., None]) + target_sky * sky_mix[..., None]
 
     lum = _luminance(graded).astype(np.float32)
@@ -2867,7 +2868,7 @@ def _apply_reference_nebula_tone_grade(
     )
     # A soft photographic shoulder brings the bright M16 core into the same
     # tonal family as its outer dust instead of leaving a neon-red hotspot.
-    compressed_lum = target_sky_lum + (1.0 - target_sky_lum) * (above_sky ** 1.42)
+    compressed_lum = target_sky_lum + (1.0 - target_sky_lum) * (above_sky ** 1.32)
     desired_lum = lum * (1.0 - object_mix) + compressed_lum * object_mix
     graded = np.clip(graded * (desired_lum / np.maximum(lum, 1e-5))[..., None], 0.0, 1.0)
 
@@ -2880,9 +2881,23 @@ def _apply_reference_nebula_tone_grade(
     highlight = np.clip((desired_lum - 0.12) / 0.34, 0.0, 1.0) * object_mix
     neutral = np.repeat(desired_lum[..., None], 3, axis=2)
     warm = warm * (1.0 - highlight[..., None] * 0.25) + neutral * highlight[..., None] * 0.25
-    return np.clip(
+    result = np.clip(
         graded * (1.0 - object_mix[..., None] * 0.72)
         + warm * object_mix[..., None] * 0.72,
+        0.0,
+        1.0,
+    )
+    # Lock only the confidently empty sky to equal RGB. This removes residual
+    # source/star-removal chroma that otherwise survives the target blend.
+    sky_lock = cv2.GaussianBlur(
+        np.clip((0.105 - confidence) / 0.055, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        2.5,
+    )
+    neutral_lum = _luminance(result).astype(np.float32)
+    neutral_sky = np.repeat(neutral_lum[..., None], 3, axis=2)
+    return np.clip(
+        result * (1.0 - sky_lock[..., None]) + neutral_sky * sky_lock[..., None],
         0.0,
         1.0,
     )

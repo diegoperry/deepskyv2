@@ -141,8 +141,9 @@ class WebPipelineRoutingTests(unittest.TestCase):
         sky = body < 0.01
         core = body > 0.80
 
-        self.assertGreater(float(np.median(graded[sky, 0])), 0.045)
-        self.assertGreater(float(np.median(graded[sky, 2])), float(np.median(graded[sky, 1])) * 1.45)
+        sky_rgb = np.median(graded[sky], axis=0)
+        self.assertGreater(float(np.mean(sky_rgb)), 0.040)
+        self.assertLess(float(np.max(sky_rgb) / np.maximum(np.min(sky_rgb), 1e-5)), 1.025)
         self.assertLess(float(np.median(graded[core, 0])), float(np.median(image[core, 0])) * 0.82)
         self.assertGreater(float(np.median(graded[core, 1] / np.maximum(graded[core, 0], 1e-5))), 0.40)
 
