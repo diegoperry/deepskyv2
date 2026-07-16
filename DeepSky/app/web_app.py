@@ -27,10 +27,10 @@ from io import BytesIO
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
 from .pipeline import PccCalibrationFailed
-from .web_legacy_148_pipeline import (
+from .web_legacy_150_pipeline import (
     PccCalibrationFailed as WebLegacyPccCalibrationFailed,
     PipelineMode as WebLegacyPipelineMode,
-    run_pipeline as run_web_legacy_148_pipeline,
+    run_pipeline as run_web_legacy_150_pipeline,
 )
 from .settings import APP_ROOT, PROJECT_ROOT, AppSettings, default_settings, load_settings
 from .siril_cli import build_siril_pcc_command
@@ -3271,8 +3271,8 @@ def _run_job(
         for attr in ("siril_folder", "deepsnr_folder", "starnet_folder"):
             if not Path(getattr(settings, attr)).exists():
                 setattr(settings, attr, getattr(defaults, attr))
-        write_log("Web nebula processing baseline: commit 426e091 (Improve weak nebula processing #148)")
-        result = run_web_legacy_148_pipeline(input_path, settings, WebLegacyPipelineMode.FULL, write_log)
+        write_log("Web nebula processing baseline: commit 33d28d5 (Improve nebula filament detail and calibrated color #150)")
+        result = run_web_legacy_150_pipeline(input_path, settings, WebLegacyPipelineMode.FULL, write_log)
         shutil.rmtree(input_path.parent, ignore_errors=True)
     except (PccCalibrationFailed, WebLegacyPccCalibrationFailed) as exc:
         with jobs_lock:

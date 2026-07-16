@@ -24,15 +24,15 @@ from app.settings import default_settings
 from app.web_app import (
     _configure_web_pipeline_settings,
     _run_job,
-    run_web_legacy_148_pipeline,
+    run_web_legacy_150_pipeline,
 )
-from app.web_legacy_148_pipeline import run_pipeline as expected_web_legacy_148_pipeline
+from app.web_legacy_150_pipeline import run_pipeline as expected_web_legacy_150_pipeline
 
 
 class WebPipelineRoutingTests(unittest.TestCase):
-    def test_web_worker_is_pinned_to_improve_weak_nebula_commit_148(self) -> None:
-        self.assertIs(run_web_legacy_148_pipeline, expected_web_legacy_148_pipeline)
-        self.assertIn("run_web_legacy_148_pipeline(", inspect.getsource(_run_job))
+    def test_web_worker_is_pinned_to_nebula_filament_commit_150(self) -> None:
+        self.assertIs(run_web_legacy_150_pipeline, expected_web_legacy_150_pipeline)
+        self.assertIn("run_web_legacy_150_pipeline(", inspect.getsource(_run_job))
 
     def test_canonical_nebula_stage_order_is_complete(self) -> None:
         self.assertEqual(len(CANONICAL_NEBULA_STAGES), 19)

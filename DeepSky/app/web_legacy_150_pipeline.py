@@ -11,12 +11,15 @@ import cv2
 import numpy as np
 
 from .cli_tools import find_executable, run_deepsnr, run_starnet
-from .web_legacy_148_goal_look import (
+from .web_legacy_150_goal_look import (
     apply_broadband_look,
     apply_pcc_galaxy_look,
     apply_cosmos_style_nebula_finish,
     apply_goal_look,
+    apply_color_preserving_nebula_arcsinh,
+    apply_masked_richardson_lucy_nebula,
     apply_measured_color_to_nebula_detail,
+    apply_multiscale_starless_nebula_detail,
     apply_natural_nebula_rgb_look,
     apply_pixinsight_style_nebula_finish,
     apply_prestretched_broadband_look,
@@ -25,6 +28,7 @@ from .web_legacy_148_goal_look import (
     apply_starless_nebula_detail,
     blend_galaxy_deconvolution_detail,
     blend_broadband_background_denoise,
+    blend_masked_nebula_denoise,
     chroma_percentile,
     compose_pixinsight_nebula_layers,
     reflection_nebula_bias,
@@ -40,7 +44,7 @@ from .image_io import (
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
-from .web_legacy_148_image_math import add_bright_star_fraction, add_images, add_weighted_star_layer, subtract_images
+from .web_legacy_150_image_math import add_bright_star_fraction, add_images, add_weighted_star_layer, subtract_images
 from .plate_solver import find_astap_database, find_astap_executable, solve_image, write_plate_solve_debug, write_wcs_enriched_fits
 from .python_color_calibration import python_fallback_color_calibration
 from .settings import AppSettings
@@ -54,7 +58,7 @@ from .siril_cli import (
     run_siril_script,
     siril_catalog_calibration_path,
 )
-from .web_legacy_148_stretch import astrophotography_stretch
+from .web_legacy_150_stretch import astrophotography_stretch
 from .target_identifier import identify_target
 
 
@@ -2294,6 +2298,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         nebula_catalog_color = (job_folder / "siril_catalog_color_succeeded.txt").exists()
         if nebula_catalog_color:
             write_log("Nebula natural RGB pipeline: catalog color available; using stronger measured chroma preservation.")
+        elif skip_catalog_pcc:
+            write_log("Nebula natural RGB pipeline: Siril/PCC intentionally bypassed; using the single measured-RGB route.")
         else:
             write_log("SPCC/PCC failed, using non-photometric color fallback.")
             write_log("Nebula natural RGB pipeline: SPCC/PCC unavailable; using conservative measured-RGB fallback to avoid painted color.")
@@ -2318,8 +2324,21 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         deepsnr_exe = find_executable(Path(settings.deepsnr_folder))
         if not deepsnr_exe:
             raise FileNotFoundError("DeepSNR executable not found. Update the DeepSNR path in settings.")
+        write_log("Nebula hybrid pipeline: applying masked Richardson-Lucy before aggressive denoise.")
+        nebula_arcsinh = job_folder / "nebula_color_preserving_arcsinh.tif"
+        arcsinh_image = apply_color_preserving_nebula_arcsinh(load_image(current, write_log), write_log)
+        save_tiff(nebula_arcsinh, arcsinh_image, write_log)
+        nebula_deconvolved = job_folder / "nebula_deconvolved.tif"
+        deconvolved_image = apply_masked_richardson_lucy_nebula(load_image(nebula_arcsinh, write_log), write_log)
+        save_tiff(nebula_deconvolved, deconvolved_image, write_log)
         write_log(f"Nebula hybrid DeepSNR executable: {deepsnr_exe}")
-        run_deepsnr(current, denoised, deepsnr_exe, write_log)
+        run_deepsnr(nebula_deconvolved, denoised, deepsnr_exe, write_log)
+        detail_preserved_denoise = blend_masked_nebula_denoise(
+            load_image(nebula_deconvolved, write_log),
+            load_image(denoised, write_log),
+            write_log,
+        )
+        save_tiff(denoised, detail_preserved_denoise, write_log)
         _log_existing_image(denoised, write_log, "hybrid denoised.tif")
 
         starnet_exe = find_executable(Path(settings.starnet_folder))
@@ -2342,7 +2361,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 write_log,
                 natural_hybrid=True,
             )
-            measured_color_reference = working_reference
+            measured_color_reference = load_image(calibrated, write_log)
+        june_detail = apply_multiscale_starless_nebula_detail(june_detail, write_log)
         colored_detail = apply_measured_color_to_nebula_detail(
             june_detail,
             measured_color_reference,
@@ -2355,7 +2375,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             write_log("Starless enabled; keeping colored June-detail starless image.")
             shutil.copy2(starless_test, final)
         else:
-            keep_fraction = 0.07 if weak_snr_nebula_raw else 0.08
+            keep_fraction = 0.16 if weak_snr_nebula_raw else 0.18
             write_log(f"Slight Star Reduction enabled; recombining brightest {keep_fraction:.0%} of StarNet star layer.")
             threshold = add_bright_star_fraction(starless_test, starless_test_stars, final, keep_fraction=keep_fraction)
             write_log(f"Star reduction kept bright stars with layer threshold {threshold:.1f}.")
