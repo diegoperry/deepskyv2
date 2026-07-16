@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.cli_tools import run_deepsnr
+from app.cli_tools import run_deepsnr, run_realesrgan
 
 
 class DeepSnrCommandTests(unittest.TestCase):
@@ -29,6 +29,28 @@ class DeepSnrCommandTests(unittest.TestCase):
                 Path("deepsnr.exe"),
                 model=2,
                 stride=255,
+            )
+
+    @patch("app.cli_tools._run_tool")
+    def test_realesrgan_model_is_forwarded_to_cli(self, run_tool) -> None:
+        executable = Path("realesrgan-ncnn-vulkan.exe")
+        source = Path("final.png")
+        output = Path("pixel_restored.png")
+
+        run_realesrgan(source, output, executable, model="realesrgan-x4plus")
+
+        command, exe_arg, source_arg, output_arg, log_arg = run_tool.call_args.args
+        self.assertEqual(command, ["{exe}", "-i", "{input}", "-o", "{output}", "-n", "realesrgan-x4plus"])
+        self.assertEqual((exe_arg, source_arg, output_arg), (executable, source, output))
+        self.assertIsNone(log_arg)
+
+    def test_invalid_realesrgan_model_is_rejected_before_launch(self) -> None:
+        with self.assertRaises(ValueError):
+            run_realesrgan(
+                Path("final.png"),
+                Path("pixel_restored.png"),
+                Path("realesrgan-ncnn-vulkan.exe"),
+                model="paint-the-nebula",
             )
 
 

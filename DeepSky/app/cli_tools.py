@@ -10,6 +10,7 @@ LogCallback = Callable[[str], None]
 # Keep command construction here so CLI argument formats can be adjusted after testing.
 DEEPSNR_COMMAND = ["{exe}", "-i", "{input}", "-o", "{output}"]
 STARNET_COMMAND = ["{exe}", "-i", "{input}", "-o", "{output}"]
+REALESRGAN_COMMAND = ["{exe}", "-i", "{input}", "-o", "{output}", "-n", "{model}"]
 
 
 def find_executable(tool_folder: Path) -> Path | None:
@@ -25,7 +26,9 @@ def find_executable(tool_folder: Path) -> Path | None:
 
     preferred = [
         exe for exe in exes
-        if "starnet" in exe.name.lower() or "deepsnr" in exe.name.lower()
+        if "starnet" in exe.name.lower()
+        or "deepsnr" in exe.name.lower()
+        or "realesrgan" in exe.name.lower()
     ]
     return preferred[0] if preferred else exes[0]
 
@@ -63,6 +66,7 @@ def _format_command(template: list[str], exe: Path, input_path: Path, output_pat
         "exe": str(exe),
         "input": str(input_path),
         "output": str(output_path),
+        "model": "realesrgan-x4plus",
     }
     return [part.format(**values) for part in template]
 
@@ -125,3 +129,17 @@ def run_starnet(
     log: LogCallback | None = None,
 ) -> None:
     _run_tool(STARNET_COMMAND, executable_path, input_path, output_path, log)
+
+
+def run_realesrgan(
+    input_path: Path,
+    output_path: Path,
+    executable_path: Path,
+    log: LogCallback | None = None,
+    *,
+    model: str = "realesrgan-x4plus",
+) -> None:
+    if model not in {"realesrgan-x4plus", "realesrnet-x4plus", "realesrgan-x4plus-anime"}:
+        raise ValueError("Unsupported Real-ESRGAN model.")
+    command = [part if part != "{model}" else model for part in REALESRGAN_COMMAND]
+    _run_tool(command, executable_path, input_path, output_path, log)

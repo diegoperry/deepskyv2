@@ -26,6 +26,7 @@ from io import BytesIO
 
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
+from .cli_tools import find_executable, run_realesrgan
 from .pipeline import PccCalibrationFailed
 from .web_legacy_150_pipeline import (
     PccCalibrationFailed as WebLegacyPccCalibrationFailed,
@@ -847,7 +848,7 @@ def _docs_html() -> str:
   </main>
   <footer>
     <p><a href="/process">Process an image</a> &nbsp;|&nbsp; <a href="/">Home</a></p>
-    <p>DeepSky Built By <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a></p>
+    <p>DeepSky Built By <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
   </footer>
 </body>
 </html>"""
@@ -1166,7 +1167,7 @@ def _landing_html() -> str:
   <footer>
     <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
     <p>DeepSky Built By
-    <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a></p>
+    <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
   </footer>
   <script>
     document.querySelectorAll(".slider").forEach((slider) => {
@@ -1880,7 +1881,7 @@ def _html() -> str:
       <p><a href="/docs">Processing docs and troubleshooting guide</a></p>
       <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
       <p>DeepSky Built By
-      <a href="https://www.linkedin.com/in/diego-perry-64a609240/" target="_blank" rel="noreferrer">Diego Perry</a></p>
+      <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
     </footer>
   </main>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -2357,9 +2358,13 @@ def _html() -> str:
     }
 
     function renderAcceptedDownloads(job) {
+      const restoredButton = job.pixel_restored
+        ? `<button class="link-button" type="button" data-download-url="${job.pixel_restored}" data-download-name="deepsky-pixel-restored.png">Download Pixel Restored PNG</button>`
+        : `<button class="link-button" type="button" data-restore-kind="pixel" data-job-id="${job.id}">Pixel Restoration</button>`;
       downloads.innerHTML = `
         <button class="link-button" type="button" data-download-url="${job.final}" data-download-name="deepsky-final.tif">Download TIFF</button>
         <button class="link-button" type="button" data-download-kind="png-export" data-job-id="${job.id}" data-download-url="${job.png}" data-download-name="deepsky-final.png">Download PNG</button>
+        ${restoredButton}
       `;
     }
 
@@ -2713,6 +2718,30 @@ def _html() -> str:
         openPngExportModal(pngButton.dataset.jobId, pngButton.dataset.downloadUrl);
         return;
       }
+      const restoreButton = event.target.closest("button[data-restore-kind='pixel']");
+      if (restoreButton) {
+        try {
+          restoreButton.disabled = true;
+          statusEl.textContent = "Running Pixel Restoration...";
+          processingIndicator.classList.add("active");
+          const restoredJob = await postJsonAuthed(
+            `/api/jobs/${restoreButton.dataset.jobId}/restore/pixel`,
+            {},
+            "Pixel Restoration is unavailable right now."
+          );
+          if (restoredJob.pixel_restored_preview) {
+            await loadImageIntoFrame(`${restoredJob.pixel_restored_preview}&t=${Date.now()}`, afterFrame, "Pixel Restored preview");
+          }
+          renderAcceptedDownloads(restoredJob);
+          statusEl.textContent = "Pixel Restoration complete. Restored PNG is ready.";
+        } catch (error) {
+          statusEl.textContent = error.message || String(error);
+          restoreButton.disabled = false;
+        } finally {
+          processingIndicator.classList.remove("active");
+        }
+        return;
+      }
       const button = event.target.closest("button[data-download-url]");
       if (!button) return;
       try {
@@ -3016,6 +3045,9 @@ def _job_response(job: WebJob) -> dict[str, Any]:
                 "png": f"/api/jobs/{job.id}/file/png",
             }
         )
+        if job.result.get("pixel_restored"):
+            payload["pixel_restored"] = f"/api/jobs/{job.id}/file/pixel_restored"
+            payload["pixel_restored_preview"] = f"/api/jobs/{job.id}/file/pixel_restored?inline=1"
     return payload
 
 
@@ -3770,6 +3802,73 @@ async def export_job_png(
     )
 
 
+@app.post("/api/jobs/{job_id}/restore/pixel")
+def restore_job_pixel(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    _cleanup_old_temp_files()
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id or not job.result:
+            raise HTTPException(status_code=404, detail="Processed image is not ready.")
+        if job.status != "finished":
+            raise HTTPException(status_code=409, detail="Pixel Restoration is available after processing finishes.")
+        source_path = Path(job.result.get("png", job.result["after_preview"]))
+        job_folder = Path(job.result.get("job_folder", source_path.parent))
+
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="Processed PNG was not found.")
+
+    settings = load_settings()
+    executable = find_executable(Path(settings.realesrgan_folder))
+    if not executable:
+        fallback = Path("C:/Apps/RealESRGAN")
+        executable = find_executable(fallback)
+    if not executable:
+        raise HTTPException(
+            status_code=503,
+            detail="Real-ESRGAN is not installed. Expected realesrgan-ncnn-vulkan.exe under C:\\Apps\\RealESRGAN.",
+        )
+
+    job_folder.mkdir(parents=True, exist_ok=True)
+    output_path = job_folder / "pixel_restored.png"
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id or not job.result:
+            raise HTTPException(status_code=404, detail="Processed image is not ready.")
+        job.stage = "Pixel Restoration"
+        job.progress = 98
+        job.log.append("Pixel Restoration: running Real-ESRGAN realesrgan-x4plus on final PNG.")
+
+    try:
+        run_realesrgan(
+            source_path,
+            output_path,
+            executable,
+            lambda message: logger.info("Real-ESRGAN job %s: %s", job_id, message),
+            model="realesrgan-x4plus",
+        )
+    except Exception as exc:
+        logger.exception("Pixel Restoration failed for job %s", job_id)
+        with jobs_lock:
+            job = jobs.get(job_id)
+            if job:
+                job.stage = "Complete"
+                job.progress = 100
+                job.warnings.append("Pixel Restoration failed. The original DeepSky output is unchanged.")
+                job.log.append(f"Pixel Restoration failed: {exc}")
+        raise HTTPException(status_code=500, detail="Pixel Restoration failed. The original output is unchanged.") from exc
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id or not job.result:
+            raise HTTPException(status_code=404, detail="Processed image is not ready.")
+        job.result["pixel_restored"] = output_path
+        job.stage = "Complete"
+        job.progress = 100
+        job.log.append(f"Pixel Restoration complete: {output_path}")
+        return _job_response(job)
+
+
 @app.get("/api/jobs/{job_id}/file/{kind}")
 def get_job_file(
     job_id: str,
@@ -3786,6 +3885,7 @@ def get_job_file(
             "after_preview": job.result["after_preview"],
             "png": job.result.get("png", job.result["after_preview"]),
             "final": job.result["final"],
+            "pixel_restored": job.result.get("pixel_restored"),
         }
         path = mapping.get(kind)
     if not path or not Path(path).exists():

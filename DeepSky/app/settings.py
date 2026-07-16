@@ -19,6 +19,7 @@ SETTINGS_PATH = PROJECT_ROOT / "settings.json"
 class AppSettings:
     starnet_folder: str
     deepsnr_folder: str
+    realesrgan_folder: str
     siril_folder: str
     output_folder: str
     color_calibration_mode: str
@@ -61,6 +62,9 @@ def default_settings() -> AppSettings:
     return AppSettings(
         starnet_folder=str(_default_tool_folder("starnet", "starnet")),
         deepsnr_folder=str(_default_tool_folder("deepsnr", "deepsnr")),
+        realesrgan_folder=str(_default_tool_folder("realesrgan", "realesrgan"))
+        if _default_tool_folder("realesrgan", "realesrgan").exists()
+        else "C:\\Apps\\RealESRGAN",
         siril_folder=str(_default_tool_folder("siril", "siril")),
         output_folder=str(PROJECT_ROOT / "outputs"),
         color_calibration_mode="Basic",
