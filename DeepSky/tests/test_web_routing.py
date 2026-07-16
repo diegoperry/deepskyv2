@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,10 +21,19 @@ from app.pipeline import (
 )
 from app.siril_cli import create_background_extraction_script
 from app.settings import default_settings
-from app.web_app import _configure_web_pipeline_settings
+from app.web_app import (
+    _configure_web_pipeline_settings,
+    _run_job,
+    run_web_legacy_148_pipeline,
+)
+from app.web_legacy_148_pipeline import run_pipeline as expected_web_legacy_148_pipeline
 
 
 class WebPipelineRoutingTests(unittest.TestCase):
+    def test_web_worker_is_pinned_to_improve_weak_nebula_commit_148(self) -> None:
+        self.assertIs(run_web_legacy_148_pipeline, expected_web_legacy_148_pipeline)
+        self.assertIn("run_web_legacy_148_pipeline(", inspect.getsource(_run_job))
+
     def test_canonical_nebula_stage_order_is_complete(self) -> None:
         self.assertEqual(len(CANONICAL_NEBULA_STAGES), 19)
         self.assertEqual(CANONICAL_NEBULA_STAGES[0], "full-resolution load")
