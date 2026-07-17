@@ -1650,7 +1650,17 @@ def _orient_like_reference(image: np.ndarray, reference: np.ndarray, write_log: 
         f"{label} orientation scores: "
         + ", ".join(f"{name}={score:.5f}" for name, _, score in scores)
     )
-    write_log(f"{label} orientation preserved; automatic flip correction is disabled for pipeline safety.")
+    score_margin = best_score - original_score
+    if best_name != "original" and best_score >= 0.45 and score_margin >= 0.10:
+        write_log(
+            f"{label} orientation corrected with {best_name}; "
+            f"correlation={best_score:.5f}, improvement={score_margin:.5f}."
+        )
+        return np.ascontiguousarray(best_image)
+    write_log(
+        f"{label} orientation preserved; no high-confidence flip detected "
+        f"(best={best_name}, correlation={best_score:.5f}, improvement={score_margin:.5f})."
+    )
     return arr
 
 
