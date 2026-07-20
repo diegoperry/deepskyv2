@@ -406,6 +406,23 @@ def _object_get(value: Any, key: str, default: Any = None) -> Any:
     return getattr(value, key, default)
 
 
+def _stripe_object_to_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    converter = getattr(value, "to_dict_recursive", None)
+    if callable(converter):
+        converted = converter()
+        if isinstance(converted, dict):
+            return converted
+    raw_data = getattr(value, "_data", None)
+    if isinstance(raw_data, dict):
+        return dict(raw_data)
+    try:
+        return dict(value)
+    except (TypeError, ValueError):
+        return {}
+
+
 def _get_profile(user_id: str) -> dict[str, Any] | None:
     rows = _supabase_rest_request(_profile_select_filter("user_id", user_id))
     if isinstance(rows, list) and rows:
@@ -3117,8 +3134,8 @@ def _subscription_period_is_current(subscription: Any) -> bool:
 
 
 def _apply_subscription_update(subscription: Any, *, status_override: str | None = None) -> None:
-    subscription_data = subscription.to_dict_recursive()
-    metadata = subscription_data.get("metadata") or {}
+    subscription_data = _stripe_object_to_dict(subscription)
+    metadata = _stripe_object_to_dict(subscription_data.get("metadata") or {})
     user_id = metadata.get("user_id")
     customer_id = _object_get(subscription, "customer")
     updates = _subscription_payload(subscription, status_override=status_override)
