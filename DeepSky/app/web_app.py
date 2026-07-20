@@ -3117,7 +3117,8 @@ def _subscription_period_is_current(subscription: Any) -> bool:
 
 
 def _apply_subscription_update(subscription: Any, *, status_override: str | None = None) -> None:
-    metadata = _object_get(subscription, "metadata") or {}
+    subscription_data = subscription.to_dict_recursive()
+    metadata = subscription_data.get("metadata") or {}
     user_id = metadata.get("user_id")
     customer_id = _object_get(subscription, "customer")
     updates = _subscription_payload(subscription, status_override=status_override)
