@@ -127,18 +127,33 @@ def _build_png_export_with_footer(
 
     if EXPORT_LOGO_PATH.exists():
         logo = Image.open(EXPORT_LOGO_PATH).convert("RGBA")
-        logo_target_width = max(108, min(logo_block_width, int(width * 0.22)))
-        scale = logo_target_width / max(1, logo.width)
-        logo_size = (logo_target_width, max(1, int(logo.height * scale)))
+        # The supplied artwork contains opaque black pixels inside its nominally
+        # transparent canvas. Derive alpha from brightness so only the white mark
+        # is composited and no rectangular patch can cover the footer.
+        logo.putalpha(
+            logo.convert("L").point(
+                lambda value: 0 if value <= 10 else min(255, (value - 10) * 3)
+            )
+        )
+        visible_bounds = logo.getchannel("A").getbbox()
+        if visible_bounds:
+            logo = logo.crop(visible_bounds)
+        corner_pad = max(8, min(24, width // 100))
+        logo_target_width = max(64, min(logo_block_width, int(width * 0.11)))
+        logo_max_height = max(24, overlay_height - (corner_pad * 2))
+        scale = min(
+            logo_target_width / max(1, logo.width),
+            logo_max_height / max(1, logo.height),
+            1.0,
+        )
+        logo_size = (
+            max(1, int(logo.width * scale)),
+            max(1, int(logo.height * scale)),
+        )
         logo = logo.resize(logo_size, Image.LANCZOS)
-        logo_x = width - right_pad - logo.width
-        text_band_top = value_y
-        text_band_bottom = sub_y + sub_font.size
-        text_band_center = (text_band_top + text_band_bottom) / 2
-        logo_y = int(text_band_center - (logo.height / 2))
-        min_logo_y = panel_top + max(4, top_fade // 3)
-        max_logo_y = panel_top + overlay_height - logo.height - 4
-        logo_y = max(min_logo_y, min(max_logo_y, logo_y))
+        logo_x = width - corner_pad - logo.width
+        logo_y = panel_top + max(corner_pad, (overlay_height - logo.height) // 2)
+        logo_y = min(logo_y, height - corner_pad - logo.height)
         canvas.alpha_composite(logo, (logo_x, logo_y))
     else:
         fallback_font = _load_export_font(max(13, min(24, width // 28)), bold=True)
