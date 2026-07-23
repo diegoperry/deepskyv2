@@ -40,6 +40,7 @@ from app.web_app import (
 from app.cli_tools import ToolExecutionError
 from app.web_legacy_150_pipeline import (
     PipelineMode as WebLegacyPipelineMode,
+    _full_pipeline_narrowband_confidence,
     _orient_like_reference as orient_web_pipeline_like_reference,
     _prepare_narrowband_starnet_input,
     _should_run_early_nebula_deepsnr,
@@ -547,5 +548,29 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertNotIn('data-restore-kind="pixel"', html)
         self.assertNotIn("button[data-restore-kind='pixel']", html)
         self.assertNotIn(">Pixel Restoration</button>", html)
+
+    def test_narrowband_quality_guard_accepts_a_finished_full_pipeline_canvas(self) -> None:
+        yy, xx = np.mgrid[:180, :240].astype(np.float32)
+        lum = 0.025 + np.exp(-(((xx - 120.0) / 55.0) ** 2 + ((yy - 92.0) / 38.0) ** 2)) * 0.62
+        baseline = np.stack([lum * 1.08, lum * 0.88, lum * 0.72], axis=2)
+        processed = np.clip(baseline * 0.96 + 0.004, 0.0, 1.0)
+
+        accepted, metrics = _full_pipeline_narrowband_confidence(processed, baseline)
+
+        self.assertTrue(accepted)
+        self.assertGreater(metrics["dynamic_ratio"], 0.90)
+        self.assertGreater(metrics["broad_correlation"], 0.95)
+
+    def test_narrowband_quality_guard_rejects_an_underdeveloped_full_pipeline_canvas(self) -> None:
+        yy, xx = np.mgrid[:180, :240].astype(np.float32)
+        lum = 0.025 + np.exp(-(((xx - 120.0) / 55.0) ** 2 + ((yy - 92.0) / 38.0) ** 2)) * 0.62
+        baseline = np.stack([lum * 1.08, lum * 0.88, lum * 0.72], axis=2)
+        processed = np.clip(baseline * 0.18 + 0.035, 0.0, 1.0)
+
+        accepted, metrics = _full_pipeline_narrowband_confidence(processed, baseline)
+
+        self.assertFalse(accepted)
+        self.assertLess(metrics["dynamic_ratio"], 0.46)
+
 if __name__ == "__main__":
     unittest.main()

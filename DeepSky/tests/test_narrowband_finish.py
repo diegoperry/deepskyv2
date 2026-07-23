@@ -3,7 +3,10 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from app.narrowband_finish import apply_pixinsight_narrowband_finish
+from app.narrowband_finish import (
+    apply_pixinsight_narrowband_finish,
+    apply_processed_narrowband_color_finish,
+)
 
 
 def _synthetic_linear_nebula() -> np.ndarray:
@@ -72,3 +75,29 @@ def test_pixinsight_narrowband_finish_keeps_real_warm_and_cool_nebula_separation
     cool_region = cv2.GaussianBlur(output, (0, 0), 4.0)[112, 170]
     assert warm_region[0] > warm_region[2] * 1.15
     assert cool_region[2] > cool_region[0] * 1.10
+
+
+def test_processed_narrowband_finish_preserves_finished_luminance_and_stars() -> None:
+    source = _synthetic_linear_nebula()
+    finished = apply_pixinsight_narrowband_finish(source)
+    output = apply_processed_narrowband_color_finish(finished)
+
+    before = finished.astype(np.float32) / 65535.0
+    after = output.astype(np.float32) / 65535.0
+    before_lum = before @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    after_lum = after @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+    assert float(np.percentile(np.abs(after_lum - before_lum), 99.0)) < 0.00008
+    assert after[64, 54, 0] > after[64, 54, 2]
+    assert after[78, 196, 2] > after[78, 196, 0]
+
+
+def test_processed_narrowband_finish_keeps_low_signal_background_neutral() -> None:
+    finished = apply_pixinsight_narrowband_finish(_synthetic_linear_nebula())
+    output = apply_processed_narrowband_color_finish(finished).astype(np.float32) / 65535.0
+
+    yy, xx = np.mgrid[:256, :256]
+    background = ((xx < 42) | (xx > 214)) & ((yy < 42) | (yy > 214))
+    chroma = np.max(output, axis=2) - np.min(output, axis=2)
+
+    assert float(np.percentile(chroma[background], 95.0)) < 0.015
