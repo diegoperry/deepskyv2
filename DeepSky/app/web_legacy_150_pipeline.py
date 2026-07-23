@@ -17,8 +17,10 @@ from .web_legacy_150_goal_look import (
     apply_cosmos_style_nebula_finish,
     apply_goal_look,
     apply_color_preserving_nebula_arcsinh,
+    apply_finished_narrowband_tone,
     apply_masked_richardson_lucy_nebula,
     apply_measured_color_to_nebula_detail,
+    apply_narrowband_color_to_nebula_detail,
     apply_multiscale_starless_nebula_detail,
     apply_natural_nebula_rgb_look,
     apply_pixinsight_style_nebula_finish,
@@ -45,6 +47,7 @@ from .image_io import (
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
+from .narrowband_finish import apply_pixinsight_narrowband_finish
 from .web_legacy_150_image_math import add_bright_star_fraction, add_images, add_weighted_star_layer, subtract_images
 from .plate_solver import find_astap_database, find_astap_executable, solve_image, write_plate_solve_debug, write_wcs_enriched_fits
 from .python_color_calibration import python_fallback_color_calibration
@@ -55,6 +58,7 @@ from .siril_cli import (
     create_basic_color_script,
     create_nebula_local_color_script,
     create_photometric_color_script,
+    create_stacked_rgb_narrowband_script,
     find_local_spcc_catalog,
     find_siril_executable,
     run_siril_script,
@@ -2082,6 +2086,51 @@ def _run_nebula_measured_rgb_fallback(
     return calibrated
 
 
+def _prepare_narrowband_starnet_input(
+    image: np.ndarray,
+    enabled: bool,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    """Lift only exceptionally dim narrowband frames before StarNet.
+
+    StarNet can leave hollow rings when nearly linear data is supplied. This
+    guard uses the existing linked RGB stretch only when the 99.8th percentile
+    is below 4%, leaving normally exposed frames byte-for-byte unchanged.
+    """
+    arr = np.asarray(image)
+    if not enabled or arr.ndim != 3 or arr.shape[-1] < 3:
+        return arr
+    if np.issubdtype(arr.dtype, np.integer):
+        scale = float(np.iinfo(arr.dtype).max)
+        rgb = arr.astype(np.float32) / max(scale, 1.0)
+    else:
+        rgb = np.clip(arr.astype(np.float32), 0.0, 1.0)
+    luminance = rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
+    high = float(np.percentile(luminance, 99.8))
+    if high >= 0.040:
+        return arr
+    lifted = arr
+    lifted_high = high
+    passes = 0
+    while lifted_high < 0.050 and passes < 2:
+        lifted = astrophotography_stretch(lifted, strength="normal")
+        lifted_rgb = lifted.astype(np.float32) / 65535.0
+        lifted_lum = (
+            lifted_rgb[..., 0] * 0.2126
+            + lifted_rgb[..., 1] * 0.7152
+            + lifted_rgb[..., 2] * 0.0722
+        )
+        lifted_high = float(np.percentile(lifted_lum, 99.8))
+        passes += 1
+    if log:
+        log(
+            "Narrowband Color: weak-frame StarNet safety lift applied "
+            f"({passes} linked pass(es), p99.8={high:.5f}->{lifted_high:.5f}) "
+            "to prevent hollow star-removal blobs."
+        )
+    return lifted
+
+
 def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, log: LogCallback) -> dict[str, Path]:
     input_path = Path(input_path)
     if not is_supported_input(input_path):
@@ -2208,11 +2257,48 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     lifted_duoband_gradient_raw = False
     reflection_style_nebula_hint = False
     use_natural_nebula_pipeline = mode == PipelineMode.FULL and object_type == "nebula"
+    narrowband_color_requested = bool(getattr(settings, "narrowband_color_enabled", False)) and object_type == "nebula"
     if object_type == "nebula":
         write_log("Nebula audit: using one calibrated nebula pipeline; no object-specific color branches.")
         if weak_snr_nebula_raw:
             write_log("Weak-SNR nebula frame detected; using conservative stretch and heavier sky chroma cleanup.")
 
+    if use_natural_nebula_pipeline and narrowband_color_requested:
+        # The stacked RGB master is the cleanest source for this optional
+        # finish. Running the normal faint-nebula stretch first magnifies CFA
+        # chroma and stellar halos, then makes those artifacts look like HOO
+        # signal. Finish the linear master directly with linked luminance,
+        # chroma-only NR, continuous measured color masks, and protected stars.
+        write_log(
+            "Narrowband Color: using the linear stacked RGB master before the normal nonlinear nebula route; "
+            "synthetic Siril RGB-to-HOO remapping is disabled because it cannot create independent narrowband channels."
+        )
+        shutil.copy2(working, calibrated)
+        shutil.copy2(working, stretched)
+        finished_narrowband = apply_pixinsight_narrowband_finish(
+            load_image(working, write_log),
+            write_log,
+        )
+        save_tiff(final, finished_narrowband, write_log)
+        save_png(final_png, finished_narrowband, write_log)
+        after_preview = job_folder / "after_preview.png"
+        calibrated_preview = job_folder / "calibrated_preview.png"
+        make_preview(final, after_preview, log=write_log, stretch_for_display=False)
+        make_preview(calibrated, calibrated_preview, log=write_log)
+        write_log(
+            "Narrowband Color: finished star-protected PixInsight-style image saved "
+            "without checker/chroma amplification."
+        )
+        write_log(f"Final image: {final}")
+        write_log("Done.")
+        return {
+            "job_folder": job_folder,
+            "before_preview": before_preview,
+            "after_preview": after_preview,
+            "final": final,
+            "png": final_png,
+            "log": log_file,
+        }
     gradient_galaxy_siril = False
     gradient_galaxy_spread = 0.0
     if mode == PipelineMode.FULL and settings.color_calibration_mode != "Off":
@@ -2464,6 +2550,32 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("Skipping generic DeepSNR stage; Siril finish already applied.")
 
     if use_natural_nebula_pipeline and not preserve_siril_galaxy_finish:
+        narrowband_color_reference: Path | None = None
+        if narrowband_color_requested:
+            narrowband_color_reference = job_folder / "siril_narrowband_hoo.fit"
+            siril_exe = find_siril_executable(Path(settings.siril_folder))
+            if not siril_exe:
+                narrowband_color_reference = None
+                write_log("Narrowband Color skipped: Siril executable was not found; preserving natural measured RGB.")
+            else:
+                narrowband_script = create_stacked_rgb_narrowband_script(
+                    calibrated,
+                    narrowband_color_reference,
+                    job_folder,
+                )
+                write_log("Narrowband Color: running Siril stacked-RGB split, PixelMath, and HOO composition.")
+                write_log(f"Narrowband Color Siril script: {narrowband_script}")
+                try:
+                    run_siril_script(siril_exe, narrowband_script, job_folder, write_log)
+                except Exception as exc:
+                    write_log(f"Narrowband Color Siril composition failed; preserving natural measured RGB. Error: {exc}")
+                    narrowband_color_reference = None
+                else:
+                    if narrowband_color_reference.exists():
+                        _log_existing_image(narrowband_color_reference, write_log, "siril_narrowband_hoo.fit")
+                    else:
+                        write_log("Narrowband Color Siril composition did not create its output; preserving natural measured RGB.")
+                        narrowband_color_reference = None
         nebula_catalog_color = (job_folder / "siril_catalog_color_succeeded.txt").exists()
         if nebula_catalog_color:
             write_log("Nebula natural RGB pipeline: catalog color available; using stronger measured chroma preservation.")
@@ -2472,17 +2584,20 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         else:
             write_log("SPCC/PCC failed, using non-photometric color fallback.")
             write_log("Nebula natural RGB pipeline: SPCC/PCC unavailable; using conservative measured-RGB fallback to avoid painted color.")
-        write_log(
-            "Nebula natural RGB pipeline: measured RGB only; no synthetic color painting, "
-            "no warm_bias/red_bias/cyan_bias, no HOO/showcase color mapping."
-        )
+        if narrowband_color_reference:
+            write_log("Nebula color route: optional Siril HOO-style Narrowband Color enabled; background and stars remain protected.")
+        else:
+            write_log(
+                "Nebula natural RGB pipeline: measured RGB only; no synthetic color painting, "
+                "no warm_bias/red_bias/cyan_bias, no HOO/showcase color mapping."
+            )
         write_log("Nebula hybrid pipeline: June-detail luminance with measured low-frequency RGB color.")
         working_reference = load_image(working, write_log)
         natural_nebula = apply_natural_nebula_rgb_look(
             load_image(current, write_log),
             write_log,
-            color_reference=working_reference,
-            catalog_color=nebula_catalog_color,
+            color_reference=(load_image(narrowband_color_reference, write_log) if narrowband_color_reference else working_reference),
+            catalog_color=nebula_catalog_color and not narrowband_color_reference,
         )
         natural_nebula = _orient_like_reference(natural_nebula, working_reference, write_log, "Natural nebula final")
 
@@ -2500,7 +2615,12 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             save_tiff(nebula_deconvolved, deconvolved_image, write_log)
             arcsinh_image = apply_color_preserving_nebula_arcsinh(deconvolved_image, write_log)
             save_tiff(nebula_arcsinh, arcsinh_image, write_log)
-            save_tiff(denoised, arcsinh_image, write_log)
+            starnet_input = _prepare_narrowband_starnet_input(
+                arcsinh_image,
+                narrowband_color_requested,
+                write_log,
+            )
+            save_tiff(denoised, starnet_input, write_log)
             _log_existing_image(denoised, write_log, "early-denoised deconvolved stretched.tif")
         else:
             write_log(
@@ -2526,6 +2646,66 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             )
             save_tiff(denoised, detail_preserved_denoise, write_log)
             _log_existing_image(denoised, write_log, "hybrid fallback denoised.tif")
+
+        arcsinh_float = np.asarray(arcsinh_image).astype(np.float32)
+        if np.issubdtype(np.asarray(arcsinh_image).dtype, np.integer):
+            arcsinh_float /= float(np.iinfo(np.asarray(arcsinh_image).dtype).max)
+        arcsinh_lum = (
+            arcsinh_float[..., 0] * 0.2126
+            + arcsinh_float[..., 1] * 0.7152
+            + arcsinh_float[..., 2] * 0.0722
+        )
+        weak_narrowband_starless_risk = (
+            narrowband_color_reference is not None
+            and float(np.percentile(arcsinh_lum, 99.8)) < 0.040
+        )
+        if weak_narrowband_starless_risk:
+            write_log(
+                "Narrowband Color: exceptionally weak StarNet input detected; "
+                "using the calibrated star-preserving finished route to avoid blobs and hollow residuals."
+            )
+            calibrated_rgb = load_image(calibrated, write_log)
+            finished_narrowband = apply_natural_nebula_rgb_look(
+                calibrated_rgb,
+                write_log,
+                color_reference=calibrated_rgb,
+                catalog_color=nebula_catalog_color,
+            )
+            finished_narrowband = apply_narrowband_color_to_nebula_detail(
+                finished_narrowband,
+                load_image(narrowband_color_reference, write_log),
+                write_log,
+            )
+            finished_narrowband = apply_finished_narrowband_tone(
+                finished_narrowband,
+                write_log,
+            )
+            finished_narrowband = _apply_mild_nebula_star_core_reduction(
+                finished_narrowband,
+                write_log,
+            )
+            finished_narrowband = _orient_like_reference(
+                finished_narrowband,
+                working_reference,
+                write_log,
+                "Weak narrowband finished final",
+            )
+            save_tiff(final, finished_narrowband, write_log)
+            save_png(final_png, finished_narrowband, write_log)
+            after_preview = job_folder / "after_preview.png"
+            make_preview(final, after_preview, log=write_log, stretch_for_display=False)
+            calibrated_preview = job_folder / "calibrated_preview.png"
+            make_preview(calibrated, calibrated_preview, log=write_log, stretch_for_display=False)
+            write_log(f"Final image: {final}")
+            write_log("Done.")
+            return {
+                "job_folder": job_folder,
+                "before_preview": before_preview,
+                "after_preview": after_preview,
+                "final": final,
+                "png": final_png,
+                "log": log_file,
+            }
 
         starnet_exe = find_executable(Path(settings.starnet_folder))
         if not starnet_exe:
@@ -2568,6 +2748,13 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             write_log,
             star_layer=raw_star_layer,
         )
+        if narrowband_color_reference:
+            colored_detail = apply_narrowband_color_to_nebula_detail(
+                colored_detail,
+                load_image(narrowband_color_reference, write_log),
+                write_log,
+                star_layer=raw_star_layer,
+            )
         save_tiff(starless_test, colored_detail, write_log)
         _log_existing_image(starless_test, write_log, "colored June-detail starless.tif")
         if starless_only_requested:

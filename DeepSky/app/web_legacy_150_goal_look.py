@@ -3091,6 +3091,178 @@ def apply_measured_color_to_nebula_detail(
     return _to_uint16(colored)
 
 
+def apply_narrowband_color_to_nebula_detail(
+    detail_image: np.ndarray,
+    hoo_reference: np.ndarray,
+    log: LogCallback | None = None,
+    *,
+    star_layer: np.ndarray | None = None,
+) -> np.ndarray:
+    """Apply a measured HOO palette to starless detail without changing structure.
+
+    The Siril reference supplies continuous H-alpha/OIII weights. The finished
+    starless luminance remains authoritative, empty sky is neutralized, and the
+    separately extracted star layer is used only as a chroma-protection mask.
+    """
+    detail = _to_float01(np.asarray(detail_image))
+    reference = _to_float01(np.asarray(hoo_reference))
+    if detail.ndim != 3 or reference.ndim != 3 or detail.shape != reference.shape:
+        return np.asarray(detail_image)
+
+    luminance = _luminance(detail).astype(np.float32)
+    broad = cv2.GaussianBlur(luminance, (0, 0), max(10.0, min(luminance.shape) * 0.010))
+    sky_level = float(np.percentile(broad, 34.0))
+    signal_high = max(sky_level + 1e-6, float(np.percentile(broad, 99.3)))
+    signal = np.clip((broad - sky_level) / (signal_high - sky_level), 0.0, 1.0) ** 0.62
+
+    structure_raw = np.abs(
+        cv2.GaussianBlur(luminance, (0, 0), 1.2)
+        - cv2.GaussianBlur(luminance, (0, 0), 8.0)
+    )
+    structure_scale = max(1e-6, float(np.percentile(structure_raw, 99.2)))
+    structure = np.clip(structure_raw / structure_scale, 0.0, 1.0) ** 0.68
+    signal = cv2.GaussianBlur(
+        np.clip(signal * 0.82 + structure * signal * 0.28, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        1.4,
+    )
+
+    star_protect = np.zeros_like(luminance, dtype=np.float32)
+    if star_layer is not None:
+        stars = _to_float01(np.asarray(star_layer))
+        if stars.shape == detail.shape:
+            star_lum = np.max(stars, axis=2).astype(np.float32)
+            star_scale = max(1e-6, float(np.percentile(star_lum, 99.90)))
+            star_core = np.clip((star_lum - star_scale * 0.10) / (star_scale * 0.90), 0.0, 1.0) ** 1.25
+            star_protect = np.clip(cv2.GaussianBlur(star_core, (0, 0), 4.0) * 1.40, 0.0, 1.0)
+
+    # The HOO reference still contains the original stars, so it provides a
+    # second, independent way to recognize halos even when StarNet leaves a
+    # weak or hollow residual in the extracted star layer.
+    reference_lum = _luminance(reference).astype(np.float32)
+    reference_local = cv2.GaussianBlur(reference_lum, (0, 0), 1.45)
+    reference_star_detail = np.maximum(reference_lum - reference_local, 0.0)
+    reference_star_contrast = reference_star_detail / np.maximum(reference_local, 0.002)
+    reference_star_core = np.clip((reference_star_contrast - 0.030) / 0.20, 0.0, 1.0) ** 0.55
+    reference_star_halo = cv2.GaussianBlur(reference_star_core.astype(np.float32), (0, 0), 6.5)
+    reference_star_halo = np.clip(reference_star_halo * 2.15, 0.0, 1.0)
+    star_protect = np.maximum(star_protect, reference_star_halo)
+
+    quiet = (signal < 0.10) & (star_protect < 0.05)
+    if np.count_nonzero(quiet) >= 512:
+        background = np.median(reference[quiet], axis=0).astype(np.float32)
+    else:
+        background = np.percentile(reference.reshape(-1, 3), 20.0, axis=0).astype(np.float32)
+    measured = np.clip(reference - background.reshape(1, 1, 3), 0.0, 1.0)
+    ha = measured[..., 0]
+    oiii = measured[..., 2] * 0.70 + measured[..., 1] * 0.30
+    active = (signal > 0.07) & (star_protect < 0.55)
+    if np.count_nonzero(active) < 512:
+        active = signal > 0.04
+    ha_scale = max(1e-6, float(np.percentile(ha[active], 98.8)))
+    oiii_scale = max(1e-6, float(np.percentile(oiii[active], 98.8)))
+    ha = np.clip(ha / ha_scale, 0.0, 1.0) ** 0.72
+    oiii = np.clip(oiii / oiii_scale, 0.0, 1.0) ** 0.72
+
+    separation = np.log2((ha + 0.035) / (oiii + 0.035))
+    ha_weight = 1.0 / (1.0 + np.exp(-separation * 2.2))
+    oiii_weight = 1.0 - ha_weight
+    intensity = np.clip(np.maximum(ha, oiii) * 0.72 + np.minimum(ha, oiii) * 0.28, 0.0, 1.0)
+    intensity = cv2.GaussianBlur(intensity.astype(np.float32), (0, 0), 1.15)
+
+    orange = np.array([1.00, 0.40, 0.075], dtype=np.float32)
+    cyan = np.array([0.055, 0.58, 1.00], dtype=np.float32)
+    palette = ha_weight[..., None] * orange + oiii_weight[..., None] * cyan
+    palette_lum = _luminance(palette).astype(np.float32)
+    palette = np.clip(palette * (luminance / np.maximum(palette_lum, 1e-5))[..., None], 0.0, 1.0)
+
+    neutral = np.repeat(luminance[..., None], 3, axis=2)
+    color_gate = np.clip(
+        (signal ** 0.72) * (0.68 + intensity * 0.86) * (1.0 - star_protect * 0.96),
+        0.0,
+        0.92,
+    )
+    color_gate = cv2.GaussianBlur(color_gate.astype(np.float32), (0, 0), 1.0)
+    result = np.clip(detail * (1.0 - color_gate[..., None]) + palette * color_gate[..., None], 0.0, 1.0)
+
+    sky_gate = cv2.GaussianBlur(
+        np.clip((0.13 - signal) / 0.10, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        2.4,
+    ) * (1.0 - star_protect)
+    result = np.clip(
+        result * (1.0 - sky_gate[..., None] * 0.92)
+        + neutral * (sky_gate[..., None] * 0.92),
+        0.0,
+        1.0,
+    )
+
+    result_lum = _luminance(result).astype(np.float32)
+    result = np.clip(result * (luminance / np.maximum(result_lum, 1e-5))[..., None], 0.0, 1.0)
+    if log:
+        log(
+            "Narrowband Color: applied measured HOO orange/cyan separation to starless signal; "
+            "preserved luminance, neutral background, and measured star colors."
+        )
+    return _to_uint16(result)
+
+
+def apply_finished_narrowband_tone(
+    image: np.ndarray,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    """Turn a protected HOO grade into a finished display-referred astro image."""
+    rgb = _to_float01(np.asarray(image))
+    if rgb.ndim != 3 or rgb.shape[-1] < 3:
+        return np.asarray(image)
+
+    luminance = _luminance(rgb).astype(np.float32)
+    broad = cv2.GaussianBlur(luminance, (0, 0), 14.0)
+    low = float(np.percentile(broad, 36.0))
+    high = max(low + 1e-6, float(np.percentile(broad, 99.4)))
+    signal = np.clip((broad - low) / (high - low), 0.0, 1.0) ** 0.58
+    signal = cv2.GaussianBlur(signal.astype(np.float32), (0, 0), 2.0)
+
+    quiet = signal < 0.08
+    if np.count_nonzero(quiet) >= 512:
+        black = float(np.percentile(luminance[quiet], 52.0)) * 0.68
+    else:
+        black = float(np.percentile(luminance, 20.0)) * 0.68
+    base_lum = np.clip((luminance - black) / max(1e-6, 1.0 - black), 0.0, 1.0)
+
+    object_curve = np.power(base_lum, 0.54)
+    object_mix = np.clip((signal ** 0.70) * 0.96, 0.0, 0.96)
+    target_lum = base_lum * (1.0 - object_mix) + object_curve * object_mix
+
+    local_detail = luminance - cv2.GaussianBlur(luminance, (0, 0), 4.0)
+    target_lum = np.clip(target_lum + local_detail * signal * 0.32, 0.0, 1.0)
+    result = np.clip(
+        rgb * (target_lum / np.maximum(luminance, 1e-5))[..., None],
+        0.0,
+        1.0,
+    )
+
+    neutral = np.repeat(target_lum[..., None], 3, axis=2)
+    sky = cv2.GaussianBlur(
+        np.clip((0.08 - signal) / 0.065, 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        1.8,
+    )
+    result = np.clip(
+        result * (1.0 - sky[..., None] * 0.97)
+        + neutral * (sky[..., None] * 0.97),
+        0.0,
+        1.0,
+    )
+    if log:
+        log(
+            "Narrowband Color: applied finished astro tone curve "
+            f"(sky_black={black:.5f}, signal_mean={float(np.mean(signal)):.5f}, "
+            f"output_p99={float(np.percentile(target_lum, 99.0)):.5f})."
+        )
+    return _to_uint16(result)
+
+
 def apply_cosmos_style_nebula_finish(image: np.ndarray, log: LogCallback | None = None) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim != 3 or arr.shape[-1] < 3:

@@ -417,6 +417,36 @@ def create_background_extraction_script(
     return script_path
 
 
+def create_stacked_rgb_narrowband_script(
+    input_path: Path,
+    output_path: Path,
+    work_dir: Path,
+) -> Path:
+    """Build an HOO-style Siril composition from an already-stacked RGB image.
+
+    Siril's extract_HaOIII command is for undebayered CFA data. DeepSky accepts
+    already-stacked RGB FITS/TIFF files, so this route follows Siril's documented
+    split + PixelMath + rgbcomp workflow instead.
+    """
+    script_path = Path(work_dir) / "siril_stacked_rgb_narrowband.ssf"
+    input_name = _relative_or_name(Path(input_path), Path(work_dir))
+    output_stem = Path(output_path).with_suffix("").name
+    lines = [
+        SIRIL_REQUIRES_COMMAND,
+        "# DeepSky stacked-RGB HOO-style narrowband composition",
+        "set32bits",
+        f'load "{input_name}"',
+        "split deepsky_nb_ha deepsky_nb_green deepsky_nb_blue",
+        'pm "$deepsky_nb_green$ * 0.65 + $deepsky_nb_blue$ * 0.35" -nosum',
+        "save deepsky_nb_oiii",
+        'pm "$deepsky_nb_ha$ * 0.18 + $deepsky_nb_oiii$ * 0.82" -nosum',
+        "save deepsky_nb_hoo_green",
+        f"rgbcomp deepsky_nb_ha deepsky_nb_hoo_green deepsky_nb_oiii -out={output_stem} -nosum",
+        "close",
+    ]
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return script_path
+
 def create_photometric_color_script(
     input_path: Path,
     output_path: Path,

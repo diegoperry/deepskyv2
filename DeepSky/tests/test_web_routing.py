@@ -9,7 +9,9 @@ from tempfile import TemporaryDirectory
 import cv2
 import numpy as np
 from astropy.io import fits
+from PIL import Image
 
+from app.creative_color_finish import apply_creative_color_finish
 from app.goal_look import (
     apply_additive_pedestal_duoband_finish,
     apply_measured_nebula_background_neutralization,
@@ -20,11 +22,17 @@ from app.pipeline import (
     CANONICAL_NEBULA_STAGES,
     _flatten_low_contrast_nebula_gradient,
     _looks_like_low_confidence_high_pedestal_nebula,
+    _orient_like_reference as orient_current_pipeline_like_reference,
 )
-from app.siril_cli import create_background_extraction_script
+from app.siril_cli import create_background_extraction_script, create_stacked_rgb_narrowband_script
 from app.settings import default_settings
 from app.web_app import (
+    AuthUser,
+    WebJob,
     _configure_web_pipeline_settings,
+    finish_job_creative_color,
+    jobs,
+    process_page,
     _realesrgan_error_message,
     _run_job,
     run_web_legacy_150_pipeline,
@@ -32,6 +40,8 @@ from app.web_app import (
 from app.cli_tools import ToolExecutionError
 from app.web_legacy_150_pipeline import (
     PipelineMode as WebLegacyPipelineMode,
+    _orient_like_reference as orient_web_pipeline_like_reference,
+    _prepare_narrowband_starnet_input,
     _should_run_early_nebula_deepsnr,
     run_pipeline as expected_web_legacy_150_pipeline,
 )
@@ -43,6 +53,119 @@ from app.web_legacy_150_goal_look import (
 
 
 class WebPipelineRoutingTests(unittest.TestCase):
+    def test_pipeline_corrects_only_high_confidence_orientation_flips(self) -> None:
+        height, width = 180, 260
+        yy, xx = np.mgrid[:height, :width].astype(np.float32)
+        reference_lum = (
+            0.025
+            + np.exp(-(((xx - 61.0) / 22.0) ** 2 + ((yy - 47.0) / 31.0) ** 2)) * 0.52
+            + np.exp(-(((xx - 194.0) / 35.0) ** 2 + ((yy - 126.0) / 18.0) ** 2)) * 0.27
+        )
+        reference = np.stack(
+            [reference_lum * 1.12, reference_lum * 0.94, reference_lum * 0.81],
+            axis=2,
+        ).astype(np.float32)
+        flipped = np.flipud(reference) ** 0.91
+
+        for orient in (orient_web_pipeline_like_reference, orient_current_pipeline_like_reference):
+            messages: list[str] = []
+            corrected = orient(flipped, reference, messages.append, "test image")
+            self.assertLess(float(np.mean(np.abs(corrected - (reference ** 0.91)))), 1e-5)
+            self.assertTrue(any("orientation corrected with vertical flip" in message for message in messages))
+
+            ambiguous = np.full_like(reference, 0.08)
+            preserved = orient(ambiguous, ambiguous, messages.append, "ambiguous image")
+            self.assertTrue(np.array_equal(preserved, ambiguous))
+
+    def test_creative_color_finish_enriches_signal_and_protects_sky_and_stars(self) -> None:
+        height, width = 220, 300
+        yy, xx = np.mgrid[:height, :width].astype(np.float32)
+        warm = np.exp(-(((xx - 112.0) / 44.0) ** 2 + ((yy - 112.0) / 36.0) ** 2))
+        cool = np.exp(-(((xx - 205.0) / 38.0) ** 2 + ((yy - 102.0) / 31.0) ** 2))
+        image = np.empty((height, width, 3), dtype=np.float32)
+        image[:] = np.array([0.047, 0.052, 0.066], dtype=np.float32)
+        image += warm[..., None] * np.array([0.31, 0.10, 0.055], dtype=np.float32)
+        image += cool[..., None] * np.array([0.045, 0.12, 0.30], dtype=np.float32)
+        image[46:49, 251:254] = np.array([0.92, 0.82, 0.68], dtype=np.float32)
+        source = np.clip(image, 0.0, 1.0)
+
+        finished = apply_creative_color_finish((source * 255.0).astype(np.uint8))
+        sky = (warm < 0.01) & (cool < 0.01)
+        objects = (warm > 0.25) | (cool > 0.25)
+        source_chroma = np.max(source, axis=2) - np.min(source, axis=2)
+        finished_chroma = np.max(finished, axis=2) - np.min(finished, axis=2)
+
+        self.assertLess(float(np.median(finished_chroma[sky])), float(np.median(source_chroma[sky])) * 0.55)
+        self.assertGreater(float(np.percentile(finished_chroma[objects], 75)), float(np.percentile(source_chroma[objects], 75)) * 1.25)
+        self.assertLess(float(np.max(np.abs(finished[47, 252] - source[47, 252]))), 0.055)
+
+    def test_creative_color_finish_ui_is_one_click_with_separate_result_and_download(self) -> None:
+        html = process_page()
+        self.assertIn('data-creative-finish', html)
+        self.assertIn('Creative Color Finish', html)
+        self.assertIn('id="creativeFrame"', html)
+        self.assertIn('Download Creative Color Finish PNG', html)
+        self.assertIn('/finish/creative-color', html)
+        self.assertNotIn('creative-finish-strength', html)
+        self.assertNotIn('creative-finish-mode', html)
+
+    def test_creative_color_finish_endpoint_keeps_original_and_logs_completion(self) -> None:
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source_path = folder / "final.png"
+            final_tiff = folder / "final.tif"
+            yy, xx = np.mgrid[:96, :128].astype(np.float32)
+            body = np.exp(-(((xx - 67.0) / 23.0) ** 2 + ((yy - 49.0) / 18.0) ** 2))
+            source = np.stack(
+                [0.035 + body * 0.34, 0.041 + body * 0.13, 0.046 + body * 0.20],
+                axis=2,
+            )
+            Image.fromarray(np.round(np.clip(source, 0.0, 1.0) * 255.0).astype(np.uint8), mode="RGB").save(source_path)
+            final_tiff.write_bytes(b"normal-tiff-remains-untouched")
+            original_png = source_path.read_bytes()
+            original_tiff = final_tiff.read_bytes()
+            job_id = "creative-finish-test"
+            jobs[job_id] = WebJob(
+                id=job_id,
+                user_id="creative-user",
+                status="finished",
+                result={
+                    "job_folder": folder,
+                    "after_preview": source_path,
+                    "png": source_path,
+                    "final": final_tiff,
+                    "before_preview": source_path,
+                },
+            )
+            try:
+                response = finish_job_creative_color(job_id, AuthUser(id="creative-user"))
+                output = folder / "creative_color_finish.png"
+                self.assertTrue(output.exists())
+                self.assertEqual(source_path.read_bytes(), original_png)
+                self.assertEqual(final_tiff.read_bytes(), original_tiff)
+                self.assertIn("creative_color_finish", response)
+                self.assertEqual(
+                    jobs[job_id].log[-1],
+                    "Creative Color Finish applied as optional artistic post-processing.",
+                )
+            finally:
+                jobs.pop(job_id, None)
+
+    def test_creative_color_finish_uses_cool_core_and_warm_envelope_only_on_signal(self) -> None:
+        height, width = 180, 240
+        yy, xx = np.mgrid[:height, :width].astype(np.float32)
+        body = np.exp(-(((xx - 122.0) / 43.0) ** 2 + ((yy - 91.0) / 35.0) ** 2))
+        luminance = 0.035 + body * 0.34
+        source = np.repeat(luminance[..., None], 3, axis=2)
+        finished = apply_creative_color_finish((source * 255.0).astype(np.uint8))
+        core = body > 0.78
+        envelope = (body > 0.10) & (body < 0.28)
+        sky = body < 0.005
+
+        self.assertGreater(float(np.median(finished[core, 2] - finished[core, 0])), 0.004)
+        self.assertGreater(float(np.median(finished[envelope, 0] - finished[envelope, 2])), 0.002)
+        self.assertLess(float(np.median(np.max(finished[sky], axis=1) - np.min(finished[sky], axis=1))), 0.003)
+
     def test_web_worker_is_pinned_to_nebula_filament_commit_150(self) -> None:
         self.assertIs(run_web_legacy_150_pipeline, expected_web_legacy_150_pipeline)
         self.assertIn("run_web_legacy_150_pipeline(", inspect.getsource(_run_job))
@@ -352,6 +475,69 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertFalse(settings.starless_test_enabled)
         self.assertTrue(settings.siril_deconvolution_enabled)
 
+
+    def test_narrowband_starnet_safety_lifts_only_exceptionally_dim_frames(self) -> None:
+        dim = np.full((120, 160, 3), 0.001, dtype=np.float32)
+        yy, xx = np.mgrid[:120, :160]
+        signal = np.exp(-(((xx - 80.0) / 19.0) ** 2 + ((yy - 60.0) / 25.0) ** 2)).astype(np.float32)
+        dim += signal[..., None] * np.array([0.010, 0.006, 0.004], dtype=np.float32)
+
+        untouched = _prepare_narrowband_starnet_input(dim, False)
+        lifted = _prepare_narrowband_starnet_input(dim, True).astype(np.float32) / 65535.0
+        bright = np.full_like(dim, 0.080)
+
+        self.assertTrue(np.array_equal(untouched, dim))
+        self.assertGreater(float(np.percentile(lifted, 99.8)), float(np.percentile(dim, 99.8)) * 2.0)
+        self.assertTrue(np.array_equal(_prepare_narrowband_starnet_input(bright, True), bright))
+
+
+    def test_narrowband_color_is_opt_in_and_nebula_only(self) -> None:
+        nebula = _configure_web_pipeline_settings(
+            default_settings(),
+            object_type="Nebula",
+            input_mode="Auto",
+            pre_stretched=False,
+            stretch_level="Standard",
+            siril_deconvolution=False,
+            star_setting="Standard",
+            pcc_failure_policy="continue",
+            narrowband_color=True,
+        )
+        galaxy = _configure_web_pipeline_settings(
+            default_settings(),
+            object_type="Galaxy",
+            input_mode="Auto",
+            pre_stretched=False,
+            stretch_level="Standard",
+            siril_deconvolution=False,
+            star_setting="Standard",
+            pcc_failure_policy="continue",
+            narrowband_color=True,
+        )
+
+        self.assertTrue(nebula.narrowband_color_enabled)
+        self.assertFalse(galaxy.narrowband_color_enabled)
+        self.assertFalse(default_settings().narrowband_color_enabled)
+
+    def test_stacked_rgb_narrowband_script_uses_siril_split_pixelmath_and_rgbcomp(self) -> None:
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            script = create_stacked_rgb_narrowband_script(
+                root / "stacked.fit",
+                root / "narrowband.fit",
+                root,
+            )
+            commands = script.read_text(encoding="utf-8")
+
+        self.assertIn("split deepsky_nb_ha deepsky_nb_green deepsky_nb_blue", commands)
+        self.assertIn('$deepsky_nb_green$ * 0.65 + $deepsky_nb_blue$ * 0.35', commands)
+        self.assertIn('$deepsky_nb_ha$ * 0.18 + $deepsky_nb_oiii$ * 0.82', commands)
+        self.assertIn("rgbcomp deepsky_nb_ha deepsky_nb_hoo_green deepsky_nb_oiii", commands)
+
+    def test_process_page_exposes_narrowband_color_checkbox(self) -> None:
+        html = process_page()
+        self.assertIn('id="narrowbandColor"', html)
+        self.assertIn('data.append(\n        "narrowband_color"', html)
 
 if __name__ == "__main__":
     unittest.main()

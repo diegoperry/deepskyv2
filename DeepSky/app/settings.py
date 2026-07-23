@@ -40,6 +40,7 @@ class AppSettings:
     input_processing_mode: str
     stretch_level: str
     nebula_color_separation: str
+    narrowband_color_enabled: bool
     telescope_profile: str
     prestretched_input: bool
     object_type: str
@@ -85,6 +86,7 @@ def default_settings() -> AppSettings:
         input_processing_mode="Auto",
         stretch_level="Standard",
         nebula_color_separation="Strong",
+        narrowband_color_enabled=False,
         telescope_profile="Auto",
         prestretched_input=False,
         object_type="Nebula",

@@ -16,6 +16,10 @@ from app.goal_look import (
     blend_masked_nebula_denoise,
 )
 from app.stretch import astrophotography_stretch
+from app.web_legacy_150_goal_look import (
+    apply_finished_narrowband_tone,
+    apply_narrowband_color_to_nebula_detail,
+)
 
 
 class WeakNebulaStretchTests(unittest.TestCase):
@@ -275,6 +279,57 @@ class WeakNebulaStretchTests(unittest.TestCase):
         sky = signal < 0.01
         sky_chroma = np.max(finished, axis=2) - np.min(finished, axis=2)
         self.assertLess(float(np.percentile(sky_chroma[sky], 95.0)), 0.010)
+
+
+    def test_narrowband_color_uses_orange_cyan_signal_and_keeps_sky_neutral(self) -> None:
+        height, width = 180, 260
+        yy, xx = np.mgrid[:height, :width]
+        warm = np.exp(-(((xx - 75.0) / 34.0) ** 2 + ((yy - 90.0) / 45.0) ** 2)).astype(np.float32)
+        cool = np.exp(-(((xx - 185.0) / 34.0) ** 2 + ((yy - 90.0) / 45.0) ** 2)).astype(np.float32)
+        luminance = 0.025 + 0.32 * np.maximum(warm, cool)
+        detail = np.repeat(luminance[..., None], 3, axis=2)
+        reference = np.full_like(detail, 0.020)
+        reference[..., 0] += warm * 0.55
+        reference[..., 1] += cool * 0.32
+        reference[..., 2] += cool * 0.58
+
+        finished = apply_narrowband_color_to_nebula_detail(detail, reference).astype(np.float32) / 65535.0
+
+        warm_pixel = finished[90, 75]
+        cool_pixel = finished[90, 185]
+        self.assertGreater(float(warm_pixel[0]), float(warm_pixel[1]) * 1.8)
+        self.assertGreater(float(warm_pixel[1]), float(warm_pixel[2]) * 2.0)
+        self.assertGreater(float(cool_pixel[2]), float(cool_pixel[1]) * 1.4)
+        self.assertGreater(float(cool_pixel[1]), float(cool_pixel[0]) * 3.0)
+        self.assertLess(float(np.max(finished[0, 0]) - np.min(finished[0, 0])), 0.002)
+
+        finished_lum = (
+            finished[..., 0] * 0.2126
+            + finished[..., 1] * 0.7152
+            + finished[..., 2] * 0.0722
+        )
+        self.assertLess(float(np.mean(np.abs(finished_lum - luminance))), 2e-5)
+
+
+    def test_finished_narrowband_tone_makes_object_display_ready_without_tinting_sky(self) -> None:
+        height, width = 180, 260
+        yy, xx = np.mgrid[:height, :width]
+        signal = np.exp(-(((xx - 130.0) / 44.0) ** 2 + ((yy - 90.0) / 52.0) ** 2)).astype(np.float32)
+        luminance = 0.045 + signal * 0.095
+        image = np.repeat(luminance[..., None], 3, axis=2)
+        image[..., 0] += signal * 0.025
+        image[..., 2] += signal * 0.012
+
+        finished = apply_finished_narrowband_tone(image).astype(np.float32) / 65535.0
+        finished_lum = (
+            finished[..., 0] * 0.2126
+            + finished[..., 1] * 0.7152
+            + finished[..., 2] * 0.0722
+        )
+
+        self.assertLess(float(finished_lum[0, 0]), 0.035)
+        self.assertGreater(float(finished_lum[90, 130]), float(luminance[90, 130]) * 1.55)
+        self.assertLess(float(np.max(finished[0, 0]) - np.min(finished[0, 0])), 0.002)
 
 
 if __name__ == "__main__":

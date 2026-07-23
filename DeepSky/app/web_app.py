@@ -27,6 +27,7 @@ from io import BytesIO
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, make_preview
 from .cli_tools import ToolExecutionError, find_executable, run_realesrgan
+from .creative_color_finish import create_creative_color_finish
 from .pipeline import PccCalibrationFailed
 from .web_legacy_150_pipeline import (
     PccCalibrationFailed as WebLegacyPccCalibrationFailed,
@@ -1622,6 +1623,15 @@ def _html() -> str:
       text-decoration: none;
       font-weight: 700;
     }
+    .creative-finish {
+      margin-top: 18px;
+      display: grid;
+      gap: 16px;
+      justify-items: center;
+    }
+    .creative-finish[hidden], .creative-result[hidden] { display: none; }
+    .creative-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+    .creative-result { width: min(100%, 920px); min-height: 0; }
     .export-modal {
       position: fixed;
       inset: 0;
@@ -1847,6 +1857,14 @@ def _html() -> str:
         <span><b>Background Extraction:</b> Siril</span>
         <span><b>Nebula Color:</b> Enhanced</span>
       </div>
+      <div class="detail-option" id="narrowbandColorOption">
+        <h3>Narrowband Color</h3>
+        <p>Optional HOO-style orange and cyan/blue color for emission nebulae. Siril separates the stacked RGB channels while DeepSky protects the background and original star colors.</p>
+        <label class="toggle" title="Optional: applies a Siril HOO-style color composition to nebula signal only.">
+          <input id="narrowbandColor" type="checkbox" />
+          Narrowband Color
+        </label>
+      </div>
       <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
         <h3>Want to add more detail? Test out deconvolution</h3>
         <p>Deconvolution can sharpen galaxy arms and dust lanes when the data is clean. On noisy or faint images it can also make the background look grainy, so compare both versions.</p>
@@ -1878,6 +1896,13 @@ def _html() -> str:
       <article class="preview">
         <h2>After</h2>
         <div class="frame" id="afterFrame"><span class="empty">Waiting for processing</span></div>
+      </article>
+    </section>
+    <section id="creativeFinishPanel" class="creative-finish" hidden>
+      <div id="creativeFinishActions" class="creative-actions"></div>
+      <article id="creativeResult" class="preview creative-result" hidden>
+        <h2>Creative Color Finish</h2>
+        <div class="frame" id="creativeFrame"><span class="empty">Creative finish not applied</span></div>
       </article>
     </section>
     <nav class="downloads" id="downloads"></nav>
@@ -1946,6 +1971,8 @@ def _html() -> str:
     const inputMode = document.getElementById("inputMode");
     const stretchLevel = document.getElementById("stretchLevel");
     const nebulaPipelineLabels = document.getElementById("nebulaPipelineLabels");
+    const narrowbandColorOption = document.getElementById("narrowbandColorOption");
+    const narrowbandColor = document.getElementById("narrowbandColor");
     const galaxyDeconvolutionOption = document.getElementById("galaxyDeconvolutionOption");
     const sirilDeconvolution = document.getElementById("sirilDeconvolution");
     const statusEl = document.getElementById("status");
@@ -1963,6 +1990,10 @@ def _html() -> str:
     const beforeFrame = document.getElementById("beforeFrame");
     const afterFrame = document.getElementById("afterFrame");
     const downloads = document.getElementById("downloads");
+    const creativeFinishPanel = document.getElementById("creativeFinishPanel");
+    const creativeFinishActions = document.getElementById("creativeFinishActions");
+    const creativeResult = document.getElementById("creativeResult");
+    const creativeFrame = document.getElementById("creativeFrame");
     const pccWarningModal = document.getElementById("pccWarningModal");
     const pccCancel = document.getElementById("pccCancel");
     const pccContinue = document.getElementById("pccContinue");
@@ -2017,6 +2048,8 @@ def _html() -> str:
       const isNebula = objectType.value === "Nebula";
       const isGalaxy = objectType.value === "Galaxy";
       if (nebulaPipelineLabels) nebulaPipelineLabels.hidden = !isNebula;
+      if (narrowbandColorOption) narrowbandColorOption.hidden = !isNebula;
+      if (!isNebula && narrowbandColor) narrowbandColor.checked = false;
       if (galaxyDeconvolutionOption) galaxyDeconvolutionOption.hidden = !isGalaxy;
       if (!isGalaxy && sirilDeconvolution) sirilDeconvolution.checked = false;
       updatePccWarningState();
@@ -2024,7 +2057,7 @@ def _html() -> str:
 
     function currentFileKey() {
       if (!selectedFile) return "";
-      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}`;
+      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}:${narrowbandColor.checked ? "narrowband" : "natural"}`;
     }
 
     function currentModeNeedsPcc() {
@@ -2420,6 +2453,21 @@ def _html() -> str:
       `;
     }
 
+    async function renderCreativeFinish(job) {
+      creativeFinishPanel.hidden = false;
+      if (job.creative_color_finish) {
+        creativeFinishActions.innerHTML = `<button class="link-button" type="button" data-download-url="${job.creative_color_finish}" data-download-name="creative_color_finish.png">Download Creative Color Finish PNG</button>`;
+        creativeResult.hidden = false;
+        if (job.creative_color_finish_preview) {
+          await loadImageIntoFrame(`${job.creative_color_finish_preview}&t=${Date.now()}`, creativeFrame, "Creative Color Finish preview");
+        }
+      } else {
+        creativeFinishActions.innerHTML = `<button class="cta" type="button" data-creative-finish data-job-id="${job.id}">Creative Color Finish</button>`;
+        creativeResult.hidden = true;
+        creativeFrame.innerHTML = '<span class="empty">Creative finish not applied</span>';
+      }
+    }
+
     function renderPccDecision(job) {
       downloads.innerHTML = `
         <button class="link-button" type="button" data-pcc-action="continue" data-job-id="${job.id}">Continue without PCC</button>
@@ -2527,6 +2575,10 @@ def _html() -> str:
       beforeFrame.innerHTML = file ? '<span class="empty">Loading preview</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
+      creativeFinishPanel.hidden = true;
+      creativeFinishActions.innerHTML = "";
+      creativeResult.hidden = true;
+      creativeFrame.innerHTML = '<span class="empty">Creative finish not applied</span>';
       processingIndicator.classList.remove("active");
       statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 300 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
       warningEl.style.display = "none";
@@ -2803,6 +2855,37 @@ def _html() -> str:
       }
     });
 
+    creativeFinishPanel.addEventListener("click", async (event) => {
+      const finishButton = event.target.closest("button[data-creative-finish]");
+      if (finishButton) {
+        try {
+          finishButton.disabled = true;
+          statusEl.textContent = "Applying Creative Color Finish...";
+          processingIndicator.classList.add("active");
+          const finishedJob = await postJsonAuthed(
+            `/api/jobs/${finishButton.dataset.jobId}/finish/creative-color`,
+            {},
+            "Creative Color Finish is unavailable right now."
+          );
+          await renderCreativeFinish(finishedJob);
+          statusEl.textContent = "Creative Color Finish complete. Creative PNG is ready.";
+        } catch (error) {
+          statusEl.textContent = error.message || String(error);
+          finishButton.disabled = false;
+        } finally {
+          processingIndicator.classList.remove("active");
+        }
+        return;
+      }
+      const downloadButton = event.target.closest("button[data-download-url]");
+      if (!downloadButton) return;
+      try {
+        await downloadFile(downloadButton.dataset.downloadUrl, downloadButton.dataset.downloadName);
+      } catch (error) {
+        statusEl.textContent = error.message || String(error);
+      }
+    });
+
     cancelPngExport.addEventListener("click", () => {
       closePngExportModal();
     });
@@ -2896,6 +2979,7 @@ def _html() -> str:
         processingIndicator.classList.remove("active");
         statusEl.textContent = "Processing complete. Downloads are ready.";
         renderAcceptedDownloads(job);
+        await renderCreativeFinish(job);
         void loadBillingStatus();
         run.disabled = false;
         return;
@@ -2942,6 +3026,10 @@ def _html() -> str:
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
       data.append("nebula_color_separation", selectedObjectType === "Nebula" ? "Strong" : "Balanced");
+      data.append(
+        "narrowband_color",
+        selectedObjectType === "Nebula" && narrowbandColor.checked ? "true" : "false"
+      );
       data.append(
         "siril_deconvolution",
         selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
@@ -3100,6 +3188,9 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         if job.result.get("pixel_restored"):
             payload["pixel_restored"] = f"/api/jobs/{job.id}/file/pixel_restored"
             payload["pixel_restored_preview"] = f"/api/jobs/{job.id}/file/pixel_restored?inline=1"
+        if job.result.get("creative_color_finish"):
+            payload["creative_color_finish"] = f"/api/jobs/{job.id}/file/creative_color_finish"
+            payload["creative_color_finish_preview"] = f"/api/jobs/{job.id}/file/creative_color_finish?inline=1"
     return payload
 
 
@@ -3153,7 +3244,10 @@ def _apply_subscription_update(subscription: Any, *, status_override: str | None
     metadata = _stripe_object_to_dict(subscription_data.get("metadata") or {})
     user_id = metadata.get("user_id")
     customer_id = _object_get(subscription, "customer")
-    updates = _subscription_payload(subscription, status_override=status_override)
+    effective_status = status_override
+    if effective_status is None and not _subscription_matches_price(subscription):
+        effective_status = "canceled"
+    updates = _subscription_payload(subscription, status_override=effective_status)
     if customer_id:
         updates["stripe_customer_id"] = customer_id
     if user_id:
@@ -3239,6 +3333,7 @@ def _configure_web_pipeline_settings(
     siril_deconvolution: bool,
     star_setting: str,
     pcc_failure_policy: str,
+    narrowband_color: bool = False,
 ) -> AppSettings:
     """Map web controls onto the same single pipeline used by local runs."""
     mode = input_mode if input_mode in {"Auto", "Linear", "Pre-stretched"} else "Auto"
@@ -3253,6 +3348,7 @@ def _configure_web_pipeline_settings(
     settings.siril_deconvolution_enabled = selected_object == "Galaxy" and bool(siril_deconvolution)
     settings.color_calibration_mode = "Basic" if selected_object == "Nebula" or settings.siril_deconvolution_enabled else "Off"
     settings.nebula_color_separation = "Strong" if selected_object == "Nebula" else "Balanced"
+    settings.narrowband_color_enabled = selected_object == "Nebula" and bool(narrowband_color)
 
     # Nebula processing is deliberately one route: measured RGB, the protected
     # auto stretch, one DeepSNR pass, one StarNet pass, and one recomposition.
@@ -3288,6 +3384,7 @@ def _run_job(
     starless_test: bool = False,
     star_setting: str = "Slight Star Reduction",
     pcc_failure_policy: str = "pause",
+    narrowband_color: bool = False,
 ) -> None:
     with jobs_lock:
         job = jobs[job_id]
@@ -3304,6 +3401,7 @@ def _run_job(
             "siril_deconvolution": siril_deconvolution,
             "starless_test": starless_test,
             "star_setting": star_setting,
+            "narrowband_color": narrowband_color,
         }
 
     def write_log(message: str) -> None:
@@ -3342,6 +3440,7 @@ def _run_job(
             siril_deconvolution=siril_deconvolution,
             star_setting=star_setting,
             pcc_failure_policy=pcc_failure_policy,
+            narrowband_color=narrowband_color,
         )
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
@@ -3351,6 +3450,7 @@ def _run_job(
             write_log("Color Calibration: measured RGB; Siril/PCC bypassed")
             write_log("Background Extraction: protected local cleanup")
             write_log(f"Selected color separation: {settings.nebula_color_separation}")
+            write_log(f"Narrowband Color: {'enabled' if settings.narrowband_color_enabled else 'disabled'}")
         elif settings.siril_deconvolution_enabled:
             write_log("Galaxy color calibration: Siril (enabled with deconvolution)")
         else:
@@ -3489,14 +3589,17 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
     event_type = event["type"]
     event_object = event["data"]["object"]
     if event_type == "checkout.session.completed":
-        user_id = event_object.get("client_reference_id") or (event_object.get("metadata") or {}).get("user_id")
-        customer_id = event_object.get("customer")
-        subscription_id = event_object.get("subscription")
+        session_data = _stripe_object_to_dict(event_object)
+        session_metadata = _stripe_object_to_dict(session_data.get("metadata") or {})
+        user_id = session_data.get("client_reference_id") or session_metadata.get("user_id")
+        customer_id = session_data.get("customer")
+        subscription_id = session_data.get("subscription")
         if user_id and customer_id:
             updates: dict[str, Any] = {"stripe_customer_id": customer_id, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             if subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
-                updates.update(_subscription_payload(subscription))
+                status_override = None if _subscription_matches_price(subscription) else "canceled"
+                updates.update(_subscription_payload(subscription, status_override=status_override))
             _update_profile(user_id, updates)
     elif event_type in {"customer.subscription.created", "customer.subscription.updated"}:
         _apply_subscription_update(event_object)
@@ -3655,6 +3758,7 @@ async def create_job(
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
     nebula_color_separation: str = Form("Strong"),
+    narrowband_color: bool = Form(False),
     siril_deconvolution: bool = Form(False),
     starless_test: bool = Form(False),
     star_setting: str = Form(""),
@@ -3663,6 +3767,7 @@ async def create_job(
     _cleanup_old_temp_files()
     selected_object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
     selected_nebula_color_separation = "Strong" if selected_object_type == "Nebula" else "Balanced"
+    selected_narrowband_color = selected_object_type == "Nebula" and bool(narrowband_color)
     selected_siril_deconvolution = selected_object_type == "Galaxy" and bool(siril_deconvolution)
     staged = _require_completed_staged_upload(upload_id, user) if upload_id else None
     filename = staged.filename if staged else Path((file.filename if file else "") or "").name
@@ -3725,6 +3830,10 @@ async def create_job(
             jobs[job_id].warnings.append(
                 f"Nebula color separation is set to {selected_nebula_color_separation}."
             )
+            if selected_narrowband_color:
+                jobs[job_id].warnings.append(
+                    "Narrowband Color is enabled. Siril will create an optional HOO-style orange/cyan nebula palette."
+                )
     executor.submit(
         _run_job,
         job_id,
@@ -3738,6 +3847,7 @@ async def create_job(
         starless_test,
         star_setting,
         "continue_without_pcc" if selected_object_type == "Nebula" else "continue",
+        selected_narrowband_color,
     )
     return {"id": job_id}
 
@@ -3785,6 +3895,7 @@ def continue_job_without_pcc(job_id: str, user: AuthUser = Depends(require_user)
         run_args.get("starless_test", False),
         run_args.get("star_setting", "Standard"),
         "continue_without_pcc",
+        run_args.get("narrowband_color", False),
     )
     return {"id": job_id}
 
@@ -3926,6 +4037,50 @@ def restore_job_pixel(job_id: str, user: AuthUser = Depends(require_user)) -> di
         return _job_response(job)
 
 
+@app.post("/api/jobs/{job_id}/finish/creative-color")
+def finish_job_creative_color(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    _cleanup_old_temp_files()
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id or not job.result:
+            raise HTTPException(status_code=404, detail="Processed image is not ready.")
+        if job.status != "finished":
+            raise HTTPException(status_code=409, detail="Creative Color Finish is available after processing finishes.")
+        source_path = Path(job.result.get("png", job.result["after_preview"]))
+        job_folder = Path(job.result.get("job_folder", source_path.parent))
+        job.stage = "Creative Color Finish"
+        job.progress = 99
+
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="Processed PNG was not found.")
+
+    output_path = job_folder / "creative_color_finish.png"
+    try:
+        create_creative_color_finish(source_path, output_path)
+    except Exception as exc:
+        logger.exception("Creative Color Finish failed for job %s", job_id)
+        with jobs_lock:
+            job = jobs.get(job_id)
+            if job:
+                job.stage = "Complete"
+                job.progress = 100
+                job.warnings.append(f"Creative Color Finish failed: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="Creative Color Finish failed. The original output is unchanged.",
+        ) from exc
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.user_id != user.id or not job.result:
+            raise HTTPException(status_code=404, detail="Processed image is not ready.")
+        job.result["creative_color_finish"] = output_path
+        job.stage = "Complete"
+        job.progress = 100
+        job.log.append("Creative Color Finish applied as optional artistic post-processing.")
+        return _job_response(job)
+
+
 @app.get("/api/jobs/{job_id}/file/{kind}")
 def get_job_file(
     job_id: str,
@@ -3943,6 +4098,7 @@ def get_job_file(
             "png": job.result.get("png", job.result["after_preview"]),
             "final": job.result["final"],
             "pixel_restored": job.result.get("pixel_restored"),
+            "creative_color_finish": job.result.get("creative_color_finish"),
         }
         path = mapping.get(kind)
     if not path or not Path(path).exists():
