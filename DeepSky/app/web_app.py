@@ -1915,7 +1915,7 @@ def _html() -> str:
           <span class="narrowband-checkmark" aria-hidden="true"></span>
           <span class="narrowband-check-copy">
             <strong>Apply Narrowband Color</strong>
-            <small>Runs after DeepSNR, StarNet, detail recovery, and star recombination.</small>
+            <small>Check this before running the pipeline.</small>
           </span>
         </label>
       </div>      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
@@ -3856,7 +3856,7 @@ async def create_job(
             )
             if selected_narrowband_color:
                 jobs[job_id].warnings.append(
-                    "Narrowband Color is enabled. DeepSky will run the full pipeline, then apply the signal-aware orange/cyan finish."
+                    "Narrowband Color is enabled. DeepSky will apply the signal-aware orange/cyan finish to this run."
                 )
     executor.submit(
         _run_job,
