@@ -34,9 +34,13 @@ jobs:
         run: |
           function Test-DeepSkyHttp200 {
             try {
-              $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000" -UseBasicParsing -TimeoutSec 20
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/process" -UseBasicParsing -TimeoutSec 20
               Write-Host "DeepSky localhost status: $($response.StatusCode)"
-              return $response.StatusCode -eq 200
+              $hasNarrowbandCheckbox = $response.Content.Contains('id="narrowbandColor" name="narrowband_color" type="checkbox"')
+              $hasRemovedPixelButton = $response.Content.Contains('data-restore-kind="pixel"')
+              Write-Host "Narrowband checkbox present: $hasNarrowbandCheckbox"
+              Write-Host "Legacy Pixel Restoration button present: $hasRemovedPixelButton"
+              return $response.StatusCode -eq 200 -and $hasNarrowbandCheckbox -and -not $hasRemovedPixelButton
             } catch {
               Write-Host "DeepSky health check failed: $($_.Exception.Message)"
               return $false
@@ -47,6 +51,19 @@ jobs:
           C:\Windows\System32\schtasks.exe /End /TN "DeepSky Web App"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Task was not running or could not be ended cleanly; continuing."
+          }
+
+          Write-Host "Stopping any stale process still listening on port 8000..."
+          $listeners = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+          foreach ($listener in $listeners) {
+            Write-Host "Stopping stale port-8000 process $($listener.OwningProcess)."
+            Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
+          }
+          Start-Sleep -Seconds 2
+
+          $remaining = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+          if ($remaining) {
+            throw "Port 8000 is still occupied after stopping the previous DeepSky process."
           }
 
           Write-Host "Starting DeepSky Web App scheduled task..."
