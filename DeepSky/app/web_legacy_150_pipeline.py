@@ -47,7 +47,10 @@ from .image_io import (
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
-from .narrowband_finish import apply_pixinsight_narrowband_finish
+from .narrowband_finish import (
+    apply_pixinsight_narrowband_finish,
+    apply_starnet_guided_narrowband_polish,
+)
 from .web_legacy_150_image_math import add_bright_star_fraction, add_images, add_weighted_star_layer, subtract_images
 from .plate_solver import find_astap_database, find_astap_executable, solve_image, write_plate_solve_debug, write_wcs_enriched_fits
 from .python_color_calibration import python_fallback_color_calibration
@@ -164,6 +167,8 @@ def _prepare_early_nebula_deepsnr_source(
     job_folder: Path,
     settings: AppSettings,
     write_log: LogCallback,
+    *,
+    preserve_extended_signal: bool = False,
 ) -> Path:
     """Background-correct a linear master before DeepSNR without changing its RGB reference."""
     siril_exe = find_siril_executable(Path(settings.siril_folder))
@@ -186,7 +191,7 @@ def _prepare_early_nebula_deepsnr_source(
                 convert_to_working_tiff(background_output, prepared, write_log)
                 prepared_image = load_image(prepared, write_log)
                 residual_spread = _working_background_spread(prepared_image)
-                if residual_spread > 0.55:
+                if residual_spread > 0.55 and not preserve_extended_signal:
                     write_log(
                         "Early Siril background model left a strong measured residual; "
                         f"applying the full-resolution OpenCV residual model (spread={residual_spread:.3f})."
@@ -196,6 +201,11 @@ def _prepare_early_nebula_deepsnr_source(
                         _flatten_lifted_duoband_gradient(prepared_image, write_log),
                         write_log,
                     )
+                if residual_spread > 0.55 and preserve_extended_signal:
+                    write_log(
+                        "Narrowband background guard: preserving broad emission signal after Siril; "
+                        f"skipping the generic residual flatten (spread={residual_spread:.3f})."
+                    )
                 _log_existing_image(prepared, write_log, "early linear Siril background-corrected source")
                 return prepared
             write_log("Early Siril background extraction produced no FITS output; using measured fallback.")
@@ -204,6 +214,12 @@ def _prepare_early_nebula_deepsnr_source(
 
     source = load_image(working, write_log)
     spread = _working_background_spread(source)
+    if preserve_extended_signal:
+        write_log(
+            "Narrowband background guard: Siril unavailable; preserving the linear master "
+            f"instead of flattening possible broad emission (spread={spread:.3f})."
+        )
+        return working
     if spread <= 0.55:
         write_log(
             "Early DeepSNR preparation: measured background is sufficiently flat; "
@@ -2131,6 +2147,102 @@ def _prepare_narrowband_starnet_input(
     return lifted
 
 
+def _run_dedicated_narrowband_pipeline(
+    *,
+    working: Path,
+    original: Path,
+    calibrated: Path,
+    stretched: Path,
+    denoised: Path,
+    starless: Path,
+    final: Path,
+    final_png: Path,
+    before_preview: Path,
+    job_folder: Path,
+    settings: AppSettings,
+    write_log: LogCallback,
+) -> dict[str, Path]:
+    """Run the narrowband workflow as a complete pipeline, not a late color pass."""
+    write_log(
+        "Narrowband Color pipeline: dedicated linear route selected "
+        "(background model -> linear DeepSNR -> masked deconvolution -> linked HOO finish "
+        "-> StarNet-guided stellar protection -> final polish)."
+    )
+    prepared = _prepare_early_nebula_deepsnr_source(
+        working, original, job_folder, settings, write_log,
+        preserve_extended_signal=True,
+    )
+    linear_background = job_folder / "narrowband_linear_background.tif"
+    if prepared != linear_background:
+        shutil.copy2(prepared, linear_background)
+    _log_existing_image(linear_background, write_log, "narrowband linear background")
+
+    linear_denoised = job_folder / "narrowband_linear_deepsnr.tif"
+    deepsnr_result = _run_early_linear_nebula_deepsnr(
+        linear_background, linear_denoised, settings, write_log,
+    )
+    linear_master = deepsnr_result or linear_background
+    if deepsnr_result is None:
+        write_log("Narrowband Color pipeline: continuing with the background-corrected linear master without DeepSNR.")
+    else:
+        shutil.copy2(linear_denoised, denoised)
+
+    # Stay linear through denoise and masked deconvolution. Color separation and
+    # the linked display stretch happen only after structural preparation.
+    linear_deconvolved = job_folder / "narrowband_linear_deconvolved.tif"
+    deconvolved = apply_masked_richardson_lucy_nebula(
+        load_image(linear_master, write_log), write_log, iterations=6,
+    )
+    save_tiff(linear_deconvolved, deconvolved, write_log)
+    _log_existing_image(linear_deconvolved, write_log, "narrowband linear deconvolved")
+
+    display_stage = apply_pixinsight_narrowband_finish(deconvolved, write_log)
+    save_tiff(stretched, display_stage, write_log)
+    save_tiff(calibrated, display_stage, write_log)
+    _log_existing_image(stretched, write_log, "narrowband linked HOO display stage")
+
+    # StarNet supplies only a stellar protection footprint. Its broad starless
+    # pixels never enter the final canvas, avoiding blobs and hollow halos.
+    polished = display_stage
+    starnet_exe = find_executable(Path(settings.starnet_folder))
+    if starnet_exe and min(display_stage.shape[:2]) >= 512:
+        write_log("Narrowband Color pipeline: running StarNet for stellar protection only.")
+        write_log(f"StarNet executable: {starnet_exe}")
+        try:
+            run_starnet(stretched, starless, starnet_exe, write_log)
+        except Exception as exc:
+            write_log(f"Narrowband Color StarNet protection failed; preserving the linked HOO stage. Error: {exc}")
+        else:
+            _log_existing_image(starless, write_log, "narrowband StarNet protection canvas")
+            polished = apply_starnet_guided_narrowband_polish(
+                display_stage, load_image(starless, write_log), write_log,
+            )
+    else:
+        write_log("Narrowband Color pipeline: StarNet unavailable or image too small; using internal stellar protection.")
+
+    reference = load_image(working, write_log)
+    polished = _orient_like_reference(polished, reference, write_log, "Dedicated narrowband final")
+    save_tiff(final, polished, write_log)
+    save_png(final_png, polished, write_log)
+    after_preview = job_folder / "after_preview.png"
+    calibrated_preview = job_folder / "calibrated_preview.png"
+    make_preview(final, after_preview, log=write_log, stretch_for_display=False)
+    make_preview(calibrated, calibrated_preview, log=write_log, stretch_for_display=False)
+    write_log(
+        "Narrowband Color pipeline complete: color separation, tone, denoise, detail, and star protection "
+        "were processed as one dedicated workflow."
+    )
+    write_log(f"Final image: {final}")
+    write_log("Done.")
+    return {
+        "job_folder": job_folder,
+        "before_preview": before_preview,
+        "after_preview": after_preview,
+        "final": final,
+        "png": final_png,
+        "log": job_folder / "processing_log.txt",
+    }
+
 def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, log: LogCallback) -> dict[str, Path]:
     input_path = Path(input_path)
     if not is_supported_input(input_path):
@@ -2264,41 +2376,20 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             write_log("Weak-SNR nebula frame detected; using conservative stretch and heavier sky chroma cleanup.")
 
     if use_natural_nebula_pipeline and narrowband_color_requested:
-        # The stacked RGB master is the cleanest source for this optional
-        # finish. Running the normal faint-nebula stretch first magnifies CFA
-        # chroma and stellar halos, then makes those artifacts look like HOO
-        # signal. Finish the linear master directly with linked luminance,
-        # chroma-only NR, continuous measured color masks, and protected stars.
-        write_log(
-            "Narrowband Color: using the linear stacked RGB master before the normal nonlinear nebula route; "
-            "synthetic Siril RGB-to-HOO remapping is disabled because it cannot create independent narrowband channels."
+        return _run_dedicated_narrowband_pipeline(
+            working=working,
+            original=original,
+            calibrated=calibrated,
+            stretched=stretched,
+            denoised=denoised,
+            starless=starless,
+            final=final,
+            final_png=final_png,
+            before_preview=before_preview,
+            job_folder=job_folder,
+            settings=settings,
+            write_log=write_log,
         )
-        shutil.copy2(working, calibrated)
-        shutil.copy2(working, stretched)
-        finished_narrowband = apply_pixinsight_narrowband_finish(
-            load_image(working, write_log),
-            write_log,
-        )
-        save_tiff(final, finished_narrowband, write_log)
-        save_png(final_png, finished_narrowband, write_log)
-        after_preview = job_folder / "after_preview.png"
-        calibrated_preview = job_folder / "calibrated_preview.png"
-        make_preview(final, after_preview, log=write_log, stretch_for_display=False)
-        make_preview(calibrated, calibrated_preview, log=write_log)
-        write_log(
-            "Narrowband Color: finished star-protected PixInsight-style image saved "
-            "without checker/chroma amplification."
-        )
-        write_log(f"Final image: {final}")
-        write_log("Done.")
-        return {
-            "job_folder": job_folder,
-            "before_preview": before_preview,
-            "after_preview": after_preview,
-            "final": final,
-            "png": final_png,
-            "log": log_file,
-        }
     gradient_galaxy_siril = False
     gradient_galaxy_spread = 0.0
     if mode == PipelineMode.FULL and settings.color_calibration_mode != "Off":

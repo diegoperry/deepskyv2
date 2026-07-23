@@ -217,3 +217,106 @@ def apply_pixinsight_narrowband_finish(
             f"signal_mean={float(np.mean(signal)):.5f}, color_gate_mean={float(np.mean(color_gate)):.5f})."
         )
     return np.clip(np.rint(result * 65535.0), 0, 65535).astype(np.uint16)
+
+
+def apply_starnet_guided_narrowband_polish(
+    finished_image: np.ndarray,
+    starnet_starless: np.ndarray,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    """Polish narrowband structure while using StarNet only as a protection map.
+
+    StarNet reconstructions can contain broad holes and colored islands in dense
+    smart-telescope fields. This stage therefore never substitutes the StarNet
+    starless canvas for real image pixels. The positive compact residual is
+    used only to protect stellar profiles while restrained multiscale contrast
+    and chroma cleanup are applied to coherent extended signal.
+    """
+    source = _to_float01(finished_image)
+    starless = _to_float01(starnet_starless)
+    if source.ndim != 3 or source.shape[-1] < 3 or starless.shape != source.shape:
+        return np.asarray(finished_image)
+    source = source[..., :3]
+    starless = starless[..., :3]
+    height, width = source.shape[:2]
+    support = _edge_support((height, width))
+    safe = support > 0.97
+
+    luminance = _luminance(source)
+    starless_lum = _luminance(starless)
+    residual = np.maximum(luminance - starless_lum, 0.0)
+    compact = np.maximum(
+        cv2.GaussianBlur(residual, (0, 0), 0.72)
+        - cv2.GaussianBlur(residual, (0, 0), 3.4),
+        0.0,
+    )
+    compact_safe = compact[safe] if np.any(safe) else compact.reshape(-1)
+    compact_low = float(np.percentile(compact_safe, 80.0))
+    compact_high = max(compact_low + 1e-6, float(np.percentile(compact_safe, 99.72)))
+    star_core = _smoothstep(compact, compact_low, compact_high)
+    safe_lum = luminance[safe] if np.any(safe) else luminance.reshape(-1)
+    bright_low = float(np.percentile(safe_lum, 98.6))
+    bright_high = max(bright_low + 1e-6, float(np.percentile(safe_lum, 99.92)))
+    star_core = np.maximum(star_core, _smoothstep(luminance, bright_low, bright_high) * 0.82)
+    star_protect = cv2.GaussianBlur(star_core.astype(np.float32), (0, 0), 2.6)
+    star_protect = np.clip(star_protect * 1.48, 0.0, 1.0)
+
+    # Extended signal comes from broad luminance and broad chroma. This rejects
+    # single-pixel color noise and prevents sharpening empty sky.
+    broad_lum = cv2.GaussianBlur(luminance, (0, 0), max(6.0, min(height, width) * 0.0065))
+    broad_safe = broad_lum[safe] if np.any(safe) else broad_lum.reshape(-1)
+    signal_low = float(np.percentile(broad_safe, 48.0))
+    signal_high = max(signal_low + 1e-6, float(np.percentile(broad_safe, 98.4)))
+    luminance_signal = _smoothstep(broad_lum, signal_low, signal_high)
+    broad_rgb = cv2.GaussianBlur(source.astype(np.float32), (0, 0), 2.4)
+    broad_chroma = np.max(broad_rgb, axis=2) - np.min(broad_rgb, axis=2)
+    chroma_safe = broad_chroma[safe] if np.any(safe) else broad_chroma.reshape(-1)
+    chroma_low = float(np.percentile(chroma_safe, 58.0))
+    chroma_high = max(chroma_low + 1e-6, float(np.percentile(chroma_safe, 98.2)))
+    color_signal = _smoothstep(broad_chroma, chroma_low, chroma_high)
+    signal = np.clip(luminance_signal * (0.58 + color_signal * 0.42) * support, 0.0, 1.0)
+    signal = cv2.GaussianBlur(signal.astype(np.float32), (0, 0), 1.5)
+
+    # Clean low-signal chroma without altering luminance. The StarNet footprint
+    # protects stellar color and the continuous signal mask protects real gas.
+    chroma = source - luminance[..., None]
+    smooth_chroma = cv2.GaussianBlur(chroma.astype(np.float32), (0, 0), 1.15)
+    sky_mix = np.clip((1.0 - signal) * (1.0 - star_protect) * support * 0.82, 0.0, 0.82)
+    cleaned = np.clip(
+        luminance[..., None]
+        + chroma * (1.0 - sky_mix[..., None])
+        + smooth_chroma * sky_mix[..., None],
+        0.0,
+        1.0,
+    )
+
+    # Restrained luminance-only multiscale contrast. StarNet does not supply
+    # final pixels; it supplies only the stellar exclusion mask.
+    cleaned_lum = _luminance(cleaned)
+    fine = cleaned_lum - cv2.GaussianBlur(cleaned_lum, (0, 0), 1.25)
+    medium = cv2.GaussianBlur(cleaned_lum, (0, 0), 2.6) - cv2.GaussianBlur(cleaned_lum, (0, 0), 10.0)
+    detail_gate = np.clip(signal * (1.0 - star_protect * 0.98) * support, 0.0, 0.78)
+    polished_lum = np.clip(
+        cleaned_lum + (fine * 0.10 + medium * 0.16) * detail_gate,
+        0.0,
+        1.0,
+    )
+    polished = np.clip(
+        cleaned * (polished_lum / np.maximum(cleaned_lum, 1e-6))[..., None],
+        0.0,
+        1.0,
+    )
+
+    # Preserve the complete original stellar profile, preventing colored rings
+    # when StarNet slightly under- or over-estimates a halo.
+    restore = np.clip(star_protect[..., None] * 0.96, 0.0, 0.96)
+    polished = np.clip(polished * (1.0 - restore) + source * restore, 0.0, 1.0)
+
+    if log:
+        log(
+            "Narrowband Color: StarNet-guided structure polish used only the compact stellar footprint; "
+            "StarNet starless pixels were not used in the final canvas "
+            f"(star_protect_mean={float(np.mean(star_protect)):.5f}, "
+            f"signal_mean={float(np.mean(signal)):.5f}, detail_gate_mean={float(np.mean(detail_gate)):.5f})."
+        )
+    return np.clip(np.rint(polished * 65535.0), 0, 65535).astype(np.uint16)

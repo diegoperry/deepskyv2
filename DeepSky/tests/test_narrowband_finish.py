@@ -3,7 +3,10 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from app.narrowband_finish import apply_pixinsight_narrowband_finish
+from app.narrowband_finish import (
+    apply_pixinsight_narrowband_finish,
+    apply_starnet_guided_narrowband_polish,
+)
 
 
 def _synthetic_linear_nebula() -> np.ndarray:
@@ -72,3 +75,21 @@ def test_pixinsight_narrowband_finish_keeps_real_warm_and_cool_nebula_separation
     cool_region = cv2.GaussianBlur(output, (0, 0), 4.0)[112, 170]
     assert warm_region[0] > warm_region[2] * 1.15
     assert cool_region[2] > cool_region[0] * 1.10
+
+def test_starnet_guided_polish_never_imports_starless_blobs() -> None:
+    finished = apply_pixinsight_narrowband_finish(_synthetic_linear_nebula())
+    starless = finished.astype(np.float32) / 65535.0
+    yy, xx = np.mgrid[:256, :256].astype(np.float32)
+    fake_blob = np.exp(-(((xx - 205.0) / 18.0) ** 2 + ((yy - 205.0) / 14.0) ** 2))
+    starless[..., 0] = np.clip(starless[..., 0] + fake_blob * 0.55, 0.0, 1.0)
+    starless[..., 2] = np.clip(starless[..., 2] - fake_blob * 0.30, 0.0, 1.0)
+
+    polished = apply_starnet_guided_narrowband_polish(finished, starless)
+    polished = polished.astype(np.float32) / 65535.0
+    source = finished.astype(np.float32) / 65535.0
+
+    blob_region = fake_blob > 0.60
+    difference = np.abs(polished - source)
+    assert float(np.percentile(difference[blob_region], 99.0)) < 0.025
+    assert float(np.max(np.abs(polished[64, 54] - source[64, 54]))) < 0.01
+    assert polished[64, 54, 0] > polished[64, 54, 2]

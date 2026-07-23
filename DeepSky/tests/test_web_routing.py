@@ -42,6 +42,7 @@ from app.web_legacy_150_pipeline import (
     PipelineMode as WebLegacyPipelineMode,
     _orient_like_reference as orient_web_pipeline_like_reference,
     _prepare_narrowband_starnet_input,
+    _run_dedicated_narrowband_pipeline,
     _should_run_early_nebula_deepsnr,
     run_pipeline as expected_web_legacy_150_pipeline,
 )
@@ -518,6 +519,19 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertTrue(nebula.narrowband_color_enabled)
         self.assertFalse(galaxy.narrowband_color_enabled)
         self.assertFalse(default_settings().narrowband_color_enabled)
+
+    def test_narrowband_checkbox_selects_a_dedicated_end_to_end_pipeline(self) -> None:
+        route = inspect.getsource(run_web_legacy_150_pipeline)
+        dedicated = inspect.getsource(_run_dedicated_narrowband_pipeline)
+
+        self.assertIn("_run_dedicated_narrowband_pipeline(", route)
+        self.assertIn("_prepare_early_nebula_deepsnr_source(", dedicated)
+        self.assertIn("preserve_extended_signal=True", dedicated)
+        self.assertIn("_run_early_linear_nebula_deepsnr(", dedicated)
+        self.assertIn("apply_masked_richardson_lucy_nebula(", dedicated)
+        self.assertIn("apply_pixinsight_narrowband_finish(", dedicated)
+        self.assertIn("run_starnet(", dedicated)
+        self.assertIn("apply_starnet_guided_narrowband_polish(", dedicated)
 
     def test_stacked_rgb_narrowband_script_uses_siril_split_pixelmath_and_rgbcomp(self) -> None:
         with TemporaryDirectory() as folder:

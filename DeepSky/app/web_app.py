@@ -3856,7 +3856,7 @@ async def create_job(
             )
             if selected_narrowband_color:
                 jobs[job_id].warnings.append(
-                    "Narrowband Color is enabled. DeepSky will apply the signal-aware orange/cyan finish to this run."
+                    "Narrowband Color is enabled. DeepSky will use its dedicated narrowband pipeline for background, linear denoise, structure, color, and star protection."
                 )
     executor.submit(
         _run_job,
