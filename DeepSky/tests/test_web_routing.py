@@ -537,7 +537,15 @@ class WebPipelineRoutingTests(unittest.TestCase):
     def test_process_page_exposes_narrowband_color_checkbox(self) -> None:
         html = process_page()
         self.assertIn('id="narrowbandColor"', html)
+        self.assertIn('name="narrowband_color"', html)
+        self.assertIn('class="narrowband-checkmark"', html)
+        self.assertIn('input:checked + .narrowband-checkmark::after', html)
         self.assertIn('data.append(\n        "narrowband_color"', html)
 
+    def test_process_page_hides_pixel_restoration_button(self) -> None:
+        html = process_page()
+        self.assertNotIn('data-restore-kind="pixel"', html)
+        self.assertNotIn("button[data-restore-kind='pixel']", html)
+        self.assertNotIn(">Pixel Restoration</button>", html)
 if __name__ == "__main__":
     unittest.main()

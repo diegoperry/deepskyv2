@@ -1536,7 +1536,57 @@ def _html() -> str:
       font-size: 13px;
       line-height: 1.45;
     }
-    .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
+    .narrowband-check {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 56px;
+      border: 1px solid #355b91;
+      border-radius: 11px;
+      background: #0b1628;
+      padding: 12px 14px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .narrowband-check input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+    .narrowband-checkmark {
+      width: 24px;
+      height: 24px;
+      flex: 0 0 24px;
+      display: grid;
+      place-items: center;
+      border: 2px solid #6f93c7;
+      border-radius: 6px;
+      background: #07111f;
+      color: white;
+      font-size: 17px;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .narrowband-check input:checked + .narrowband-checkmark {
+      border-color: #70a7ff;
+      background: #286bd8;
+      box-shadow: 0 0 0 3px rgba(69, 132, 236, .22);
+    }
+    .narrowband-check input:checked + .narrowband-checkmark::after { content: "✓"; }
+    .narrowband-check input:focus-visible + .narrowband-checkmark {
+      outline: 3px solid rgba(112, 167, 255, .42);
+      outline-offset: 2px;
+    }
+    .narrowband-check-copy { display: flex; flex-direction: column; gap: 3px; }
+    .narrowband-check-copy strong { color: #f7fbff; font-size: 14px; }
+    .narrowband-check-copy small {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.35;
+    }    .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
     .warning {
       display: none;
       width: min(720px, 100%);
@@ -1859,13 +1909,16 @@ def _html() -> str:
       </div>
       <div class="detail-option" id="narrowbandColorOption">
         <h3>Narrowband Color</h3>
-        <p>Optional HOO-style orange and cyan/blue color for emission nebulae. Siril separates the stacked RGB channels while DeepSky protects the background and original star colors.</p>
-        <label class="toggle" title="Optional: applies a Siril HOO-style color composition to nebula signal only.">
-          <input id="narrowbandColor" type="checkbox" />
-          Narrowband Color
+        <p>Optional finished orange/cyan color treatment for emission nebulae. It uses only coherent signal while protecting the neutral background and original star colors.</p>
+        <label class="narrowband-check" title="Apply Narrowband Color to this Nebula run.">
+          <input id="narrowbandColor" name="narrowband_color" type="checkbox" />
+          <span class="narrowband-checkmark" aria-hidden="true"></span>
+          <span class="narrowband-check-copy">
+            <strong>Apply Narrowband Color</strong>
+            <small>Check this before running the pipeline.</small>
+          </span>
         </label>
-      </div>
-      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
+      </div>      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
         <h3>Want to add more detail? Test out deconvolution</h3>
         <p>Deconvolution can sharpen galaxy arms and dust lanes when the data is clean. On noisy or faint images it can also make the background look grainy, so compare both versions.</p>
         <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
@@ -2443,16 +2496,11 @@ def _html() -> str:
     }
 
     function renderAcceptedDownloads(job) {
-      const restoredButton = job.pixel_restored
-        ? `<button class="link-button" type="button" data-download-url="${job.pixel_restored}" data-download-name="deepsky-pixel-restored.png">Download Pixel Restored PNG</button>`
-        : `<button class="link-button" type="button" data-restore-kind="pixel" data-job-id="${job.id}">Pixel Restoration</button>`;
       downloads.innerHTML = `
         <button class="link-button" type="button" data-download-url="${job.final}" data-download-name="deepsky-final.tif">Download TIFF</button>
         <button class="link-button" type="button" data-download-kind="png-export" data-job-id="${job.id}" data-download-url="${job.png}" data-download-name="deepsky-final.png">Download PNG</button>
-        ${restoredButton}
       `;
     }
-
     async function renderCreativeFinish(job) {
       creativeFinishPanel.hidden = false;
       if (job.creative_color_finish) {
@@ -2820,30 +2868,6 @@ def _html() -> str:
       const pngButton = event.target.closest("button[data-download-kind='png-export']");
       if (pngButton) {
         openPngExportModal(pngButton.dataset.jobId, pngButton.dataset.downloadUrl);
-        return;
-      }
-      const restoreButton = event.target.closest("button[data-restore-kind='pixel']");
-      if (restoreButton) {
-        try {
-          restoreButton.disabled = true;
-          statusEl.textContent = "Running Pixel Restoration...";
-          processingIndicator.classList.add("active");
-          const restoredJob = await postJsonAuthed(
-            `/api/jobs/${restoreButton.dataset.jobId}/restore/pixel`,
-            {},
-            "Pixel Restoration is unavailable right now."
-          );
-          if (restoredJob.pixel_restored_preview) {
-            await loadImageIntoFrame(`${restoredJob.pixel_restored_preview}&t=${Date.now()}`, afterFrame, "Pixel Restored preview");
-          }
-          renderAcceptedDownloads(restoredJob);
-          statusEl.textContent = "Pixel Restoration complete. Restored PNG is ready.";
-        } catch (error) {
-          statusEl.textContent = error.message || String(error);
-          restoreButton.disabled = false;
-        } finally {
-          processingIndicator.classList.remove("active");
-        }
         return;
       }
       const button = event.target.closest("button[data-download-url]");
@@ -3832,7 +3856,7 @@ async def create_job(
             )
             if selected_narrowband_color:
                 jobs[job_id].warnings.append(
-                    "Narrowband Color is enabled. Siril will create an optional HOO-style orange/cyan nebula palette."
+                    "Narrowband Color is enabled. DeepSky will apply the signal-aware orange/cyan finish to this run."
                 )
     executor.submit(
         _run_job,
