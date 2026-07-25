@@ -9,9 +9,7 @@ from tempfile import TemporaryDirectory
 import cv2
 import numpy as np
 from astropy.io import fits
-from PIL import Image
 
-from app.creative_color_finish import apply_creative_color_finish
 from app.goal_look import (
     apply_additive_pedestal_duoband_finish,
     apply_measured_nebula_background_neutralization,
@@ -27,11 +25,8 @@ from app.pipeline import (
 from app.siril_cli import create_background_extraction_script, create_stacked_rgb_narrowband_script
 from app.settings import default_settings
 from app.web_app import (
-    AuthUser,
-    WebJob,
+    app,
     _configure_web_pipeline_settings,
-    finish_job_creative_color,
-    jobs,
     process_page,
     _realesrgan_error_message,
     _run_job,
@@ -78,94 +73,12 @@ class WebPipelineRoutingTests(unittest.TestCase):
             preserved = orient(ambiguous, ambiguous, messages.append, "ambiguous image")
             self.assertTrue(np.array_equal(preserved, ambiguous))
 
-    def test_creative_color_finish_enriches_signal_and_protects_sky_and_stars(self) -> None:
-        height, width = 220, 300
-        yy, xx = np.mgrid[:height, :width].astype(np.float32)
-        warm = np.exp(-(((xx - 112.0) / 44.0) ** 2 + ((yy - 112.0) / 36.0) ** 2))
-        cool = np.exp(-(((xx - 205.0) / 38.0) ** 2 + ((yy - 102.0) / 31.0) ** 2))
-        image = np.empty((height, width, 3), dtype=np.float32)
-        image[:] = np.array([0.047, 0.052, 0.066], dtype=np.float32)
-        image += warm[..., None] * np.array([0.31, 0.10, 0.055], dtype=np.float32)
-        image += cool[..., None] * np.array([0.045, 0.12, 0.30], dtype=np.float32)
-        image[46:49, 251:254] = np.array([0.92, 0.82, 0.68], dtype=np.float32)
-        source = np.clip(image, 0.0, 1.0)
-
-        finished = apply_creative_color_finish((source * 255.0).astype(np.uint8))
-        sky = (warm < 0.01) & (cool < 0.01)
-        objects = (warm > 0.25) | (cool > 0.25)
-        source_chroma = np.max(source, axis=2) - np.min(source, axis=2)
-        finished_chroma = np.max(finished, axis=2) - np.min(finished, axis=2)
-
-        self.assertLess(float(np.median(finished_chroma[sky])), float(np.median(source_chroma[sky])) * 0.55)
-        self.assertGreater(float(np.percentile(finished_chroma[objects], 75)), float(np.percentile(source_chroma[objects], 75)) * 1.25)
-        self.assertLess(float(np.max(np.abs(finished[47, 252] - source[47, 252]))), 0.055)
-
-    def test_creative_color_finish_ui_is_one_click_with_separate_result_and_download(self) -> None:
+    def test_creative_color_finish_is_removed_from_ui_and_api(self) -> None:
         html = process_page()
-        self.assertIn('data-creative-finish', html)
-        self.assertIn('Creative Color Finish', html)
-        self.assertIn('id="creativeFrame"', html)
-        self.assertIn('Download Creative Color Finish PNG', html)
-        self.assertIn('/finish/creative-color', html)
-        self.assertNotIn('creative-finish-strength', html)
-        self.assertNotIn('creative-finish-mode', html)
-
-    def test_creative_color_finish_endpoint_keeps_original_and_logs_completion(self) -> None:
-        with TemporaryDirectory() as tmp:
-            folder = Path(tmp)
-            source_path = folder / "final.png"
-            final_tiff = folder / "final.tif"
-            yy, xx = np.mgrid[:96, :128].astype(np.float32)
-            body = np.exp(-(((xx - 67.0) / 23.0) ** 2 + ((yy - 49.0) / 18.0) ** 2))
-            source = np.stack(
-                [0.035 + body * 0.34, 0.041 + body * 0.13, 0.046 + body * 0.20],
-                axis=2,
-            )
-            Image.fromarray(np.round(np.clip(source, 0.0, 1.0) * 255.0).astype(np.uint8), mode="RGB").save(source_path)
-            final_tiff.write_bytes(b"normal-tiff-remains-untouched")
-            original_png = source_path.read_bytes()
-            original_tiff = final_tiff.read_bytes()
-            job_id = "creative-finish-test"
-            jobs[job_id] = WebJob(
-                id=job_id,
-                user_id="creative-user",
-                status="finished",
-                result={
-                    "job_folder": folder,
-                    "after_preview": source_path,
-                    "png": source_path,
-                    "final": final_tiff,
-                    "before_preview": source_path,
-                },
-            )
-            try:
-                response = finish_job_creative_color(job_id, AuthUser(id="creative-user"))
-                output = folder / "creative_color_finish.png"
-                self.assertTrue(output.exists())
-                self.assertEqual(source_path.read_bytes(), original_png)
-                self.assertEqual(final_tiff.read_bytes(), original_tiff)
-                self.assertIn("creative_color_finish", response)
-                self.assertEqual(
-                    jobs[job_id].log[-1],
-                    "Creative Color Finish applied as optional artistic post-processing.",
-                )
-            finally:
-                jobs.pop(job_id, None)
-
-    def test_creative_color_finish_uses_cool_core_and_warm_envelope_only_on_signal(self) -> None:
-        height, width = 180, 240
-        yy, xx = np.mgrid[:height, :width].astype(np.float32)
-        body = np.exp(-(((xx - 122.0) / 43.0) ** 2 + ((yy - 91.0) / 35.0) ** 2))
-        luminance = 0.035 + body * 0.34
-        source = np.repeat(luminance[..., None], 3, axis=2)
-        finished = apply_creative_color_finish((source * 255.0).astype(np.uint8))
-        core = body > 0.78
-        envelope = (body > 0.10) & (body < 0.28)
-        sky = body < 0.005
-
-        self.assertGreater(float(np.median(finished[core, 2] - finished[core, 0])), 0.004)
-        self.assertGreater(float(np.median(finished[envelope, 0] - finished[envelope, 2])), 0.002)
-        self.assertLess(float(np.median(np.max(finished[sky], axis=1) - np.min(finished[sky], axis=1))), 0.003)
+        self.assertNotIn("Creative Color Finish", html)
+        self.assertNotIn("creative_color_finish", html)
+        self.assertNotIn("data-creative-finish", html)
+        self.assertNotIn("/finish/creative-color", {route.path for route in app.routes})
 
     def test_web_worker_is_pinned_to_nebula_filament_commit_150(self) -> None:
         self.assertIs(run_web_legacy_150_pipeline, expected_web_legacy_150_pipeline)

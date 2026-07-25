@@ -27,7 +27,6 @@ from io import BytesIO
 from .input_analysis import analyze_input_stretch
 from .image_io import SUPPORTED_INPUTS, crop_image_file, make_preview
 from .cli_tools import ToolExecutionError, find_executable, run_realesrgan
-from .creative_color_finish import create_creative_color_finish
 from .pipeline import PccCalibrationFailed
 from .web_legacy_150_pipeline import (
     PccCalibrationFailed as WebLegacyPccCalibrationFailed,
@@ -1765,15 +1764,6 @@ def _html() -> str:
       text-decoration: none;
       font-weight: 700;
     }
-    .creative-finish {
-      margin-top: 18px;
-      display: grid;
-      gap: 16px;
-      justify-items: center;
-    }
-    .creative-finish[hidden], .creative-result[hidden] { display: none; }
-    .creative-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
-    .creative-result { width: min(100%, 920px); min-height: 0; }
     .export-modal {
       position: fixed;
       inset: 0;
@@ -2047,13 +2037,6 @@ def _html() -> str:
         <div class="frame" id="afterFrame"><span class="empty">Waiting for processing</span></div>
       </article>
     </section>
-    <section id="creativeFinishPanel" class="creative-finish" hidden>
-      <div id="creativeFinishActions" class="creative-actions"></div>
-      <article id="creativeResult" class="preview creative-result" hidden>
-        <h2>Creative Color Finish</h2>
-        <div class="frame" id="creativeFrame"><span class="empty">Creative finish not applied</span></div>
-      </article>
-    </section>
     <nav class="downloads" id="downloads"></nav>
     <div class="processing-indicator" id="processingIndicator">
       <span class="spinner" aria-hidden="true"></span>
@@ -2173,10 +2156,6 @@ def _html() -> str:
     const applyCrop = document.getElementById("applyCrop");
     const afterFrame = document.getElementById("afterFrame");
     const downloads = document.getElementById("downloads");
-    const creativeFinishPanel = document.getElementById("creativeFinishPanel");
-    const creativeFinishActions = document.getElementById("creativeFinishActions");
-    const creativeResult = document.getElementById("creativeResult");
-    const creativeFrame = document.getElementById("creativeFrame");
     const pccWarningModal = document.getElementById("pccWarningModal");
     const pccCancel = document.getElementById("pccCancel");
     const pccContinue = document.getElementById("pccContinue");
@@ -2639,21 +2618,6 @@ def _html() -> str:
         <button class="link-button" type="button" data-download-kind="png-export" data-job-id="${job.id}" data-download-url="${job.png}" data-download-name="deepsky-final.png">Download PNG</button>
       `;
     }
-    async function renderCreativeFinish(job) {
-      creativeFinishPanel.hidden = false;
-      if (job.creative_color_finish) {
-        creativeFinishActions.innerHTML = `<button class="link-button" type="button" data-download-url="${job.creative_color_finish}" data-download-name="creative_color_finish.png">Download Creative Color Finish PNG</button>`;
-        creativeResult.hidden = false;
-        if (job.creative_color_finish_preview) {
-          await loadImageIntoFrame(`${job.creative_color_finish_preview}&t=${Date.now()}`, creativeFrame, "Creative Color Finish preview");
-        }
-      } else {
-        creativeFinishActions.innerHTML = `<button class="cta" type="button" data-creative-finish data-job-id="${job.id}">Creative Color Finish</button>`;
-        creativeResult.hidden = true;
-        creativeFrame.innerHTML = '<span class="empty">Creative finish not applied</span>';
-      }
-    }
-
     function renderPccDecision(job) {
       downloads.innerHTML = `
         <button class="link-button" type="button" data-pcc-action="continue" data-job-id="${job.id}">Continue without PCC</button>
@@ -2939,10 +2903,6 @@ def _html() -> str:
       beforeFrame.innerHTML = file ? '<span class="empty">Loading preview</span>' : '<span class="empty">No image selected</span>';
       afterFrame.innerHTML = '<span class="empty">Waiting for processing</span>';
       downloads.innerHTML = "";
-      creativeFinishPanel.hidden = true;
-      creativeFinishActions.innerHTML = "";
-      creativeResult.hidden = true;
-      creativeFrame.innerHTML = '<span class="empty">Creative finish not applied</span>';
       processingIndicator.classList.remove("active");
       statusEl.textContent = tooLarge ? "File is too large. Maximum upload size is 300 MB." : file ? "Preparing preview..." : "Choose a file to begin.";
       warningEl.style.display = "none";
@@ -3226,37 +3186,6 @@ def _html() -> str:
       }
     });
 
-    creativeFinishPanel.addEventListener("click", async (event) => {
-      const finishButton = event.target.closest("button[data-creative-finish]");
-      if (finishButton) {
-        try {
-          finishButton.disabled = true;
-          statusEl.textContent = "Applying Creative Color Finish...";
-          processingIndicator.classList.add("active");
-          const finishedJob = await postJsonAuthed(
-            `/api/jobs/${finishButton.dataset.jobId}/finish/creative-color`,
-            {},
-            "Creative Color Finish is unavailable right now."
-          );
-          await renderCreativeFinish(finishedJob);
-          statusEl.textContent = "Creative Color Finish complete. Creative PNG is ready.";
-        } catch (error) {
-          statusEl.textContent = error.message || String(error);
-          finishButton.disabled = false;
-        } finally {
-          processingIndicator.classList.remove("active");
-        }
-        return;
-      }
-      const downloadButton = event.target.closest("button[data-download-url]");
-      if (!downloadButton) return;
-      try {
-        await downloadFile(downloadButton.dataset.downloadUrl, downloadButton.dataset.downloadName);
-      } catch (error) {
-        statusEl.textContent = error.message || String(error);
-      }
-    });
-
     cancelPngExport.addEventListener("click", () => {
       closePngExportModal();
     });
@@ -3352,7 +3281,6 @@ def _html() -> str:
         processingIndicator.classList.remove("active");
         statusEl.textContent = "Processing complete. Downloads are ready.";
         renderAcceptedDownloads(job);
-        await renderCreativeFinish(job);
         void loadBillingStatus();
         run.disabled = false;
         cropButton.disabled = false;
@@ -3570,9 +3498,6 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         if job.result.get("pixel_restored"):
             payload["pixel_restored"] = f"/api/jobs/{job.id}/file/pixel_restored"
             payload["pixel_restored_preview"] = f"/api/jobs/{job.id}/file/pixel_restored?inline=1"
-        if job.result.get("creative_color_finish"):
-            payload["creative_color_finish"] = f"/api/jobs/{job.id}/file/creative_color_finish"
-            payload["creative_color_finish_preview"] = f"/api/jobs/{job.id}/file/creative_color_finish?inline=1"
     return payload
 
 
@@ -4455,50 +4380,6 @@ def restore_job_pixel(job_id: str, user: AuthUser = Depends(require_user)) -> di
         return _job_response(job)
 
 
-@app.post("/api/jobs/{job_id}/finish/creative-color")
-def finish_job_creative_color(job_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
-    _cleanup_old_temp_files()
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if not job or job.user_id != user.id or not job.result:
-            raise HTTPException(status_code=404, detail="Processed image is not ready.")
-        if job.status != "finished":
-            raise HTTPException(status_code=409, detail="Creative Color Finish is available after processing finishes.")
-        source_path = Path(job.result.get("png", job.result["after_preview"]))
-        job_folder = Path(job.result.get("job_folder", source_path.parent))
-        job.stage = "Creative Color Finish"
-        job.progress = 99
-
-    if not source_path.exists():
-        raise HTTPException(status_code=404, detail="Processed PNG was not found.")
-
-    output_path = job_folder / "creative_color_finish.png"
-    try:
-        create_creative_color_finish(source_path, output_path)
-    except Exception as exc:
-        logger.exception("Creative Color Finish failed for job %s", job_id)
-        with jobs_lock:
-            job = jobs.get(job_id)
-            if job:
-                job.stage = "Complete"
-                job.progress = 100
-                job.warnings.append(f"Creative Color Finish failed: {exc}")
-        raise HTTPException(
-            status_code=500,
-            detail="Creative Color Finish failed. The original output is unchanged.",
-        ) from exc
-
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if not job or job.user_id != user.id or not job.result:
-            raise HTTPException(status_code=404, detail="Processed image is not ready.")
-        job.result["creative_color_finish"] = output_path
-        job.stage = "Complete"
-        job.progress = 100
-        job.log.append("Creative Color Finish applied as optional artistic post-processing.")
-        return _job_response(job)
-
-
 @app.get("/api/jobs/{job_id}/file/{kind}")
 def get_job_file(
     job_id: str,
@@ -4516,7 +4397,6 @@ def get_job_file(
             "png": job.result.get("png", job.result["after_preview"]),
             "final": job.result["final"],
             "pixel_restored": job.result.get("pixel_restored"),
-            "creative_color_finish": job.result.get("creative_color_finish"),
         }
         path = mapping.get(kind)
     if not path or not Path(path).exists():
