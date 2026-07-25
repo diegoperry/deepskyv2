@@ -25,7 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 
 from .input_analysis import analyze_input_stretch
-from .image_io import SUPPORTED_INPUTS, make_preview
+from .image_io import SUPPORTED_INPUTS, crop_image_file, make_preview
 from .cli_tools import ToolExecutionError, find_executable, run_realesrgan
 from .creative_color_finish import create_creative_color_finish
 from .pipeline import PccCalibrationFailed
@@ -1662,6 +1662,98 @@ def _html() -> str:
       overflow: hidden;
     }
     .frame img { max-width: 100%; max-height: 520px; object-fit: contain; display: block; }
+    .frame canvas { max-width: 100%; max-height: 520px; object-fit: contain; display: block; }
+    .preview-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .preview-title h2 { margin: 0; }
+    .preview-tool {
+      border: 1px solid #355b91;
+      border-radius: 8px;
+      background: #0b1628;
+      color: #dceaff;
+      padding: 6px 12px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .preview-tool:hover { border-color: #70a7ff; background: #112441; }
+    .preview-tool[hidden] { display: none; }
+    .crop-summary { margin-top: 9px; color: #84a9dc; font-size: 12px; font-weight: 700; }
+    .crop-summary[hidden] { display: none; }
+    .crop-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 45;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(2, 6, 12, .88);
+      backdrop-filter: blur(7px);
+    }
+    .crop-modal[hidden] { display: none; }
+    .crop-card {
+      width: min(1040px, 100%);
+      max-height: calc(100vh - 36px);
+      overflow: auto;
+      border: 1px solid #29476f;
+      border-radius: 16px;
+      background: #08111f;
+      padding: 18px;
+      box-shadow: 0 28px 90px rgba(0, 0, 0, .62);
+    }
+    .crop-card h2 { margin: 0 0 5px; color: #f4f8ff; font-size: 21px; }
+    .crop-help { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+    .crop-stage {
+      min-height: 260px;
+      max-height: calc(100vh - 230px);
+      overflow: auto;
+      display: grid;
+      place-items: center;
+      border: 1px solid #1f3554;
+      border-radius: 10px;
+      background: #03070c;
+      padding: 10px;
+      user-select: none;
+    }
+    .crop-image-wrap { position: relative; display: inline-block; line-height: 0; touch-action: none; }
+    .crop-image-wrap img { max-width: min(920px, calc(100vw - 80px)); max-height: calc(100vh - 270px); display: block; }
+    .crop-selection {
+      position: absolute;
+      border: 2px solid #78aaff;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, .56), inset 0 0 0 1px rgba(255,255,255,.35);
+      cursor: move;
+      touch-action: none;
+    }
+    .crop-selection::before, .crop-selection::after {
+      content: "";
+      position: absolute;
+      pointer-events: none;
+      inset: 33.333% 0 auto;
+      border-top: 1px solid rgba(255,255,255,.34);
+    }
+    .crop-selection::after { inset: 66.666% 0 auto; }
+    .crop-grid-v { position: absolute; inset: 0; pointer-events: none; }
+    .crop-grid-v::before, .crop-grid-v::after {
+      content: ""; position: absolute; top: 0; bottom: 0; border-left: 1px solid rgba(255,255,255,.34);
+    }
+    .crop-grid-v::before { left: 33.333%; }
+    .crop-grid-v::after { left: 66.666%; }
+    .crop-handle {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border: 2px solid #fff;
+      border-radius: 50%;
+      background: #397ce8;
+      transform: translate(-50%, -50%);
+      touch-action: none;
+    }
+    .crop-handle[data-handle="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+    .crop-handle[data-handle="ne"] { left: 100%; top: 0; cursor: nesw-resize; }
+    .crop-handle[data-handle="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+    .crop-handle[data-handle="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+    .crop-readout { margin: 12px 0 0; color: #9cbce7; font-size: 13px; text-align: center; }
+    .crop-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
     .empty { color: #52667f; }
     .downloads { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-top: 18px; }
     .downloads a {
@@ -1943,8 +2035,12 @@ def _html() -> str:
     </section>
     <section class="previews">
       <article class="preview">
-        <h2>Before</h2>
+        <div class="preview-title">
+          <h2>Before</h2>
+          <button id="cropButton" class="preview-tool" type="button" hidden>Crop</button>
+        </div>
         <div class="frame" id="beforeFrame"><span class="empty">No image selected</span></div>
+        <div id="cropSummary" class="crop-summary" hidden></div>
       </article>
       <article class="preview">
         <h2>After</h2>
@@ -1963,6 +2059,30 @@ def _html() -> str:
       <span class="spinner" aria-hidden="true"></span>
       <span>Processing image...</span>
     </div>
+    </div>
+    <div id="cropModal" class="crop-modal" hidden>
+      <div class="crop-card" role="dialog" aria-modal="true" aria-labelledby="cropTitle">
+        <h2 id="cropTitle">Crop Image</h2>
+        <p class="crop-help">Drag to draw a crop, move the selected area, or use the corner handles to resize it.</p>
+        <div class="crop-stage">
+          <div id="cropImageWrap" class="crop-image-wrap">
+            <img id="cropImage" alt="Crop preview" draggable="false" />
+            <div id="cropSelection" class="crop-selection">
+              <span class="crop-grid-v" aria-hidden="true"></span>
+              <span class="crop-handle" data-handle="nw"></span>
+              <span class="crop-handle" data-handle="ne"></span>
+              <span class="crop-handle" data-handle="sw"></span>
+              <span class="crop-handle" data-handle="se"></span>
+            </div>
+          </div>
+        </div>
+        <p id="cropReadout" class="crop-readout"></p>
+        <div class="crop-actions">
+          <button id="resetCrop" class="link-button" type="button">Reset</button>
+          <button id="cancelCrop" class="link-button" type="button">Cancel</button>
+          <button id="applyCrop" class="cta" type="button">Apply Crop</button>
+        </div>
+      </div>
     </div>
     <div id="pccWarningModal" class="pcc-modal" hidden>
       <div class="pcc-card">
@@ -2041,6 +2161,16 @@ def _html() -> str:
     const previewProgressValue = document.getElementById("previewProgressValue");
     const processingIndicator = document.getElementById("processingIndicator");
     const beforeFrame = document.getElementById("beforeFrame");
+    const cropButton = document.getElementById("cropButton");
+    const cropSummary = document.getElementById("cropSummary");
+    const cropModal = document.getElementById("cropModal");
+    const cropImageWrap = document.getElementById("cropImageWrap");
+    const cropImage = document.getElementById("cropImage");
+    const cropSelectionEl = document.getElementById("cropSelection");
+    const cropReadout = document.getElementById("cropReadout");
+    const resetCrop = document.getElementById("resetCrop");
+    const cancelCrop = document.getElementById("cancelCrop");
+    const applyCrop = document.getElementById("applyCrop");
     const afterFrame = document.getElementById("afterFrame");
     const downloads = document.getElementById("downloads");
     const creativeFinishPanel = document.getElementById("creativeFinishPanel");
@@ -2094,6 +2224,12 @@ def _html() -> str:
     let pendingPngJobId = null;
     let pendingPngUrl = null;
     let previewRequest = 0;
+    let previewImageUrl = "";
+    let sourceImageWidth = 0;
+    let sourceImageHeight = 0;
+    let cropSelection = null;
+    let cropDraft = { x: 0, y: 0, width: 1, height: 1 };
+    let cropPointer = null;
     const MAX_UPLOAD_BYTES_CLIENT = 300 * 1024 * 1024;
     const CHUNKED_UPLOAD_THRESHOLD = 45 * 1024 * 1024;
 
@@ -2110,7 +2246,8 @@ def _html() -> str:
 
     function currentFileKey() {
       if (!selectedFile) return "";
-      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}:${narrowbandColor.checked ? "narrowband" : "natural"}`;
+      const cropKey = cropSelection ? `${cropSelection.x.toFixed(4)},${cropSelection.y.toFixed(4)},${cropSelection.width.toFixed(4)},${cropSelection.height.toFixed(4)}` : "full";
+      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}:${narrowbandColor.checked ? "narrowband" : "natural"}:${cropKey}`;
     }
 
     function currentModeNeedsPcc() {
@@ -2609,8 +2746,165 @@ def _html() -> str:
       return initData.upload_id;
     }
 
+    function cloneCrop(crop) {
+      return { x: crop.x, y: crop.y, width: crop.width, height: crop.height };
+    }
+
+    function isFullCrop(crop) {
+      return crop && crop.x <= 0.0005 && crop.y <= 0.0005 && crop.width >= 0.999 && crop.height >= 0.999;
+    }
+
+    function cropPoint(event) {
+      const rect = cropImage.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1))),
+        y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(rect.height, 1))),
+      };
+    }
+
+    function updateCropOverlay() {
+      const crop = cropDraft;
+      cropSelectionEl.style.left = `${crop.x * 100}%`;
+      cropSelectionEl.style.top = `${crop.y * 100}%`;
+      cropSelectionEl.style.width = `${crop.width * 100}%`;
+      cropSelectionEl.style.height = `${crop.height * 100}%`;
+      const width = sourceImageWidth ? Math.max(1, Math.round(sourceImageWidth * crop.width)) : 0;
+      const height = sourceImageHeight ? Math.max(1, Math.round(sourceImageHeight * crop.height)) : 0;
+      cropReadout.textContent = width && height
+        ? `${width} × ${height} pixels · ${Math.round(crop.width * 100)}% × ${Math.round(crop.height * 100)}% of original`
+        : `${Math.round(crop.width * 100)}% × ${Math.round(crop.height * 100)}% of original`;
+    }
+
+    function updateCropSummary() {
+      if (!cropSelection) {
+        cropSummary.hidden = true;
+        cropSummary.textContent = "";
+        return;
+      }
+      const width = Math.max(1, Math.round(sourceImageWidth * cropSelection.width));
+      const height = Math.max(1, Math.round(sourceImageHeight * cropSelection.height));
+      cropSummary.textContent = `Crop applied: ${width} × ${height} pixels`;
+      cropSummary.hidden = false;
+    }
+
+    async function renderBeforePreview() {
+      if (!previewImageUrl) return;
+      if (!cropSelection) {
+        await loadImageIntoFrame(previewImageUrl, beforeFrame, "Before preview");
+        updateCropSummary();
+        return;
+      }
+      await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.alt = "Cropped before preview";
+        image.onload = () => {
+          const sx = Math.max(0, Math.floor(cropSelection.x * image.naturalWidth));
+          const sy = Math.max(0, Math.floor(cropSelection.y * image.naturalHeight));
+          const sw = Math.max(1, Math.min(image.naturalWidth - sx, Math.ceil(cropSelection.width * image.naturalWidth)));
+          const sh = Math.max(1, Math.min(image.naturalHeight - sy, Math.ceil(cropSelection.height * image.naturalHeight)));
+          const canvas = document.createElement("canvas");
+          canvas.width = sw;
+          canvas.height = sh;
+          canvas.setAttribute("aria-label", "Cropped before preview");
+          const context = canvas.getContext("2d");
+          context.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
+          beforeFrame.innerHTML = "";
+          beforeFrame.appendChild(canvas);
+          resolve();
+        };
+        image.onerror = () => reject(new Error("Could not render cropped preview."));
+        image.src = previewImageUrl;
+      });
+      updateCropSummary();
+    }
+
+    function openCropEditor() {
+      if (!previewImageUrl || !selectedFile) return;
+      cropDraft = cloneCrop(cropSelection || { x: 0, y: 0, width: 1, height: 1 });
+      cropImage.src = previewImageUrl;
+      cropModal.hidden = false;
+      if (cropImage.complete) updateCropOverlay();
+    }
+
+    function closeCropEditor() {
+      cropPointer = null;
+      cropModal.hidden = true;
+    }
+
+    function beginCropPointer(event) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const point = cropPoint(event);
+      const handle = event.target.closest(".crop-handle");
+      const moving = !handle && event.target.closest(".crop-selection");
+      cropPointer = {
+        pointerId: event.pointerId,
+        mode: handle ? `resize-${handle.dataset.handle}` : moving ? "move" : "draw",
+        start: point,
+        initial: cloneCrop(cropDraft),
+      };
+      if (cropPointer.mode === "draw") {
+        cropDraft = { x: point.x, y: point.y, width: 0.03, height: 0.03 };
+        updateCropOverlay();
+      }
+      cropImageWrap.setPointerCapture(event.pointerId);
+    }
+
+    function moveCropPointer(event) {
+      if (!cropPointer || cropPointer.pointerId !== event.pointerId) return;
+      event.preventDefault();
+      const point = cropPoint(event);
+      const dx = point.x - cropPointer.start.x;
+      const dy = point.y - cropPointer.start.y;
+      const initial = cropPointer.initial;
+      const minimum = 0.03;
+      if (cropPointer.mode === "draw") {
+        const left = Math.min(cropPointer.start.x, point.x);
+        const top = Math.min(cropPointer.start.y, point.y);
+        cropDraft = {
+          x: left,
+          y: top,
+          width: Math.max(minimum, Math.abs(point.x - cropPointer.start.x)),
+          height: Math.max(minimum, Math.abs(point.y - cropPointer.start.y)),
+        };
+        cropDraft.width = Math.min(cropDraft.width, 1 - cropDraft.x);
+        cropDraft.height = Math.min(cropDraft.height, 1 - cropDraft.y);
+      } else if (cropPointer.mode === "move") {
+        cropDraft = {
+          ...initial,
+          x: Math.max(0, Math.min(1 - initial.width, initial.x + dx)),
+          y: Math.max(0, Math.min(1 - initial.height, initial.y + dy)),
+        };
+      } else {
+        const handle = cropPointer.mode.slice(7);
+        let left = initial.x;
+        let top = initial.y;
+        let right = initial.x + initial.width;
+        let bottom = initial.y + initial.height;
+        if (handle.includes("w")) left = Math.max(0, Math.min(right - minimum, initial.x + dx));
+        if (handle.includes("e")) right = Math.min(1, Math.max(left + minimum, initial.x + initial.width + dx));
+        if (handle.includes("n")) top = Math.max(0, Math.min(bottom - minimum, initial.y + dy));
+        if (handle.includes("s")) bottom = Math.min(1, Math.max(top + minimum, initial.y + initial.height + dy));
+        cropDraft = { x: left, y: top, width: right - left, height: bottom - top };
+      }
+      updateCropOverlay();
+    }
+
+    function endCropPointer(event) {
+      if (!cropPointer || cropPointer.pointerId !== event.pointerId) return;
+      cropPointer = null;
+      if (cropImageWrap.hasPointerCapture(event.pointerId)) cropImageWrap.releasePointerCapture(event.pointerId);
+    }
     async function setFile(file) {
       selectedFile = file;
+      previewImageUrl = "";
+      sourceImageWidth = 0;
+      sourceImageHeight = 0;
+      cropSelection = null;
+      cropDraft = { x: 0, y: 0, width: 1, height: 1 };
+      cropButton.hidden = true;
+      cropButton.disabled = false;
+      updateCropSummary();
       const requestId = ++previewRequest;
       resetProgress();
       stagedUpload = null;
@@ -2673,7 +2967,11 @@ def _html() -> str:
         previewPccAvailable = preview.pcc_available === true;
         setProgress(uploadProgressFill, uploadProgressValue, 100);
         setProgress(previewProgressFill, previewProgressValue, 100);
-        await loadImageIntoFrame(`${preview.preview_url}&t=${Date.now()}`, beforeFrame, "Before preview");
+        previewImageUrl = `${preview.preview_url}&t=${Date.now()}`;
+        sourceImageWidth = Number(preview.source_width || 0);
+        sourceImageHeight = Number(preview.source_height || 0);
+        await renderBeforePreview();
+        cropButton.hidden = false;
         statusEl.textContent = "Ready to run full pipeline.";
         updatePccWarningState();
         setTimeout(() => {
@@ -2684,6 +2982,7 @@ def _html() -> str:
         previewPccAvailable = null;
         progressPanel.hidden = true;
         beforeFrame.innerHTML = '<span class="empty">Preview unavailable</span>';
+        cropButton.hidden = true;
         if (file.size > CHUNKED_UPLOAD_THRESHOLD && !stagedUpload) {
           run.disabled = true;
           statusEl.textContent = "Large file upload failed. Try selecting the file again.";
@@ -2696,6 +2995,32 @@ def _html() -> str:
       }
     }
 
+    cropImage.addEventListener("load", updateCropOverlay);
+    cropImageWrap.addEventListener("pointerdown", beginCropPointer);
+    cropImageWrap.addEventListener("pointermove", moveCropPointer);
+    cropImageWrap.addEventListener("pointerup", endCropPointer);
+    cropImageWrap.addEventListener("pointercancel", endCropPointer);
+    cropButton.addEventListener("click", openCropEditor);
+    resetCrop.addEventListener("click", () => {
+      cropDraft = { x: 0, y: 0, width: 1, height: 1 };
+      updateCropOverlay();
+    });
+    cancelCrop.addEventListener("click", closeCropEditor);
+    applyCrop.addEventListener("click", async () => {
+      cropSelection = isFullCrop(cropDraft) ? null : cloneCrop(cropDraft);
+      closeCropEditor();
+      await renderBeforePreview();
+      pccWarningAcceptedKey = "";
+      pccWarningCanceledKey = "";
+      statusEl.textContent = cropSelection ? "Crop applied. Ready to process the selected area." : "Crop reset. Ready to process the full image.";
+      updatePccWarningState();
+    });
+    cropModal.addEventListener("click", (event) => {
+      if (event.target === cropModal) closeCropEditor();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !cropModal.hidden) closeCropEditor();
+    });
     inputMode.addEventListener("change", () => {
       if (inputMode.value === "Pre-stretched") {
         warningEl.style.display = "block";
@@ -2965,12 +3290,14 @@ def _html() -> str:
         statusEl.textContent = error.message || String(error);
         processingIndicator.classList.remove("active");
         run.disabled = false;
+        cropButton.disabled = false;
         return;
       }
       if (!res.ok) {
         statusEl.textContent = job.detail || job.error || "Sign in to continue.";
         processingIndicator.classList.remove("active");
         run.disabled = false;
+        cropButton.disabled = false;
         return;
       }
       if (job.status === "queued" || job.status === "running") {
@@ -3006,6 +3333,7 @@ def _html() -> str:
         await renderCreativeFinish(job);
         void loadBillingStatus();
         run.disabled = false;
+        cropButton.disabled = false;
         return;
       }
       if (job.status === "failed") {
@@ -3013,6 +3341,7 @@ def _html() -> str:
         progressPanel.hidden = true;
         processingIndicator.classList.remove("active");
         run.disabled = false;
+        cropButton.disabled = false;
         return;
       }
       setTimeout(() => poll(jobId), 1800);
@@ -3025,12 +3354,18 @@ def _html() -> str:
         return;
       }
       run.disabled = true;
+      cropButton.disabled = true;
       statusEl.textContent = "Uploading...";
       processingIndicator.classList.add("active");
       downloads.innerHTML = "";
       afterFrame.innerHTML = '<span class="empty">Processing</span>';
       showUploadProgress("Uploading job");
       const data = new FormData();
+      const selectedCrop = cropSelection || { x: 0, y: 0, width: 1, height: 1 };
+      data.append("crop_x", selectedCrop.x.toFixed(8));
+      data.append("crop_y", selectedCrop.y.toFixed(8));
+      data.append("crop_width", selectedCrop.width.toFixed(8));
+      data.append("crop_height", selectedCrop.height.toFixed(8));
       const canUseStagedUpload =
         stagedUpload &&
         stagedUpload.name === selectedFile.name &&
@@ -3081,6 +3416,7 @@ def _html() -> str:
         statusEl.textContent = error.message || String(error);
         progressPanel.hidden = true;
         run.disabled = false;
+        cropButton.disabled = false;
         return;
       }
       progressPanel.hidden = true;
@@ -3702,7 +4038,7 @@ def create_staged_preview(upload_id: str, user: AuthUser = Depends(require_user)
     preview_dir.mkdir(parents=True, exist_ok=False)
     preview_path = preview_dir / "before_preview.png"
     try:
-        make_preview(staged.path, preview_path)
+        source_width, source_height = make_preview(staged.path, preview_path)
     except Exception as exc:
         shutil.rmtree(preview_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
@@ -3711,6 +4047,8 @@ def create_staged_preview(upload_id: str, user: AuthUser = Depends(require_user)
     return {
         "preview_url": f"/api/previews/{preview_id}?inline=1",
         "pcc_available": _pcc_metadata_available(staged.path),
+        "source_width": source_width,
+        "source_height": source_height,
     }
 
 
@@ -3743,7 +4081,7 @@ async def create_preview(
 
     preview_path = preview_dir / "before_preview.png"
     try:
-        make_preview(input_path, preview_path)
+        source_width, source_height = make_preview(input_path, preview_path)
         pcc_available = _pcc_metadata_available(input_path)
         input_path.unlink(missing_ok=True)
     except Exception as exc:
@@ -3751,7 +4089,7 @@ async def create_preview(
         raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
     with jobs_lock:
         previews[preview_id] = user.id
-    return {"preview_url": f"/api/previews/{preview_id}?inline=1", "pcc_available": pcc_available}
+    return {"preview_url": f"/api/previews/{preview_id}?inline=1", "pcc_available": pcc_available, "source_width": source_width, "source_height": source_height}
 
 
 @app.get("/api/previews/{preview_id}")
@@ -3777,6 +4115,10 @@ def get_preview(
 async def create_job(
     file: UploadFile | None = File(None),
     upload_id: str = Form(""),
+    crop_x: float = Form(0.0),
+    crop_y: float = Form(0.0),
+    crop_width: float = Form(1.0),
+    crop_height: float = Form(1.0),
     object_type: str = Form("Nebula"),
     pre_stretched: bool = Form(False),
     input_mode: str = Form("Auto"),
@@ -3828,6 +4170,32 @@ async def create_job(
                     raise HTTPException(status_code=413, detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB.")
                 handle.write(chunk)
 
+    crop_requested = any(
+        abs(value - default) > 1e-6
+        for value, default in (
+            (crop_x, 0.0),
+            (crop_y, 0.0),
+            (crop_width, 1.0),
+            (crop_height, 1.0),
+        )
+    )
+    cropped_size: tuple[int, int] | None = None
+    if crop_requested:
+        cropped_path = upload_dir / f"cropped_{input_path.name}"
+        try:
+            cropped_size = crop_image_file(
+                input_path,
+                cropped_path,
+                crop_x,
+                crop_y,
+                crop_width,
+                crop_height,
+            )
+        except (OSError, ValueError) as exc:
+            shutil.rmtree(upload_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Could not crop image: {exc}") from exc
+        input_path = cropped_path
+
     try:
         _, credit_consumed = _consume_credit_or_require_subscription(user)
     except HTTPException:
@@ -3838,6 +4206,10 @@ async def create_job(
 
     with jobs_lock:
         jobs[job_id] = WebJob(id=job_id, user_id=user.id, user_email=user.email, credit_consumed=credit_consumed)
+        if cropped_size:
+            jobs[job_id].warnings.append(
+                f"Crop applied before processing: {cropped_size[0]} x {cropped_size[1]} pixels."
+            )
         if pre_stretched:
             jobs[job_id].warnings.append(
                 "Pre-stretched mode enabled. DeepSky will skip its stretch/color-stretch stage for this upload."

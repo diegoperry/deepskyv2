@@ -556,6 +556,17 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('input:checked + .narrowband-checkmark::after', html)
         self.assertIn('data.append(\n        "narrowband_color"', html)
 
+    def test_process_page_exposes_preprocessing_crop_editor(self) -> None:
+        html = process_page()
+        self.assertIn('id="cropButton"', html)
+        self.assertIn('id="cropModal"', html)
+        self.assertIn('id="cropSelection"', html)
+        self.assertIn('data.append("crop_x"', html)
+        self.assertIn('data.append("crop_y"', html)
+        self.assertIn('data.append("crop_width"', html)
+        self.assertIn('data.append("crop_height"', html)
+        self.assertIn('await renderBeforePreview()', html)
+
     def test_process_page_hides_pixel_restoration_button(self) -> None:
         html = process_page()
         self.assertNotIn('data-restore-kind="pixel"', html)

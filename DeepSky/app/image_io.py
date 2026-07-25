@@ -11,6 +11,110 @@ from PIL import Image
 
 SUPPORTED_INPUTS = {".fits", ".fit", ".fts", ".tif", ".tiff"}
 LogCallback = Callable[[str], None]
+MIN_CROP_PIXELS = 64
+
+
+def _pixel_crop_bounds(
+    width: int,
+    height: int,
+    crop_x: float,
+    crop_y: float,
+    crop_width: float,
+    crop_height: float,
+) -> tuple[int, int, int, int]:
+    values = np.asarray([crop_x, crop_y, crop_width, crop_height], dtype=np.float64)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Crop coordinates must be finite.")
+    if crop_x < 0.0 or crop_y < 0.0 or crop_width <= 0.0 or crop_height <= 0.0:
+        raise ValueError("Crop coordinates must be positive and inside the image.")
+    if crop_x + crop_width > 1.000001 or crop_y + crop_height > 1.000001:
+        raise ValueError("Crop area extends outside the image.")
+
+    x0 = max(0, min(width - 1, int(np.floor(crop_x * width))))
+    y0 = max(0, min(height - 1, int(np.floor(crop_y * height))))
+    x1 = max(x0 + 1, min(width, int(np.ceil((crop_x + crop_width) * width))))
+    y1 = max(y0 + 1, min(height, int(np.ceil((crop_y + crop_height) * height))))
+    if x1 - x0 < MIN_CROP_PIXELS or y1 - y0 < MIN_CROP_PIXELS:
+        raise ValueError(f"Crop must be at least {MIN_CROP_PIXELS} pixels wide and tall.")
+    return x0, y0, x1, y1
+
+
+def _crop_array(
+    data: np.ndarray,
+    crop_x: float,
+    crop_y: float,
+    crop_width: float,
+    crop_height: float,
+) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    arr = np.asarray(data)
+    if arr.ndim < 2:
+        raise ValueError("Image does not have two spatial dimensions.")
+    channels_last = (
+        arr.ndim == 3
+        and arr.shape[-1] in (3, 4)
+        and arr.shape[0] not in (1, 3, 4)
+    )
+    if channels_last:
+        height, width = int(arr.shape[0]), int(arr.shape[1])
+    else:
+        height, width = int(arr.shape[-2]), int(arr.shape[-1])
+    bounds = _pixel_crop_bounds(width, height, crop_x, crop_y, crop_width, crop_height)
+    x0, y0, x1, y1 = bounds
+    cropped = arr[y0:y1, x0:x1, ...] if channels_last else arr[..., y0:y1, x0:x1]
+    return np.ascontiguousarray(cropped), bounds
+
+
+def crop_image_file(
+    source_path: Path,
+    output_path: Path,
+    crop_x: float,
+    crop_y: float,
+    crop_width: float,
+    crop_height: float,
+    log: LogCallback | None = None,
+) -> tuple[int, int]:
+    """Crop a FITS/TIFF at native resolution while preserving useful metadata."""
+    source_path = Path(source_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = source_path.suffix.lower()
+
+    if suffix in {".fits", ".fit", ".fts"}:
+        with fits.open(source_path, memmap=False) as source_hdul:
+            hdul = fits.HDUList([hdu.copy() for hdu in source_hdul])
+        image_hdu = next((hdu for hdu in hdul if hdu.data is not None), None)
+        if image_hdu is None:
+            hdul.close()
+            raise ValueError("No image data found in FITS file.")
+        cropped, (x0, y0, x1, y1) = _crop_array(
+            image_hdu.data, crop_x, crop_y, crop_width, crop_height,
+        )
+        image_hdu.data = cropped
+        if "CRPIX1" in image_hdu.header:
+            image_hdu.header["CRPIX1"] = float(image_hdu.header["CRPIX1"]) - x0
+        if "CRPIX2" in image_hdu.header:
+            image_hdu.header["CRPIX2"] = float(image_hdu.header["CRPIX2"]) - y0
+        hdul.writeto(output_path, overwrite=True, output_verify="silentfix")
+        hdul.close()
+    elif suffix in {".tif", ".tiff"}:
+        source = load_tiff_image(source_path, log)
+        cropped, (x0, y0, x1, y1) = _crop_array(
+            source, crop_x, crop_y, crop_width, crop_height,
+        )
+        if cropped.ndim == 3 and cropped.shape[-1] == 3:
+            tifffile.imwrite(output_path, cropped, photometric="rgb", planarconfig="contig", compression=None)
+        else:
+            tifffile.imwrite(output_path, np.squeeze(cropped), photometric="minisblack", compression=None)
+    else:
+        raise ValueError(f"Unsupported input format: {suffix}")
+
+    width, height = x1 - x0, y1 - y0
+    if log:
+        log(
+            f"Cropped source at native resolution: x={x0}, y={y0}, "
+            f"width={width}, height={height}."
+        )
+    return width, height
 
 
 def is_supported_input(path: Path) -> bool:
@@ -297,9 +401,10 @@ def make_preview(
     max_size: tuple[int, int] = (900, 700),
     log: LogCallback | None = None,
     stretch_for_display: bool = True,
-) -> None:
+) -> tuple[int, int]:
     image = load_image(input_path, log)
     arr, note = _normalize_image_shape(np.asarray(image))
+    source_height, source_width = int(arr.shape[0]), int(arr.shape[1])
     arr = _downsample_for_preview(arr, max_size)
     if arr.ndim == 3 and arr.shape[-1] == 3:
         if stretch_for_display:
@@ -332,3 +437,4 @@ def make_preview(
     pil.save(output_path)
     if log:
         log(f"Wrote preview: {describe_array(output_path, arr8, f'preview from {note}')}")
+    return source_width, source_height
