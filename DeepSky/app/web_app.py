@@ -72,6 +72,74 @@ def _load_export_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+def _fit_export_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    *,
+    max_width: int,
+    max_size: int,
+    min_size: int,
+    bold: bool,
+) -> tuple[str, ImageFont.ImageFont]:
+    """Fit one footer value inside its cell, truncating only as a last resort."""
+    value = text.strip() or "-"
+    max_width = max(1, int(max_width))
+    min_size = max(7, int(min_size))
+    max_size = max(min_size, int(max_size))
+    for size in range(max_size, min_size - 1, -1):
+        font = _load_export_font(size, bold=bold)
+        bounds = draw.textbbox((0, 0), value, font=font)
+        if bounds[2] - bounds[0] <= max_width:
+            return value, font
+
+    font = _load_export_font(min_size, bold=bold)
+    suffix = "..."
+    candidate = value
+    while len(candidate) > 1:
+        candidate = candidate[:-1].rstrip()
+        rendered = candidate + suffix
+        bounds = draw.textbbox((0, 0), rendered, font=font)
+        if bounds[2] - bounds[0] <= max_width:
+            return rendered, font
+    return "-", font
+
+
+def _export_footer_layout(width: int, height: int) -> dict[str, int]:
+    """Return a collision-free responsive grid for cropped and uncropped PNGs."""
+    columns = 4 if width >= 1200 else 2 if width >= 520 else 1
+    rows = (4 + columns - 1) // columns
+    top_fade = max(16, min(30, height // 36))
+    content_pad = max(7, min(16, width // 64))
+    desired_row_height = 58 if columns == 4 else 64 if columns == 2 else 52
+    overlay_height = min(height, max(84, top_fade + content_pad * 2 + rows * desired_row_height))
+    left_pad = max(10, min(26, width // 42))
+    right_pad = left_pad
+    usable_width = max(1, width - left_pad - right_pad)
+    logo_block_width = 0 if width < 360 else min(max(48, int(usable_width * 0.20)), max(48, usable_width // 3))
+    logo_gap = max(6, min(18, width // 90)) if logo_block_width else 0
+    info_width = max(1, usable_width - logo_block_width - logo_gap)
+    gutter = max(6, min(18, width // 100))
+    col_width = max(1, (info_width - gutter * (columns - 1)) // columns)
+    content_height = max(1, overlay_height - top_fade - content_pad * 2)
+    row_height = max(1, content_height // rows)
+    return {
+        "columns": columns,
+        "rows": rows,
+        "overlay_height": overlay_height,
+        "top_fade": top_fade,
+        "content_pad": content_pad,
+        "left_pad": left_pad,
+        "right_pad": right_pad,
+        "usable_width": usable_width,
+        "logo_block_width": logo_block_width,
+        "logo_gap": logo_gap,
+        "info_width": info_width,
+        "gutter": gutter,
+        "col_width": col_width,
+        "row_height": row_height,
+    }
+
+
 def _build_png_export_with_footer(
     source_path: Path,
     telescope: str,
@@ -81,35 +149,24 @@ def _build_png_export_with_footer(
 ) -> bytes:
     image = Image.open(source_path).convert("RGB")
     width, height = image.size
-    overlay_height = max(84, min(136, int(height * 0.095)))
-    canvas = image.copy()
+    layout = _export_footer_layout(width, height)
+    overlay_height = layout["overlay_height"]
+    top_fade = layout["top_fade"]
+    content_pad = layout["content_pad"]
+    panel_top = height - overlay_height
+
     overlay = Image.new("RGBA", (width, overlay_height), (6, 10, 18, 0))
     overlay_draw = ImageDraw.Draw(overlay)
-    top_fade = max(14, overlay_height // 2)
     for index in range(top_fade):
-        alpha = int(88 * ((index + 1) / top_fade) ** 1.55)
+        alpha = int(94 * ((index + 1) / max(1, top_fade)) ** 1.55)
         overlay_draw.line((0, index, width, index), fill=(7, 10, 17, alpha), width=1)
-    overlay_draw.rectangle((0, top_fade, width, overlay_height), fill=(7, 10, 17, 228))
+    overlay_draw.rectangle((0, top_fade, width, overlay_height), fill=(7, 10, 17, 232))
 
-    value_font = _load_export_font(max(16, min(30, width // 18)), bold=True)
-    sub_font = _load_export_font(max(9, min(16, width // 55)), bold=False)
-
-    panel_top = height - overlay_height
-    canvas = canvas.convert("RGBA")
+    canvas = image.convert("RGBA")
     canvas.alpha_composite(overlay, (0, panel_top))
     draw = ImageDraw.Draw(canvas)
-
     primary_color = (246, 248, 252, 255)
     secondary_color = (198, 207, 224, 255)
-
-    left_pad = max(18, width // 42)
-    right_pad = max(18, width // 42)
-    usable_width = width - left_pad - right_pad
-    logo_block_width = int(usable_width * 0.27)
-    info_width = usable_width - logo_block_width
-    columns = 4
-    gutter = max(12, width // 120)
-    col_width = max(72, (info_width - gutter * (columns - 1)) // columns)
 
     entries = [
         (target.strip() or "-", "TARGET"),
@@ -117,19 +174,46 @@ def _build_png_export_with_footer(
         (telescope.strip() or "-", "TELESCOPE"),
         (date_captured.strip() or "-", "DATE"),
     ]
-
-    value_y = panel_top + top_fade + max(4, overlay_height // 12)
-    sub_y = value_y + max(22, overlay_height // 2)
+    columns = layout["columns"]
+    col_width = layout["col_width"]
+    row_height = layout["row_height"]
+    gutter = layout["gutter"]
+    content_top = panel_top + top_fade + content_pad
     for index, (value, label) in enumerate(entries):
-        x = left_pad + index * (col_width + gutter)
-        draw.text((x, value_y), value.upper(), fill=primary_color, font=value_font)
-        draw.text((x, sub_y), label, fill=secondary_color, font=sub_font)
+        row = index // columns
+        column = index % columns
+        x = layout["left_pad"] + column * (col_width + gutter)
+        row_top = content_top + row * row_height
+        value_text, value_font = _fit_export_text(
+            draw,
+            value.upper(),
+            max_width=col_width - 4,
+            max_size=min(30, max(14, int(row_height * 0.42))),
+            min_size=10,
+            bold=True,
+        )
+        label_text, label_font = _fit_export_text(
+            draw,
+            label,
+            max_width=col_width - 4,
+            max_size=min(14, max(9, int(row_height * 0.22))),
+            min_size=8,
+            bold=False,
+        )
+        value_bounds = draw.textbbox((0, 0), value_text, font=value_font)
+        label_bounds = draw.textbbox((0, 0), label_text, font=label_font)
+        value_height = value_bounds[3] - value_bounds[1]
+        label_height = label_bounds[3] - label_bounds[1]
+        value_y = row_top
+        label_y = min(row_top + value_height + max(3, row_height // 14), row_top + row_height - label_height)
+        draw.text((x, value_y), value_text, fill=primary_color, font=value_font)
+        draw.text((x, label_y), label_text, fill=secondary_color, font=label_font)
 
-    if EXPORT_LOGO_PATH.exists():
+    logo_block_width = layout["logo_block_width"]
+    if EXPORT_LOGO_PATH.exists() and logo_block_width:
         logo = Image.open(EXPORT_LOGO_PATH).convert("RGBA")
-        # The supplied artwork contains opaque black pixels inside its nominally
-        # transparent canvas. Derive alpha from brightness so only the white mark
-        # is composited and no rectangular patch can cover the footer.
+        # Derive transparency from brightness so the supplied black canvas can
+        # never cover metadata or the underlying image.
         logo.putalpha(
             logo.convert("L").point(
                 lambda value: 0 if value <= 10 else min(255, (value - 10) * 3)
@@ -138,34 +222,40 @@ def _build_png_export_with_footer(
         visible_bounds = logo.getchannel("A").getbbox()
         if visible_bounds:
             logo = logo.crop(visible_bounds)
-        corner_pad = max(8, min(24, width // 100))
-        logo_target_width = max(64, min(logo_block_width, int(width * 0.11)))
-        logo_max_height = max(24, overlay_height - (corner_pad * 2))
+        corner_pad = max(6, min(18, width // 100))
+        logo_target_width = min(logo_block_width, max(40, int(width * 0.11)))
+        logo_max_height = max(22, overlay_height - top_fade - (corner_pad * 2))
         scale = min(
             logo_target_width / max(1, logo.width),
             logo_max_height / max(1, logo.height),
             1.0,
         )
-        logo_size = (
-            max(1, int(logo.width * scale)),
-            max(1, int(logo.height * scale)),
+        logo = logo.resize(
+            (max(1, int(logo.width * scale)), max(1, int(logo.height * scale))),
+            Image.LANCZOS,
         )
-        logo = logo.resize(logo_size, Image.LANCZOS)
         logo_x = width - corner_pad - logo.width
-        logo_y = panel_top + max(corner_pad, (overlay_height - logo.height) // 2)
+        logo_y = panel_top + top_fade + max(corner_pad, (overlay_height - top_fade - logo.height) // 2)
         logo_y = min(logo_y, height - corner_pad - logo.height)
         canvas.alpha_composite(logo, (logo_x, logo_y))
-    else:
-        fallback_font = _load_export_font(max(13, min(24, width // 28)), bold=True)
-        fallback_x = width - right_pad - logo_block_width
-        fallback_y = panel_top + max(16, overlay_height // 3)
-        draw.text((fallback_x, fallback_y), "PROCESSED WITH DEEPSKY", fill=primary_color, font=fallback_font)
+    elif not EXPORT_LOGO_PATH.exists() and logo_block_width:
+        fallback_x = width - layout["right_pad"] - logo_block_width
+        fallback_text, fallback_font = _fit_export_text(
+            draw,
+            "PROCESSED WITH DEEPSKY",
+            max_width=logo_block_width,
+            max_size=max(11, min(20, width // 28)),
+            min_size=8,
+            bold=True,
+        )
+        fallback_bounds = draw.textbbox((0, 0), fallback_text, font=fallback_font)
+        fallback_height = fallback_bounds[3] - fallback_bounds[1]
+        fallback_y = panel_top + top_fade + max(6, (overlay_height - top_fade - fallback_height) // 2)
+        draw.text((fallback_x, fallback_y), fallback_text, fill=primary_color, font=fallback_font)
 
-    canvas = canvas.convert("RGB")
     buffer = BytesIO()
-    canvas.save(buffer, format="PNG")
+    canvas.convert("RGB").save(buffer, format="PNG")
     return buffer.getvalue()
-
 
 def _realesrgan_error_message(exc: Exception) -> str:
     if isinstance(exc, ToolExecutionError):
