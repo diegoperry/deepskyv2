@@ -1991,7 +1991,7 @@ def _html() -> str:
       </div>
       <div class="detail-option" id="narrowbandColorOption">
         <h3>Narrowband Color</h3>
-        <p>Enabled by default for emission nebulae. It adds a finished orange/cyan treatment, protects the neutral background and original star colors, and applies gentle star reduction.</p>
+        <p>Enabled by default for emission nebulae. It adds a finished orange/cyan treatment, protects the neutral background and original star colors, and applies stronger star reduction.</p>
         <label class="narrowband-check" title="Apply Narrowband Color to this Nebula run.">
           <input id="narrowbandColor" name="narrowband_color" type="checkbox" checked />
           <span class="narrowband-checkmark" aria-hidden="true"></span>

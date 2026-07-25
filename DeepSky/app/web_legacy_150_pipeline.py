@@ -1275,7 +1275,7 @@ def _repair_nebula_starless_base(
 
 
 def _apply_mild_nebula_star_core_reduction(image: np.ndarray, write_log: LogCallback) -> np.ndarray:
-    """Mildly compress compact star cores without using StarNet's starless reconstruction."""
+    """Strongly compress compact star cores without using StarNet's starless reconstruction."""
     rgb = _to_float01(image)
     if rgb.ndim != 3:
         return image
@@ -1302,18 +1302,18 @@ def _apply_mild_nebula_star_core_reduction(image: np.ndarray, write_log: LogCall
     valid = (np.arange(count) > 0) & (areas <= 220)
     valid[0] = False
     core_mask = valid[labels].astype(np.float32)
-    core_mask = cv2.GaussianBlur(core_mask * compact, (0, 0), 0.85)
+    core_mask = cv2.GaussianBlur(core_mask * compact, (0, 0), 1.05)
     core_mask = np.clip(core_mask, 0.0, 1.0)
 
-    smooth_rgb = cv2.GaussianBlur(rgb.astype(np.float32), (0, 0), 1.15)
+    smooth_rgb = cv2.GaussianBlur(rgb.astype(np.float32), (0, 0), 1.35)
     smooth_lum = _rgb_luminance(smooth_rgb).astype(np.float32)
     smooth_chroma = smooth_rgb - smooth_lum[..., None]
     replacement = np.clip(smooth_lum[..., None] + smooth_chroma * 0.70, 0.0, 1.0)
 
-    mix = np.clip(core_mask[..., None] * 0.38, 0.0, 0.38)
+    mix = np.clip(core_mask[..., None] * 0.58, 0.0, 0.58)
     reduced = np.clip(rgb * (1.0 - mix) + replacement * mix, 0.0, 1.0)
     write_log(
-        "Applied mild natural RGB star-core reduction without StarNet recombination: "
+        "Applied stronger natural RGB star-core reduction without StarNet recombination: "
         f"mask_mean={float(np.mean(core_mask)):.5f}; "
         f"detected_components={int(np.count_nonzero(valid))}"
     )
@@ -2232,7 +2232,7 @@ def _run_dedicated_narrowband_pipeline(
     make_preview(calibrated, calibrated_preview, log=write_log, stretch_for_display=False)
     write_log(
         "Narrowband Color pipeline complete: color separation, tone, denoise, detail, "
-        "stellar protection, and gentle star reduction were processed as one dedicated workflow."
+        "stellar protection, and stronger star reduction were processed as one dedicated workflow."
     )
     write_log(f"Final image: {final}")
     write_log("Done.")

@@ -436,9 +436,12 @@ class WebPipelineRoutingTests(unittest.TestCase):
         source_lum = source[..., 0] * 0.2126 + source[..., 1] * 0.7152 + source[..., 2] * 0.0722
         finished_lum = finished[..., 0] * 0.2126 + finished[..., 1] * 0.7152 + finished[..., 2] * 0.0722
 
-        self.assertLess(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.97)
-        self.assertGreater(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.80)
-        self.assertLess(np.count_nonzero(finished_lum > 0.35), np.count_nonzero(source_lum > 0.35))
+        self.assertLess(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.78)
+        self.assertGreater(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.58)
+        self.assertLess(
+            np.count_nonzero(finished_lum > 0.35),
+            np.count_nonzero(source_lum > 0.35) * 0.60,
+        )
         self.assertLess(float(np.percentile(np.abs(finished[~star_area] - source[~star_area]), 99.0)), 0.005)
         source_color = source[64, 72] / np.max(source[64, 72])
         finished_color = finished[64, 72] / np.max(finished[64, 72])
@@ -516,7 +519,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('id="narrowbandColor"', html)
         self.assertIn('id="narrowbandColor" name="narrowband_color" type="checkbox" checked', html)
         self.assertIn("Enabled by default. Uncheck for natural color.", html)
-        self.assertIn("applies gentle star reduction", html)
+        self.assertIn("applies stronger star reduction", html)
         self.assertIn('name="narrowband_color"', html)
         self.assertIn('class="narrowband-checkmark"', html)
         self.assertIn('input:checked + .narrowband-checkmark::after', html)
