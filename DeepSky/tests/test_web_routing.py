@@ -16,6 +16,7 @@ from app.goal_look import (
     apply_universal_nebula_cosmetic_cleanup,
 )
 from app.input_analysis import analyze_input_stretch
+from app.narrowband_finish import apply_starnet_guided_narrowband_polish
 from app.pipeline import (
     CANONICAL_NEBULA_STAGES,
     _flatten_low_contrast_nebula_gradient,
@@ -406,6 +407,43 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertTrue(np.array_equal(_prepare_narrowband_starnet_input(bright, True), bright))
 
 
+    def test_narrowband_starnet_polish_reduces_compact_stars_without_hurting_sky_or_color(self) -> None:
+        height, width = 240, 320
+        yy, xx = np.mgrid[:height, :width].astype(np.float32)
+        nebula = np.exp(-(((xx - 165.0) / 70.0) ** 2 + ((yy - 120.0) / 55.0) ** 2))
+        starless = np.empty((height, width, 3), dtype=np.float32)
+        starless[:] = np.array([0.025, 0.030, 0.035], dtype=np.float32)
+        starless += nebula[..., None] * np.array([0.16, 0.10, 0.19], dtype=np.float32)
+        source = starless.copy()
+        stars = (
+            (72, 64, 1.55, 0.86, (1.00, 0.82, 0.64)),
+            (242, 92, 2.00, 0.72, (0.72, 0.84, 1.00)),
+            (188, 178, 1.25, 0.64, (1.00, 0.72, 0.55)),
+        )
+        star_area = np.zeros((height, width), dtype=bool)
+        for center_x, center_y, sigma, amplitude, color in stars:
+            profile = np.exp(
+                -(((xx - center_x) ** 2 + (yy - center_y) ** 2) / (2.0 * sigma * sigma))
+            ).astype(np.float32) * amplitude
+            source += profile[..., None] * np.asarray(color, dtype=np.float32)
+            star_area |= ((xx - center_x) ** 2 + (yy - center_y) ** 2) < 64.0
+        source = np.clip(source, 0.0, 1.0)
+
+        finished = apply_starnet_guided_narrowband_polish(
+            np.round(source * 65535.0).astype(np.uint16),
+            np.round(starless * 65535.0).astype(np.uint16),
+        ).astype(np.float32) / 65535.0
+        source_lum = source[..., 0] * 0.2126 + source[..., 1] * 0.7152 + source[..., 2] * 0.0722
+        finished_lum = finished[..., 0] * 0.2126 + finished[..., 1] * 0.7152 + finished[..., 2] * 0.0722
+
+        self.assertLess(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.97)
+        self.assertGreater(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.80)
+        self.assertLess(np.count_nonzero(finished_lum > 0.35), np.count_nonzero(source_lum > 0.35))
+        self.assertLess(float(np.percentile(np.abs(finished[~star_area] - source[~star_area]), 99.0)), 0.005)
+        source_color = source[64, 72] / np.max(source[64, 72])
+        finished_color = finished[64, 72] / np.max(finished[64, 72])
+        self.assertLess(float(np.max(np.abs(finished_color - source_color))), 0.015)
+
     def test_narrowband_color_defaults_on_for_nebula_only_and_can_be_disabled(self) -> None:
         nebula = _configure_web_pipeline_settings(
             default_settings(),
@@ -456,6 +494,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn("apply_pixinsight_narrowband_finish(", dedicated)
         self.assertIn("run_starnet(", dedicated)
         self.assertIn("apply_starnet_guided_narrowband_polish(", dedicated)
+        self.assertIn("_apply_mild_nebula_star_core_reduction(", dedicated)
 
     def test_stacked_rgb_narrowband_script_uses_siril_split_pixelmath_and_rgbcomp(self) -> None:
         with TemporaryDirectory() as folder:
@@ -477,6 +516,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('id="narrowbandColor"', html)
         self.assertIn('id="narrowbandColor" name="narrowband_color" type="checkbox" checked', html)
         self.assertIn("Enabled by default. Uncheck for natural color.", html)
+        self.assertIn("applies gentle star reduction", html)
         self.assertIn('name="narrowband_color"', html)
         self.assertIn('class="narrowband-checkmark"', html)
         self.assertIn('input:checked + .narrowband-checkmark::after', html)

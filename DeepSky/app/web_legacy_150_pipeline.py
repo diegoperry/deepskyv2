@@ -2166,7 +2166,7 @@ def _run_dedicated_narrowband_pipeline(
     write_log(
         "Narrowband Color pipeline: dedicated linear route selected "
         "(background model -> linear DeepSNR -> masked deconvolution -> linked HOO finish "
-        "-> StarNet-guided stellar protection -> final polish)."
+        "-> StarNet-guided stellar protection and reduction -> final polish)."
     )
     prepared = _prepare_early_nebula_deepsnr_source(
         working, original, job_folder, settings, write_log,
@@ -2201,24 +2201,26 @@ def _run_dedicated_narrowband_pipeline(
     save_tiff(calibrated, display_stage, write_log)
     _log_existing_image(stretched, write_log, "narrowband linked HOO display stage")
 
-    # StarNet supplies only a stellar protection footprint. Its broad starless
-    # pixels never enter the final canvas, avoiding blobs and hollow halos.
+    # StarNet supplies only a stellar protection/reduction footprint. Its broad
+    # starless pixels never enter the final canvas, avoiding blobs and hollow halos.
     polished = display_stage
     starnet_exe = find_executable(Path(settings.starnet_folder))
     if starnet_exe and min(display_stage.shape[:2]) >= 512:
-        write_log("Narrowband Color pipeline: running StarNet for stellar protection only.")
+        write_log("Narrowband Color pipeline: running StarNet for stellar protection and compact-star reduction.")
         write_log(f"StarNet executable: {starnet_exe}")
         try:
             run_starnet(stretched, starless, starnet_exe, write_log)
         except Exception as exc:
-            write_log(f"Narrowband Color StarNet protection failed; preserving the linked HOO stage. Error: {exc}")
+            write_log(f"Narrowband Color StarNet protection failed; using internal compact-star reduction. Error: {exc}")
+            polished = _apply_mild_nebula_star_core_reduction(display_stage, write_log)
         else:
             _log_existing_image(starless, write_log, "narrowband StarNet protection canvas")
             polished = apply_starnet_guided_narrowband_polish(
                 display_stage, load_image(starless, write_log), write_log,
             )
     else:
-        write_log("Narrowband Color pipeline: StarNet unavailable or image too small; using internal stellar protection.")
+        write_log("Narrowband Color pipeline: StarNet unavailable or image too small; using internal compact-star reduction.")
+        polished = _apply_mild_nebula_star_core_reduction(display_stage, write_log)
 
     reference = load_image(working, write_log)
     polished = _orient_like_reference(polished, reference, write_log, "Dedicated narrowband final")
@@ -2229,8 +2231,8 @@ def _run_dedicated_narrowband_pipeline(
     make_preview(final, after_preview, log=write_log, stretch_for_display=False)
     make_preview(calibrated, calibrated_preview, log=write_log, stretch_for_display=False)
     write_log(
-        "Narrowband Color pipeline complete: color separation, tone, denoise, detail, and star protection "
-        "were processed as one dedicated workflow."
+        "Narrowband Color pipeline complete: color separation, tone, denoise, detail, "
+        "stellar protection, and gentle star reduction were processed as one dedicated workflow."
     )
     write_log(f"Final image: {final}")
     write_log("Done.")

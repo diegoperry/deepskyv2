@@ -307,11 +307,46 @@ def apply_starnet_guided_narrowband_polish(
         1.0,
     )
 
-    # Preserve the complete original stellar profile, preventing colored rings
-    # when StarNet slightly under- or over-estimates a halo.
+    # First restore the measured stellar color/profile so StarNet estimation
+    # errors cannot produce cyan/orange rings. Then reduce only high-confidence
+    # compact residual cores with a restrained morphological pass. The StarNet
+    # starless image remains a detector and never supplies final canvas pixels.
     restore = np.clip(star_protect[..., None] * 0.96, 0.0, 0.96)
     polished = np.clip(polished * (1.0 - restore) + source * restore, 0.0, 1.0)
 
+    residual_safe = residual[safe] if np.any(safe) else residual.reshape(-1)
+    residual_low = float(np.percentile(residual_safe, 78.0))
+    residual_high = max(residual_low + 1e-6, float(np.percentile(residual_safe, 99.78)))
+    residual_gate = _smoothstep(residual, residual_low, residual_high)
+    star_reduce = np.sqrt(np.clip(star_core * residual_gate, 0.0, 1.0)) * support
+    star_reduce = cv2.GaussianBlur(star_reduce.astype(np.float32), (0, 0), 0.68)
+    star_reduce = np.clip(star_reduce, 0.0, 1.0)
+
+    before_reduce_lum = _luminance(polished)
+    eroded_lum = cv2.erode(
+        before_reduce_lum.astype(np.float32),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        iterations=1,
+    )
+    removable_core = np.maximum(before_reduce_lum - eroded_lum, 0.0)
+    reduced_lum = before_reduce_lum - removable_core * star_reduce * 0.58
+    # Cap the reduction at 16% per pixel. This prevents black pinholes and dark
+    # annuli even when StarNet overestimates a saturated stellar core.
+    reduced_lum = np.maximum(reduced_lum, before_reduce_lum * (1.0 - star_reduce * 0.16))
+    polished = np.clip(
+        polished * (reduced_lum / np.maximum(before_reduce_lum, 1e-6))[..., None],
+        0.0,
+        1.0,
+    )
+
+    if log:
+        peak_before = float(np.percentile(before_reduce_lum[safe], 99.95)) if np.any(safe) else float(np.max(before_reduce_lum))
+        peak_after = float(np.percentile(reduced_lum[safe], 99.95)) if np.any(safe) else float(np.max(reduced_lum))
+        log(
+            "Narrowband Color: gentle StarNet-guided compact-star reduction applied "
+            f"(star_reduce_mean={float(np.mean(star_reduce)):.5f}, "
+            f"stellar_peak_p99.95={peak_before:.5f}->{peak_after:.5f})."
+        )
     if log:
         log(
             "Narrowband Color: StarNet-guided structure polish used only the compact stellar footprint; "
