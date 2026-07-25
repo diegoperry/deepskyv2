@@ -1991,13 +1991,13 @@ def _html() -> str:
       </div>
       <div class="detail-option" id="narrowbandColorOption">
         <h3>Narrowband Color</h3>
-        <p>Optional finished orange/cyan color treatment for emission nebulae. It uses only coherent signal while protecting the neutral background and original star colors.</p>
+        <p>Enabled by default for emission nebulae. It adds a finished orange/cyan treatment using only coherent signal while protecting the neutral background and original star colors.</p>
         <label class="narrowband-check" title="Apply Narrowband Color to this Nebula run.">
-          <input id="narrowbandColor" name="narrowband_color" type="checkbox" />
+          <input id="narrowbandColor" name="narrowband_color" type="checkbox" checked />
           <span class="narrowband-checkmark" aria-hidden="true"></span>
           <span class="narrowband-check-copy">
             <strong>Apply Narrowband Color</strong>
-            <small>Check this before running the pipeline.</small>
+            <small>Enabled by default. Uncheck for natural color.</small>
           </span>
         </label>
       </div>      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
@@ -2218,7 +2218,7 @@ def _html() -> str:
       const isGalaxy = objectType.value === "Galaxy";
       if (nebulaPipelineLabels) nebulaPipelineLabels.hidden = !isNebula;
       if (narrowbandColorOption) narrowbandColorOption.hidden = !isNebula;
-      if (!isNebula && narrowbandColor) narrowbandColor.checked = false;
+      if (narrowbandColor) narrowbandColor.checked = isNebula;
       if (galaxyDeconvolutionOption) galaxyDeconvolutionOption.hidden = !isGalaxy;
       if (!isGalaxy && sirilDeconvolution) sirilDeconvolution.checked = false;
       updatePccWarningState();
@@ -3640,7 +3640,7 @@ def _configure_web_pipeline_settings(
     siril_deconvolution: bool,
     star_setting: str,
     pcc_failure_policy: str,
-    narrowband_color: bool = False,
+    narrowband_color: bool = True,
 ) -> AppSettings:
     """Map web controls onto the same single pipeline used by local runs."""
     mode = input_mode if input_mode in {"Auto", "Linear", "Pre-stretched"} else "Auto"
@@ -3691,7 +3691,7 @@ def _run_job(
     starless_test: bool = False,
     star_setting: str = "Slight Star Reduction",
     pcc_failure_policy: str = "pause",
-    narrowband_color: bool = False,
+    narrowband_color: bool = True,
 ) -> None:
     with jobs_lock:
         job = jobs[job_id]
@@ -4071,7 +4071,7 @@ async def create_job(
     input_mode: str = Form("Auto"),
     stretch_level: str = Form("Standard"),
     nebula_color_separation: str = Form("Strong"),
-    narrowband_color: bool = Form(False),
+    narrowband_color: bool = Form(True),
     siril_deconvolution: bool = Form(False),
     starless_test: bool = Form(False),
     star_setting: str = Form(""),
@@ -4238,7 +4238,7 @@ def continue_job_without_pcc(job_id: str, user: AuthUser = Depends(require_user)
         run_args.get("starless_test", False),
         run_args.get("star_setting", "Standard"),
         "continue_without_pcc",
-        run_args.get("narrowband_color", False),
+        run_args.get("narrowband_color", True),
     )
     return {"id": job_id}
 

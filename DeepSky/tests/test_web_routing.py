@@ -370,6 +370,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertFalse(settings.starless_test_enabled)
         self.assertEqual(settings.color_calibration_mode, "Basic")
         self.assertEqual(settings.nebula_color_separation, "Strong")
+        self.assertTrue(settings.narrowband_color_enabled)
 
     def test_non_nebula_settings_do_not_inherit_nebula_override(self) -> None:
         settings = _configure_web_pipeline_settings(
@@ -405,7 +406,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertTrue(np.array_equal(_prepare_narrowband_starnet_input(bright, True), bright))
 
 
-    def test_narrowband_color_is_opt_in_and_nebula_only(self) -> None:
+    def test_narrowband_color_defaults_on_for_nebula_only_and_can_be_disabled(self) -> None:
         nebula = _configure_web_pipeline_settings(
             default_settings(),
             object_type="Nebula",
@@ -415,7 +416,6 @@ class WebPipelineRoutingTests(unittest.TestCase):
             siril_deconvolution=False,
             star_setting="Standard",
             pcc_failure_policy="continue",
-            narrowband_color=True,
         )
         galaxy = _configure_web_pipeline_settings(
             default_settings(),
@@ -426,11 +426,22 @@ class WebPipelineRoutingTests(unittest.TestCase):
             siril_deconvolution=False,
             star_setting="Standard",
             pcc_failure_policy="continue",
-            narrowband_color=True,
+        )
+        natural_nebula = _configure_web_pipeline_settings(
+            default_settings(),
+            object_type="Nebula",
+            input_mode="Auto",
+            pre_stretched=False,
+            stretch_level="Standard",
+            siril_deconvolution=False,
+            star_setting="Standard",
+            pcc_failure_policy="continue",
+            narrowband_color=False,
         )
 
         self.assertTrue(nebula.narrowband_color_enabled)
         self.assertFalse(galaxy.narrowband_color_enabled)
+        self.assertFalse(natural_nebula.narrowband_color_enabled)
         self.assertFalse(default_settings().narrowband_color_enabled)
 
     def test_narrowband_checkbox_selects_a_dedicated_end_to_end_pipeline(self) -> None:
@@ -464,6 +475,8 @@ class WebPipelineRoutingTests(unittest.TestCase):
     def test_process_page_exposes_narrowband_color_checkbox(self) -> None:
         html = process_page()
         self.assertIn('id="narrowbandColor"', html)
+        self.assertIn('id="narrowbandColor" name="narrowband_color" type="checkbox" checked', html)
+        self.assertIn("Enabled by default. Uncheck for natural color.", html)
         self.assertIn('name="narrowband_color"', html)
         self.assertIn('class="narrowband-checkmark"', html)
         self.assertIn('input:checked + .narrowband-checkmark::after', html)
