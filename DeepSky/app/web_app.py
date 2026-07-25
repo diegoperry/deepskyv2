@@ -2225,6 +2225,7 @@ def _html() -> str:
     let pendingPngUrl = null;
     let previewRequest = 0;
     let previewImageUrl = "";
+    let previewObjectUrl = "";
     let sourceImageWidth = 0;
     let sourceImageHeight = 0;
     let cropSelection = null;
@@ -2787,10 +2788,23 @@ def _html() -> str:
       cropSummary.hidden = false;
     }
 
+    async function ensurePreviewObjectUrl() {
+      if (previewObjectUrl) return previewObjectUrl;
+      if (!previewImageUrl) throw new Error("Preview is not available yet.");
+      const response = await fetchAuthed(previewImageUrl);
+      if (!response.ok) throw new Error("Preview image is not available yet.");
+      previewObjectUrl = URL.createObjectURL(await response.blob());
+      return previewObjectUrl;
+    }
+
     async function renderBeforePreview() {
-      if (!previewImageUrl) return;
+      const displayUrl = await ensurePreviewObjectUrl();
       if (!cropSelection) {
-        await loadImageIntoFrame(previewImageUrl, beforeFrame, "Before preview");
+        const image = document.createElement("img");
+        image.src = displayUrl;
+        image.alt = "Before preview";
+        beforeFrame.innerHTML = "";
+        beforeFrame.appendChild(image);
         updateCropSummary();
         return;
       }
@@ -2813,17 +2827,22 @@ def _html() -> str:
           resolve();
         };
         image.onerror = () => reject(new Error("Could not render cropped preview."));
-        image.src = previewImageUrl;
+        image.src = displayUrl;
       });
       updateCropSummary();
     }
 
-    function openCropEditor() {
+    async function openCropEditor() {
       if (!previewImageUrl || !selectedFile) return;
-      cropDraft = cloneCrop(cropSelection || { x: 0, y: 0, width: 1, height: 1 });
-      cropImage.src = previewImageUrl;
-      cropModal.hidden = false;
-      if (cropImage.complete) updateCropOverlay();
+      try {
+        const displayUrl = await ensurePreviewObjectUrl();
+        cropDraft = cloneCrop(cropSelection || { x: 0, y: 0, width: 1, height: 1 });
+        cropImage.src = displayUrl;
+        cropModal.hidden = false;
+        if (cropImage.complete && cropImage.naturalWidth > 0) updateCropOverlay();
+      } catch (error) {
+        statusEl.textContent = error.message || "Could not load the crop preview.";
+      }
     }
 
     function closeCropEditor() {
@@ -2897,7 +2916,10 @@ def _html() -> str:
     }
     async function setFile(file) {
       selectedFile = file;
+      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+      previewObjectUrl = "";
       previewImageUrl = "";
+      cropImage.removeAttribute("src");
       sourceImageWidth = 0;
       sourceImageHeight = 0;
       cropSelection = null;

@@ -566,6 +566,11 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('data.append("crop_width"', html)
         self.assertIn('data.append("crop_height"', html)
         self.assertIn('await renderBeforePreview()', html)
+        self.assertIn("async function ensurePreviewObjectUrl()", html)
+        self.assertIn("const response = await fetchAuthed(previewImageUrl);", html)
+        self.assertIn("previewObjectUrl = URL.createObjectURL(await response.blob());", html)
+        self.assertIn("cropImage.src = displayUrl;", html)
+        self.assertNotIn("cropImage.src = previewImageUrl;", html)
 
     def test_process_page_hides_pixel_restoration_button(self) -> None:
         html = process_page()
