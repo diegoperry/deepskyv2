@@ -127,40 +127,22 @@ def keep_largest_narrowband_stars(
     )
     remove_footprint *= (1.0 - keep_protection) * edge_support
 
-    # Reconstruct local RGB from surrounding measured pixels while excluding
-    # every detected stellar footprint. This removes both luminance and chroma
-    # remnants instead of leaving colored dots where suppressed stars were.
-    all_star_seed = (labels > 0).astype(np.uint8)
-    all_star_exclusion = cv2.dilate(
-        all_star_seed,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
-        iterations=1,
-    ).astype(np.float32)
-    valid_background = np.clip(1.0 - all_star_exclusion, 0.0, 1.0) * edge_support
-    background_weight = cv2.GaussianBlur(valid_background, (0, 0), 5.5)
-    weighted_rgb = cv2.GaussianBlur(
-        result * valid_background[..., None],
-        (0, 0),
-        5.5,
-    )
-    local_background = weighted_rgb / np.maximum(background_weight[..., None], 1e-4)
-    fallback_background = cv2.morphologyEx(
-        result,
-        cv2.MORPH_OPEN,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
-    )
-    reliable = _smoothstep(background_weight, 0.025, 0.16)[..., None]
-    local_background = np.clip(
-        local_background * reliable + fallback_background * (1.0 - reliable),
-        0.0,
-        1.0,
-    )
-
     before_lum = _luminance(result)
+    local_floor = cv2.morphologyEx(
+        before_lum,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+    )
+    local_floor = np.maximum(
+        local_floor * 0.92,
+        cv2.GaussianBlur(before_lum, (0, 0), 3.8) * 0.52,
+    )
     removal_mix = np.clip(remove_footprint * 0.985, 0.0, 0.985)
+    reduced_lum = (
+        before_lum * (1.0 - removal_mix) + local_floor * removal_mix
+    )
     output = np.clip(
-        result * (1.0 - removal_mix[..., None])
-        + local_background * removal_mix[..., None],
+        result * (reduced_lum / np.maximum(before_lum, 1e-6))[..., None],
         0.0,
         1.0,
     )
