@@ -60,6 +60,20 @@ def test_sparse_finish_keeps_only_largest_ten_percent() -> None:
     assert np.all(after_contrast[largest] > before_contrast[largest] * 0.82)
     assert float(np.median(after_contrast[smaller] / before_contrast[smaller])) < 0.32
     assert int(np.count_nonzero(after_contrast > 0.10)) <= 3
+    removed_rgb_delta = np.asarray(
+        [
+            output[y, x] - starless[y, x]
+            for index, (y, x) in enumerate(centers)
+            if index in set(smaller.tolist())
+        ]
+    )
+    assert float(np.percentile(np.abs(removed_rgb_delta), 99.0)) < 0.015
+    removed_chroma_delta = removed_rgb_delta - np.mean(
+        removed_rgb_delta,
+        axis=1,
+        keepdims=True,
+    )
+    assert float(np.percentile(np.abs(removed_chroma_delta), 99.0)) < 0.004
     assert any("kept=2" in message and "removed=18" in message for message in logs)
 
 
