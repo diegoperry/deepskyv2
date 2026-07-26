@@ -5,6 +5,8 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from .narrowband_option04 import apply_option04_very_heavy_finish
+
 
 LogCallback = Callable[[str], None]
 
@@ -337,6 +339,14 @@ def apply_starnet_guided_narrowband_polish(
         polished * (reduced_lum / np.maximum(before_reduce_lum, 1e-6))[..., None],
         0.0,
         1.0,
+    )
+
+    polished = apply_option04_very_heavy_finish(
+        polished,
+        source,
+        starless,
+        support,
+        log,
     )
 
     if log:

@@ -407,7 +407,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertTrue(np.array_equal(_prepare_narrowband_starnet_input(bright, True), bright))
 
 
-    def test_narrowband_starnet_polish_reduces_compact_stars_without_hurting_sky_or_color(self) -> None:
+    def test_narrowband_starnet_polish_applies_option04_stars_and_soft_sky(self) -> None:
         height, width = 240, 320
         yy, xx = np.mgrid[:height, :width].astype(np.float32)
         nebula = np.exp(-(((xx - 165.0) / 70.0) ** 2 + ((yy - 120.0) / 55.0) ** 2))
@@ -437,12 +437,17 @@ class WebPipelineRoutingTests(unittest.TestCase):
         finished_lum = finished[..., 0] * 0.2126 + finished[..., 1] * 0.7152 + finished[..., 2] * 0.0722
 
         self.assertLess(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.78)
-        self.assertGreater(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.58)
+        self.assertGreater(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.50)
         self.assertLess(
             np.count_nonzero(finished_lum > 0.35),
             np.count_nonzero(source_lum > 0.35) * 0.60,
         )
-        self.assertLess(float(np.percentile(np.abs(finished[~star_area] - source[~star_area]), 99.0)), 0.005)
+        quiet_sky = (~star_area) & (nebula < 0.02)
+        self.assertGreater(
+            float(np.median(finished_lum[quiet_sky])),
+            float(np.median(source_lum[quiet_sky])),
+        )
+        self.assertLess(float(np.percentile(np.abs(finished[~star_area] - source[~star_area]), 99.0)), 0.015)
         source_color = source[64, 72] / np.max(source[64, 72])
         finished_color = finished[64, 72] / np.max(finished[64, 72])
         self.assertLess(float(np.max(np.abs(finished_color - source_color))), 0.015)
