@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from .narrowband_option04 import apply_option04_very_heavy_finish
+from .narrowband_sparse_stars import keep_largest_narrowband_stars
 
 
 LogCallback = Callable[[str], None]
@@ -347,6 +348,15 @@ def apply_starnet_guided_narrowband_polish(
         starless,
         support,
         log,
+    )
+
+    polished = keep_largest_narrowband_stars(
+        polished,
+        source,
+        starless,
+        support,
+        keep_fraction=0.10,
+        log=log,
     )
 
     if log:

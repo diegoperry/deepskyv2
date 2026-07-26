@@ -407,7 +407,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertTrue(np.array_equal(_prepare_narrowband_starnet_input(bright, True), bright))
 
 
-    def test_narrowband_starnet_polish_applies_option04_stars_and_soft_sky(self) -> None:
+    def test_narrowband_starnet_polish_keeps_largest_ten_percent_and_soft_sky(self) -> None:
         height, width = 240, 320
         yy, xx = np.mgrid[:height, :width].astype(np.float32)
         nebula = np.exp(-(((xx - 165.0) / 70.0) ** 2 + ((yy - 120.0) / 55.0) ** 2))
@@ -436,11 +436,12 @@ class WebPipelineRoutingTests(unittest.TestCase):
         source_lum = source[..., 0] * 0.2126 + source[..., 1] * 0.7152 + source[..., 2] * 0.0722
         finished_lum = finished[..., 0] * 0.2126 + finished[..., 1] * 0.7152 + finished[..., 2] * 0.0722
 
-        self.assertLess(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.78)
-        self.assertGreater(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.50)
+        self.assertLess(float(finished_lum[64, 72]), float(source_lum[64, 72]) * 0.15)
+        self.assertGreater(float(finished_lum[92, 242]), float(source_lum[92, 242]) * 0.55)
+        self.assertLess(float(finished_lum[178, 188]), float(source_lum[178, 188]) * 0.20)
         self.assertLess(
             np.count_nonzero(finished_lum > 0.35),
-            np.count_nonzero(source_lum > 0.35) * 0.60,
+            np.count_nonzero(source_lum > 0.35) * 0.10,
         )
         quiet_sky = (~star_area) & (nebula < 0.02)
         self.assertGreater(
@@ -448,8 +449,8 @@ class WebPipelineRoutingTests(unittest.TestCase):
             float(np.median(source_lum[quiet_sky])),
         )
         self.assertLess(float(np.percentile(np.abs(finished[~star_area] - source[~star_area]), 99.0)), 0.015)
-        source_color = source[64, 72] / np.max(source[64, 72])
-        finished_color = finished[64, 72] / np.max(finished[64, 72])
+        source_color = source[92, 242] / np.max(source[92, 242])
+        finished_color = finished[92, 242] / np.max(finished[92, 242])
         self.assertLess(float(np.max(np.abs(finished_color - source_color))), 0.015)
 
     def test_narrowband_color_defaults_on_for_nebula_only_and_can_be_disabled(self) -> None:
