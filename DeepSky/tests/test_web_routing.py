@@ -28,7 +28,12 @@ from app.settings import default_settings
 from app.web_app import (
     app,
     _configure_web_pipeline_settings,
+    blog_page,
+    docs_page,
+    index,
     process_page,
+    robots_txt,
+    sitemap_xml,
     _realesrgan_error_message,
     _run_job,
     run_web_legacy_150_pipeline,
@@ -50,6 +55,35 @@ from app.web_legacy_150_goal_look import (
 
 
 class WebPipelineRoutingTests(unittest.TestCase):
+    def test_public_pages_expose_blog_and_search_metadata(self) -> None:
+        home = index()
+        docs = docs_page()
+        blog = blog_page()
+        process = process_page()
+
+        self.assertIn('href="/blog"', home)
+        self.assertIn('href="/blog"', docs)
+        self.assertIn('href="/blog"', process)
+        self.assertIn("<title>Astrophotography Blog | DeepSky Processor</title>", blog)
+        self.assertIn('rel="canonical" href="https://app.deepskyprocessor.com/blog"', blog)
+        self.assertIn('"@type": "Blog"', blog)
+        self.assertIn("Articles coming soon", blog)
+        self.assertNotIn("<article", blog)
+
+    def test_robots_and_sitemap_make_public_pages_discoverable(self) -> None:
+        robots = robots_txt().body.decode("utf-8")
+        sitemap_response = sitemap_xml()
+        sitemap = sitemap_response.body.decode("utf-8")
+
+        self.assertIn("Disallow: /api/", robots)
+        self.assertIn("https://app.deepskyprocessor.com/sitemap.xml", robots)
+        self.assertEqual(sitemap_response.media_type, "application/xml")
+        for path in ("/", "/blog", "/docs", "/process"):
+            self.assertIn(f"<loc>https://app.deepskyprocessor.com{path}</loc>", sitemap)
+        self.assertIn("/blog", {route.path for route in app.routes})
+        self.assertIn("/robots.txt", {route.path for route in app.routes})
+        self.assertIn("/sitemap.xml", {route.path for route in app.routes})
+
     def test_pipeline_corrects_only_high_confidence_orientation_flips(self) -> None:
         height, width = 180, 260
         yy, xx = np.mgrid[:height, :width].astype(np.float32)

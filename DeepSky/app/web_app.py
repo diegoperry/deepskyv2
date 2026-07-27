@@ -55,6 +55,7 @@ FREE_IMAGE_CREDITS = 5
 PAID_PLAN_LABEL = "$15/month"
 PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 EXPORT_LOGO_PATH = APP_ROOT / "app" / "static" / "branding" / "deepsky-export-logo.png"
+PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "https://app.deepskyprocessor.com").rstrip("/")
 
 
 def _load_export_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
@@ -718,7 +719,12 @@ def _docs_html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DeepSky Docs</title>
+  <title>Astrophotography Processing Guide | DeepSky Processor</title>
+  <meta name="description" content="Learn how to process FITS and TIFF astrophotography images with DeepSky Processor, including stretch, color, star reduction, and troubleshooting guidance." />
+  <link rel="canonical" href="https://app.deepskyprocessor.com/docs" />
+  <meta property="og:title" content="Astrophotography Processing Guide | DeepSky Processor" />
+  <meta property="og:description" content="Settings, workflow guidance, and troubleshooting for processing galaxies, nebulae, and star clusters." />
+  <meta property="og:url" content="https://app.deepskyprocessor.com/docs" />
   <style>
     :root {
       color-scheme: dark;
@@ -846,6 +852,7 @@ def _docs_html() -> str:
       <nav class="navlinks">
         <a href="/process">Process</a>
         <a href="/docs">Docs</a>
+        <a href="/blog">Blog</a>
         <a class="button" href="/process">Process An Image</a>
       </nav>
     </div>
@@ -989,7 +996,155 @@ def _docs_html() -> str:
     </div>
   </main>
   <footer>
-    <p><a href="/process">Process an image</a> &nbsp;|&nbsp; <a href="/">Home</a></p>
+    <p><a href="/process">Process an image</a> &nbsp;|&nbsp; <a href="/blog">Blog</a> &nbsp;|&nbsp; <a href="/">Home</a></p>
+    <p>DeepSky Built By <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
+  </footer>
+</body>
+</html>"""
+
+
+def _blog_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Astrophotography Blog | DeepSky Processor</title>
+  <meta name="description" content="DeepSky Processor articles about astrophotography image processing, FITS workflows, nebula color, galaxies, star reduction, and cleaner deep-sky results." />
+  <link rel="canonical" href="https://app.deepskyprocessor.com/blog" />
+  <meta name="robots" content="index,follow,max-image-preview:large" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="DeepSky Processor" />
+  <meta property="og:title" content="Astrophotography Blog | DeepSky Processor" />
+  <meta property="og:description" content="Practical guides and field notes for turning deep-sky captures into finished astrophotography images." />
+  <meta property="og:url" content="https://app.deepskyprocessor.com/blog" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Blog",
+    "name": "DeepSky Processor Astrophotography Blog",
+    "description": "Practical astrophotography processing guides, workflows, and field notes.",
+    "url": "https://app.deepskyprocessor.com/blog",
+    "publisher": {
+      "@type": "Organization",
+      "name": "DeepSky Processor",
+      "url": "https://app.deepskyprocessor.com/"
+    }
+  }
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #060a12;
+      --panel: #0b121f;
+      --line: #20304c;
+      --text: #f7fbff;
+      --muted: #91a6ca;
+      --blue: #5c8dff;
+      --violet: #a98cff;
+      --coral: #ff806d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 50% -10%, rgba(75,117,255,.24), transparent 390px),
+        radial-gradient(circle at 12% 35%, rgba(255,128,109,.09), transparent 360px),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: inherit; }
+    .wrap { width: min(1100px, calc(100vw - 40px)); margin: 0 auto; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(6,10,18,.82);
+      border-bottom: 1px solid rgba(32,48,76,.65);
+      backdrop-filter: blur(14px);
+    }
+    .nav { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { font-weight: 900; font-size: 20px; text-decoration: none; }
+    .brand span {
+      background: linear-gradient(90deg, var(--blue), var(--violet), var(--coral));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .navlinks { display: flex; gap: 22px; align-items: center; color: var(--muted); font-weight: 800; font-size: 14px; }
+    .navlinks a { text-decoration: none; }
+    .navlinks [aria-current="page"] { color: var(--text); }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 20px;
+      border-radius: 10px;
+      background: #2f6fe5;
+      color: white;
+      text-decoration: none;
+      font-weight: 900;
+      border: 1px solid rgba(126,164,255,.38);
+    }
+    main { min-height: calc(100vh - 163px); padding: 86px 0 100px; }
+    .eyebrow {
+      color: #9fc0ff;
+      font: 13px Consolas, ui-monospace, monospace;
+      margin-bottom: 16px;
+    }
+    h1 {
+      max-width: 800px;
+      margin: 0;
+      font-size: clamp(46px, 6vw, 78px);
+      line-height: .98;
+      letter-spacing: -1px;
+    }
+    .lead { max-width: 760px; margin: 22px 0 0; color: var(--muted); font-size: 20px; line-height: 1.62; }
+    .empty {
+      margin-top: 50px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(11,18,31,.78);
+      padding: 34px;
+    }
+    .empty h2 { margin: 0 0 10px; font-size: 28px; }
+    .empty p { max-width: 700px; margin: 0; color: var(--muted); line-height: 1.65; }
+    footer { border-top: 1px solid rgba(32,48,76,.65); color: #6f86aa; padding: 26px 0; text-align: center; }
+    footer p { margin: 0 0 10px; }
+    footer a { color: #9cbcff; text-decoration: none; font-weight: 900; }
+    @media (max-width: 760px) {
+      .navlinks a:not(.button):not([aria-current="page"]) { display: none; }
+      main { padding-top: 58px; }
+      .empty { padding: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap nav">
+      <a class="brand" href="/">DeepSky <span>Processor</span></a>
+      <nav class="navlinks" aria-label="Primary navigation">
+        <a href="/docs">Docs</a>
+        <a href="/blog" aria-current="page">Blog</a>
+        <a class="button" href="/process">Process An Image</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="eyebrow">DeepSky field notes</div>
+    <h1>Astrophotography processing guides are coming here.</h1>
+    <p class="lead">This will be the home for practical articles about processing FITS and TIFF files, revealing faint nebula structure, preserving galaxy color, reducing stars, and building cleaner deep-sky images.</p>
+    <section class="empty" aria-labelledby="articles-heading">
+      <h2 id="articles-heading">Articles coming soon</h2>
+      <p>The blog is ready. New guides will appear here as they are published.</p>
+    </section>
+  </main>
+  <footer>
+    <p><a href="/">Home</a> &nbsp;|&nbsp; <a href="/docs">Docs</a> &nbsp;|&nbsp; <a href="/process">Process an image</a></p>
     <p>DeepSky Built By <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
   </footer>
 </body>
@@ -1002,7 +1157,33 @@ def _landing_html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DeepSky Processor</title>
+  <title>Astrophotography Processing Software | DeepSky Processor</title>
+  <meta name="description" content="Process FITS and TIFF astrophotography images online. DeepSky Processor enhances galaxies, nebulae, and star clusters with automated color, denoising, stretching, and star reduction." />
+  <link rel="canonical" href="https://app.deepskyprocessor.com/" />
+  <meta name="robots" content="index,follow,max-image-preview:large" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="DeepSky Processor" />
+  <meta property="og:title" content="Astrophotography Processing Software | DeepSky Processor" />
+  <meta property="og:description" content="Turn FITS and TIFF deep-sky captures into finished galaxies, nebulae, and star-cluster images online." />
+  <meta property="og:url" content="https://app.deepskyprocessor.com/" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "DeepSky Processor",
+    "applicationCategory": "MultimediaApplication",
+    "operatingSystem": "Web",
+    "url": "https://app.deepskyprocessor.com/",
+    "description": "Online astrophotography processing software for FITS and TIFF images.",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD",
+      "description": "First five image processing runs are free."
+    }
+  }
+  </script>
   <style>
     :root {
       color-scheme: dark;
@@ -1169,6 +1350,7 @@ def _landing_html() -> str:
         <a href="#results">Results</a>
         <a href="#how">How it works</a>
         <a href="/docs">Docs</a>
+        <a href="/blog">Blog</a>
         <a href="#faq">FAQ</a>
         <a class="button" href="/process">Process An Image</a>
       </nav>
@@ -1307,6 +1489,7 @@ def _landing_html() -> str:
     </section>
   </main>
   <footer>
+    <p><a href="/blog">Astrophotography Blog</a> &nbsp;|&nbsp; <a href="/docs">Processing Docs</a></p>
     <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
     <p>DeepSky Built By
     <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
@@ -1355,7 +1538,11 @@ def _html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DeepSky</title>
+  <title>Process Astrophotography Images Online | DeepSky Processor</title>
+  <meta name="description" content="Upload a FITS or TIFF astrophotography image and process a galaxy, nebula, or star cluster with the DeepSky automated pipeline." />
+  <link rel="canonical" href="https://app.deepskyprocessor.com/process" />
+  <meta name="robots" content="index,follow" />
+  <meta property="og:title" content="Process Astrophotography Images Online | DeepSky Processor" />
   <style>
     :root {
       color-scheme: dark;
@@ -2201,7 +2388,7 @@ def _html() -> str:
       </div>
     </div>
     <footer class="footer">
-      <p><a href="/docs">Processing docs and troubleshooting guide</a></p>
+      <p><a href="/docs">Processing docs and troubleshooting guide</a> &nbsp;|&nbsp; <a href="/blog">Astrophotography blog</a></p>
       <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
       <p>DeepSky Built By
       <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
@@ -3887,9 +4074,42 @@ def index() -> str:
     return _landing_html()
 
 
+@app.get("/blog", response_class=HTMLResponse)
+def blog_page() -> str:
+    return _blog_html()
+
+
 @app.get("/docs", response_class=HTMLResponse)
 def docs_page() -> str:
     return _docs_html()
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+def robots_txt() -> PlainTextResponse:
+    return PlainTextResponse(
+        "\n".join(
+            [
+                "User-agent: *",
+                "Allow: /",
+                "Disallow: /api/",
+                f"Sitemap: {PUBLIC_SITE_URL}/sitemap.xml",
+                "",
+            ]
+        )
+    )
+
+
+@app.get("/sitemap.xml", response_class=PlainTextResponse)
+def sitemap_xml() -> PlainTextResponse:
+    urls = ("", "/blog", "/docs", "/process")
+    entries = "".join(
+        f"<url><loc>{PUBLIC_SITE_URL}{path or '/'}</loc></url>" for path in urls
+    )
+    return PlainTextResponse(
+        f'<?xml version="1.0" encoding="UTF-8"?>'
+        f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{entries}</urlset>',
+        media_type="application/xml",
+    )
 
 
 @app.get("/process", response_class=HTMLResponse)
