@@ -67,6 +67,8 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn("<title>Astrophotography Blog | DeepSky Processor</title>", blog)
         self.assertIn('rel="canonical" href="https://app.deepskyprocessor.com/blog"', blog)
         self.assertIn('"@type": "Blog"', blog)
+        self.assertIn("The #1 Blog For Smart Telescope Users.", blog)
+        self.assertIn("you're in the right place.", blog)
         self.assertIn("Articles coming soon", blog)
         self.assertNotIn("<article", blog)
 

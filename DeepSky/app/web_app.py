@@ -1136,8 +1136,8 @@ def _blog_html() -> str:
   </header>
   <main class="wrap">
     <div class="eyebrow">DeepSky field notes</div>
-    <h1>Astrophotography processing guides are coming here.</h1>
-    <p class="lead">This will be the home for practical articles about processing FITS and TIFF files, revealing faint nebula structure, preserving galaxy color, reducing stars, and building cleaner deep-sky images.</p>
+    <h1>The #1 Blog For Smart Telescope Users.</h1>
+    <p class="lead">If you are interested in smart telescopes and modern astrophotography processing, you're in the right place.</p>
     <section class="empty" aria-labelledby="articles-heading">
       <h2 id="articles-heading">Articles coming soon</h2>
       <p>The blog is ready. New guides will appear here as they are published.</p>
