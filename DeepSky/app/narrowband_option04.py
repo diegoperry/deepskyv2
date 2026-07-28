@@ -161,7 +161,7 @@ def apply_option04_very_heavy_finish(
     clarity_gate = np.clip(signal * np.square(1.0 - stellar_protection), 0.0, 1.0)
     clarity_delta = (
         fine_structure * 0.55 + medium_structure * 0.32
-    ) * clarity_gate * 0.48
+    ) * clarity_gate * 0.96
     clarified_lum = np.clip(clarity_lum + clarity_delta, 0.0, 1.0)
     result = np.clip(
         result * (clarified_lum / np.maximum(clarity_lum, 1e-6))[..., None],
