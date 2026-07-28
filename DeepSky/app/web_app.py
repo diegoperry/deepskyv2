@@ -1316,6 +1316,7 @@ def _blog_article_html() -> str:
     .image-pair { display: grid; grid-template-columns: 1fr 1.42fr; gap: 18px; align-items: start; margin: 42px 0; }
     .image-pair figure { margin: 0; }
     .image-pair img { aspect-ratio: 16 / 10; object-fit: cover; }
+    .image-pair img.generated-portrait { aspect-ratio: auto; object-fit: contain; }
     .portrait { width: min(520px, 100%); margin-left: auto; margin-right: auto; }
     .cta {
       margin-top: 58px;
@@ -1379,7 +1380,7 @@ def _blog_article_html() -> str:
             <figcaption>A FITS image submitted to a generative AI with a request to denoise and calibrate its color.</figcaption>
           </figure>
           <figure>
-            <img src="/static/blog/ai-for-astrophotography/generative-ai-veil-nebula-result.png" width="1024" height="559" loading="lazy" alt="Generative AI result showing red and cyan Veil Nebula filaments against a dense star field" />
+            <img class="generated-portrait" src="/static/blog/ai-for-astrophotography/generative-ai-veil-nebula-result.png" width="576" height="1024" loading="lazy" alt="Generative AI result showing red and cyan Veil Nebula filaments against a dense star field" />
             <figcaption>The generated result is visually dramatic, but a generative model can create details that cannot be traced back to the captured telescope data.</figcaption>
           </figure>
         </div>
