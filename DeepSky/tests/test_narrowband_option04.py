@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from app.narrowband_option04 import apply_option04_very_heavy_finish
@@ -80,3 +81,39 @@ def test_option04_never_imports_a_fake_starless_blob() -> None:
     blob = fake_blob > 0.70
     assert float(np.max(output[blob])) < 0.12
     assert float(np.percentile(np.abs(output[blob] - source[blob]), 99.0)) < 0.025
+
+
+def test_option04_restores_nebula_microcontrast_without_sharpening_sky() -> None:
+    source, starless, warm_gas = _synthetic_option04_scene()
+    yy, xx = np.mgrid[:256, :256].astype(np.float32)
+    filament = np.sin(xx * 0.58 + yy * 0.13) * warm_gas * 0.012
+    source = np.clip(source + filament[..., None], 0.0, 1.0)
+    starless = np.clip(starless + filament[..., None], 0.0, 1.0)
+
+    output = apply_option04_very_heavy_finish(
+        source,
+        source,
+        starless,
+        np.ones(source.shape[:2], dtype=np.float32),
+    )
+    source_lum = np.mean(source, axis=2).astype(np.float32)
+    output_lum = np.mean(output, axis=2).astype(np.float32)
+    source_band = (
+        cv2.GaussianBlur(source_lum, (0, 0), 0.65)
+        - cv2.GaussianBlur(source_lum, (0, 0), 2.0)
+    )
+    output_band = (
+        cv2.GaussianBlur(output_lum, (0, 0), 0.65)
+        - cv2.GaussianBlur(output_lum, (0, 0), 2.0)
+    )
+    nebula = warm_gas > 0.60
+    sky = warm_gas < 0.02
+    sky[:24, :] = False
+    sky[-24:, :] = False
+    sky[:, :24] = False
+    sky[:, -24:] = False
+
+    assert float(np.std(output_band[nebula])) > float(np.std(source_band[nebula])) * 0.72
+    source_sky_noise = float(np.std(cv2.Laplacian(source_lum, cv2.CV_32F)[sky]))
+    output_sky_noise = float(np.std(cv2.Laplacian(output_lum, cv2.CV_32F)[sky]))
+    assert output_sky_noise < source_sky_noise * 0.90

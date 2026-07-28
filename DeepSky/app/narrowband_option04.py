@@ -146,6 +146,29 @@ def apply_option04_very_heavy_finish(
         1.0,
     )
 
+    # Restore restrained filament-scale contrast after the soft-sky pass.
+    # Work only in measured extended signal and exclude stellar footprints, so
+    # the added clarity cannot amplify empty-sky noise or create hard star rings.
+    clarity_lum = _luminance(result)
+    fine_structure = (
+        cv2.GaussianBlur(clarity_lum, (0, 0), 0.65)
+        - cv2.GaussianBlur(clarity_lum, (0, 0), 2.0)
+    )
+    medium_structure = (
+        cv2.GaussianBlur(clarity_lum, (0, 0), 1.4)
+        - cv2.GaussianBlur(clarity_lum, (0, 0), 5.0)
+    )
+    clarity_gate = np.clip(signal * np.square(1.0 - stellar_protection), 0.0, 1.0)
+    clarity_delta = (
+        fine_structure * 0.55 + medium_structure * 0.32
+    ) * clarity_gate * 0.48
+    clarified_lum = np.clip(clarity_lum + clarity_delta, 0.0, 1.0)
+    result = np.clip(
+        result * (clarified_lum / np.maximum(clarity_lum, 1e-6))[..., None],
+        0.0,
+        1.0,
+    )
+
     if log:
         output_lum = _luminance(result)
         before_peak = float(np.percentile(before_lum[safe], 99.95)) if np.any(safe) else float(np.max(before_lum))
@@ -154,6 +177,7 @@ def apply_option04_very_heavy_finish(
             "Narrowband Color: option 04 very-heavy star reduction and soft-sky finish applied "
             f"(shrink_mean={float(np.mean(shrink)):.5f}, "
             f"sky_soft_mix_mean={float(np.mean(soft_mix)):.5f}, "
+            f"clarity_gate_mean={float(np.mean(clarity_gate)):.5f}, "
             f"stellar_peak_p99.95={before_peak:.5f}->{after_peak:.5f})."
         )
     return result.astype(np.float32)
