@@ -1203,8 +1203,7 @@ def _blog_article_html() -> str:
     "description": "The difference between generative and non-generative AI for astrophotography, and how responsible AI can improve images without inventing astronomical data.",
     "image": [
       "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/deepsky-ai-processed-veil-nebula.png",
-      "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/generative-ai-veil-nebula-result.png",
-      "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/deepsky-non-generative-ai-result.png"
+      "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/generative-ai-veil-nebula-result.png"
     ],
     "datePublished": "2026-07-27",
     "dateModified": "2026-07-27",
@@ -1263,9 +1262,8 @@ def _blog_article_html() -> str:
     }
     a { color: inherit; }
     .wrap { width: min(1100px, calc(100vw - 40px)); margin: 0 auto; }
-    header {
-      position: sticky;
-      top: 0;
+    .site-header {
+      position: relative;
       z-index: 10;
       background: rgba(6,10,18,.84);
       border-bottom: 1px solid rgba(32,48,76,.65);
@@ -1341,7 +1339,7 @@ def _blog_article_html() -> str:
   </style>
 </head>
 <body>
-  <header>
+  <header class="site-header">
     <div class="wrap nav">
       <a class="brand" href="/">DeepSky <span>Processor</span></a>
       <nav class="navlinks" aria-label="Primary navigation">
@@ -1391,8 +1389,8 @@ def _blog_article_html() -> str:
         <p>Think of it as an experienced image processing assistant rather than a digital painter. The goal is to help the real data shine through, not replace it.</p>
         <p>This distinction matters because astrophotography has always been about extracting faint signals hidden in noise. AI can make that process faster and more effective without changing what your telescope actually captured.</p>
         <figure class="portrait">
-          <img src="/static/blog/ai-for-astrophotography/deepsky-non-generative-ai-result.png" width="620" height="1024" loading="lazy" alt="Veil Nebula processed with DeepSky non-generative AI, preserving the captured orange and cyan signal" />
-          <figcaption>A DeepSky result produced by processing the uploaded image's measured signal instead of asking a generative model to reimagine the target.</figcaption>
+          <img src="/static/blog/ai-for-astrophotography/deepsky-ai-processed-veil-nebula.png" width="1004" height="1657" loading="lazy" alt="Eastern Veil Nebula processed with DeepSky non-generative AI from the original captured telescope signal" />
+          <figcaption>The supplied DeepSky result, produced by processing the uploaded image's measured signal instead of asking a generative model to reimagine the target.</figcaption>
         </figure>
 
         <h2>The Future Is Responsible AI</h2>

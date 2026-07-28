@@ -88,10 +88,12 @@ class WebPipelineRoutingTests(unittest.TestCase):
         for image_name in (
             "gemini-fits-processing-prompt.png",
             "generative-ai-veil-nebula-result.png",
-            "deepsky-non-generative-ai-result.png",
             "deepsky-ai-processed-veil-nebula.png",
         ):
             self.assertIn(f"/static/blog/ai-for-astrophotography/{image_name}", article)
+        self.assertNotIn("deepsky-non-generative-ai-result.png", article)
+        self.assertIn('<header class="site-header">', article)
+        self.assertNotIn("header {\n      position: sticky;", article)
         self.assertNotIn('alt=""', article)
         json_ld_blocks = re.findall(r'<script type="application/ld\+json">\s*(.*?)\s*</script>', article, re.S)
         self.assertEqual(len(json_ld_blocks), 2)
