@@ -86,12 +86,15 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('property="article:published_time" content="2026-07-27"', article)
         self.assertIn('href="/process"', article)
         for image_name in (
+            "ai-astrophotography-cover.png",
             "gemini-fits-processing-prompt.png",
             "generative-ai-veil-nebula-result.png",
             "deepsky-ai-processed-veil-nebula.png",
         ):
             self.assertIn(f"/static/blog/ai-for-astrophotography/{image_name}", article)
         self.assertNotIn("deepsky-non-generative-ai-result.png", article)
+        self.assertIn('property="og:image" content="https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/ai-astrophotography-cover.png"', article)
+        self.assertIn('width="1983" height="793" fetchpriority="high"', article)
         self.assertIn('<header class="site-header">', article)
         self.assertNotIn("header {\n      position: sticky;", article)
         self.assertNotIn('alt=""', article)
