@@ -1104,22 +1104,36 @@ def _blog_html() -> str:
       letter-spacing: -1px;
     }
     .lead { max-width: 760px; margin: 22px 0 0; color: var(--muted); font-size: 20px; line-height: 1.62; }
-    .empty {
+    .post-list {
       margin-top: 50px;
+      display: grid;
+      gap: 22px;
+    }
+    .post-card {
+      display: grid;
+      grid-template-columns: minmax(260px, .8fr) 1.2fr;
       border: 1px solid var(--line);
       border-radius: 14px;
       background: rgba(11,18,31,.78);
-      padding: 34px;
+      overflow: hidden;
     }
-    .empty h2 { margin: 0 0 10px; font-size: 28px; }
-    .empty p { max-width: 700px; margin: 0; color: var(--muted); line-height: 1.65; }
+    .post-card img { width: 100%; height: 100%; min-height: 280px; object-fit: cover; display: block; }
+    .post-copy { padding: 32px; align-self: center; }
+    .post-meta { margin: 0 0 12px; color: #9fc0ff; font: 13px Consolas, ui-monospace, monospace; }
+    .post-card h2 { margin: 0 0 12px; font-size: clamp(27px, 3vw, 38px); line-height: 1.08; }
+    .post-card h2 a { text-decoration: none; }
+    .post-card h2 a:hover { color: #b8ccff; }
+    .post-card p { margin: 0 0 20px; color: var(--muted); line-height: 1.65; }
+    .read-more { color: #b8ccff; font-weight: 900; text-decoration: none; }
     footer { border-top: 1px solid rgba(32,48,76,.65); color: #6f86aa; padding: 26px 0; text-align: center; }
     footer p { margin: 0 0 10px; }
     footer a { color: #9cbcff; text-decoration: none; font-weight: 900; }
     @media (max-width: 760px) {
       .navlinks a:not(.button):not([aria-current="page"]) { display: none; }
       main { padding-top: 58px; }
-      .empty { padding: 24px; }
+      .post-card { grid-template-columns: 1fr; }
+      .post-card img { min-height: 240px; max-height: 420px; }
+      .post-copy { padding: 24px; }
     }
   </style>
 </head>
@@ -1138,13 +1152,264 @@ def _blog_html() -> str:
     <div class="eyebrow">DeepSky field notes</div>
     <h1>The #1 Blog For Smart Telescope Users.</h1>
     <p class="lead">If you are interested in smart telescopes and modern astrophotography processing, you're in the right place.</p>
-    <section class="empty" aria-labelledby="articles-heading">
-      <h2 id="articles-heading">Articles coming soon</h2>
-      <p>The blog is ready. New guides will appear here as they are published.</p>
+    <section class="post-list" aria-label="Latest articles">
+      <article class="post-card">
+        <a href="/blog/ai-for-astrophotography" aria-label="Read AI for Astrophotography: Helpful Assistant or Data Fabricator?"><img src="/static/blog/ai-for-astrophotography/deepsky-ai-processed-veil-nebula.png" width="1004" height="1657" alt="Eastern Veil Nebula processed by DeepSky from captured telescope data" /></a>
+        <div class="post-copy">
+          <p class="post-meta"><time datetime="2026-07-27">July 27, 2026</time> · 5 min read</p>
+          <h2><a href="/blog/ai-for-astrophotography">AI for Astrophotography: Helpful Assistant or Data Fabricator?</a></h2>
+          <p>Where should astrophotographers draw the line between revealing captured signal and inventing astronomical detail?</p>
+          <a class="read-more" href="/blog/ai-for-astrophotography">Read the article →</a>
+        </div>
+      </article>
     </section>
   </main>
   <footer>
     <p><a href="/">Home</a> &nbsp;|&nbsp; <a href="/docs">Docs</a> &nbsp;|&nbsp; <a href="/process">Process an image</a></p>
+    <p>DeepSky Built By <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
+  </footer>
+</body>
+</html>"""
+
+
+def _blog_article_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI for Astrophotography: Assistant or Fabricator? | DeepSky</title>
+  <meta name="description" content="Learn the difference between generative and non-generative AI for astrophotography—and how responsible AI can improve images without inventing astronomical data." />
+  <link rel="canonical" href="https://app.deepskyprocessor.com/blog/ai-for-astrophotography" />
+  <meta name="robots" content="index,follow,max-image-preview:large" />
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="DeepSky Processor" />
+  <meta property="og:title" content="AI for Astrophotography: Helpful Assistant or Data Fabricator?" />
+  <meta property="og:description" content="Generative AI can invent astronomical detail. Data-preserving AI can help reveal the signal your telescope actually captured." />
+  <meta property="og:url" content="https://app.deepskyprocessor.com/blog/ai-for-astrophotography" />
+  <meta property="og:image" content="https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/deepsky-ai-processed-veil-nebula.png" />
+  <meta property="og:image:alt" content="Eastern Veil Nebula processed by DeepSky from captured telescope data" />
+  <meta property="article:published_time" content="2026-07-27" />
+  <meta property="article:author" content="Diego Perry" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="AI for Astrophotography: Helpful Assistant or Data Fabricator?" />
+  <meta name="twitter:description" content="The difference between AI that reveals captured signal and AI that invents astronomical detail." />
+  <meta name="twitter:image" content="https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/deepsky-ai-processed-veil-nebula.png" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "AI for Astrophotography: Helpful Assistant or Data Fabricator?",
+    "description": "The difference between generative and non-generative AI for astrophotography, and how responsible AI can improve images without inventing astronomical data.",
+    "image": [
+      "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/deepsky-ai-processed-veil-nebula.png",
+      "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/generative-ai-veil-nebula-result.png",
+      "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/deepsky-non-generative-ai-result.png"
+    ],
+    "datePublished": "2026-07-27",
+    "dateModified": "2026-07-27",
+    "mainEntityOfPage": "https://app.deepskyprocessor.com/blog/ai-for-astrophotography",
+    "author": {
+      "@type": "Person",
+      "name": "Diego Perry",
+      "url": "https://www.linkedin.com/in/diego-perry-94ab41420/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "DeepSky Processor",
+      "url": "https://app.deepskyprocessor.com/"
+    },
+    "keywords": [
+      "AI for astrophotography",
+      "smart telescope processing",
+      "non-generative AI",
+      "astrophotography image processing",
+      "DeepSky Processor"
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "Home", "item": "https://app.deepskyprocessor.com/"},
+      {"@type": "ListItem", "position": 2, "name": "Blog", "item": "https://app.deepskyprocessor.com/blog"},
+      {"@type": "ListItem", "position": 3, "name": "AI for Astrophotography", "item": "https://app.deepskyprocessor.com/blog/ai-for-astrophotography"}
+    ]
+  }
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #060a12;
+      --panel: #0b121f;
+      --line: #20304c;
+      --text: #f7fbff;
+      --muted: #a8b7d2;
+      --blue: #5c8dff;
+      --violet: #a98cff;
+      --coral: #ff806d;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 50% -5%, rgba(75,117,255,.20), transparent 430px),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: inherit; }
+    .wrap { width: min(1100px, calc(100vw - 40px)); margin: 0 auto; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(6,10,18,.84);
+      border-bottom: 1px solid rgba(32,48,76,.65);
+      backdrop-filter: blur(14px);
+    }
+    .nav { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { font-weight: 900; font-size: 20px; text-decoration: none; }
+    .brand span {
+      background: linear-gradient(90deg, var(--blue), var(--violet), var(--coral));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .navlinks { display: flex; gap: 22px; align-items: center; color: var(--muted); font-weight: 800; font-size: 14px; }
+    .navlinks a { text-decoration: none; }
+    .navlinks [aria-current="page"] { color: var(--text); }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 20px;
+      border-radius: 10px;
+      background: #2f6fe5;
+      color: white;
+      text-decoration: none;
+      font-weight: 900;
+      border: 1px solid rgba(126,164,255,.38);
+    }
+    main { padding: 52px 0 100px; }
+    .breadcrumbs { color: #8fa8d1; font-size: 14px; margin-bottom: 40px; }
+    .breadcrumbs a { text-decoration: none; }
+    .breadcrumbs span { margin: 0 8px; color: #52678b; }
+    .article-head { max-width: 900px; margin: 0 auto 38px; }
+    .kicker { color: #9fc0ff; font: 13px Consolas, ui-monospace, monospace; margin-bottom: 16px; }
+    h1 { margin: 0; font-size: clamp(42px, 6vw, 76px); line-height: .98; letter-spacing: -1.5px; }
+    .dek { color: var(--muted); font-size: clamp(18px, 2.2vw, 23px); line-height: 1.55; margin: 24px 0 20px; max-width: 820px; }
+    .byline { color: #8298bd; font-size: 14px; }
+    .hero-figure { max-width: 900px; margin: 0 auto 52px; }
+    figure { margin: 42px 0; }
+    figure img { width: 100%; height: auto; display: block; border-radius: 14px; border: 1px solid var(--line); background: #020409; }
+    .hero-figure img { max-height: 760px; object-fit: cover; object-position: 50% 32%; }
+    figcaption { color: #8195b7; line-height: 1.5; font-size: 14px; margin-top: 12px; }
+    .prose { width: min(760px, 100%); margin: 0 auto; }
+    .prose p { color: var(--muted); font-size: 18px; line-height: 1.78; margin: 0 0 24px; }
+    .prose > p:first-child { font-size: 21px; color: #c5d0e3; }
+    h2 { margin: 58px 0 20px; font-size: clamp(30px, 4vw, 44px); line-height: 1.08; }
+    .image-pair { display: grid; grid-template-columns: 1fr 1.42fr; gap: 18px; align-items: start; margin: 42px 0; }
+    .image-pair figure { margin: 0; }
+    .image-pair img { aspect-ratio: 16 / 10; object-fit: cover; }
+    .portrait { width: min(520px, 100%); margin-left: auto; margin-right: auto; }
+    .cta {
+      margin-top: 58px;
+      padding: 32px;
+      border: 1px solid rgba(92,141,255,.45);
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(47,111,229,.20), rgba(255,128,109,.10));
+    }
+    .cta p { margin-bottom: 22px; }
+    .cta .button { color: #fff; line-height: 1.2; }
+    .back { display: inline-block; margin-top: 42px; color: #a9c0eb; font-weight: 900; text-decoration: none; }
+    footer { border-top: 1px solid rgba(32,48,76,.65); color: #6f86aa; padding: 26px 0; text-align: center; }
+    footer p { margin: 0 0 10px; }
+    footer a { color: #9cbcff; text-decoration: none; font-weight: 900; }
+    @media (max-width: 760px) {
+      .navlinks a:not(.button):not([aria-current="page"]) { display: none; }
+      main { padding-top: 34px; }
+      .image-pair { grid-template-columns: 1fr; }
+      .hero-figure img { max-height: 640px; }
+      .cta { padding: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap nav">
+      <a class="brand" href="/">DeepSky <span>Processor</span></a>
+      <nav class="navlinks" aria-label="Primary navigation">
+        <a href="/docs">Docs</a>
+        <a href="/blog" aria-current="page">Blog</a>
+        <a class="button" href="/process">Process An Image</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <a href="/">Home</a><span>/</span><a href="/blog">Blog</a><span>/</span>AI for Astrophotography
+    </nav>
+    <article>
+      <header class="article-head">
+        <div class="kicker">Responsible AI · Astrophotography processing</div>
+        <h1>AI for Astrophotography: Helpful Assistant or Data Fabricator?</h1>
+        <p class="dek">The difference between AI that reveals the signal your telescope captured and AI that invents details that were never there.</p>
+        <div class="byline">By Diego Perry · <time datetime="2026-07-27">July 27, 2026</time> · 5 min read</div>
+      </header>
+      <figure class="hero-figure">
+        <img src="/static/blog/ai-for-astrophotography/deepsky-ai-processed-veil-nebula.png" width="1004" height="1657" fetchpriority="high" alt="Full-resolution Eastern Veil Nebula image processed by DeepSky from captured telescope data" />
+        <figcaption>The Eastern Veil Nebula processed with DeepSky's data-preserving workflow. The result enhances captured signal rather than generating replacement structure.</figcaption>
+      </figure>
+      <div class="prose">
+        <p>Artificial intelligence has arrived in astrophotography, and opinions are almost as divided as the clouds on a promising new moon weekend. Some photographers see AI as the future of image processing. Others worry it blurs the line between revealing the night sky and inventing it.</p>
+        <p>The truth depends on what kind of AI you're using.</p>
+
+        <h2>When AI Crosses the Line</h2>
+        <p>Generative AI is designed to create new content. That is its entire purpose. Whether it's generating text, artwork, or photographs, these models can invent details that were never present in the original data.</p>
+        <p>In astrophotography, that raises an important question. If an AI creates stars that were never captured, fills in missing nebula detail, or fabricates galaxy structure, is the final image still a photograph of the night sky?</p>
+        <p>For many astrophotographers, the answer is no. The satisfaction comes from revealing faint celestial objects that were actually recorded by your telescope and camera, not imagined by an algorithm.</p>
+        <div class="image-pair">
+          <figure>
+            <img src="/static/blog/ai-for-astrophotography/gemini-fits-processing-prompt.png" width="711" height="294" loading="lazy" alt="Gemini interface showing an uploaded FITS file and a prompt asking AI to denoise and color-calibrate an astrophotography image" />
+            <figcaption>A FITS image submitted to a generative AI with a request to denoise and calibrate its color.</figcaption>
+          </figure>
+          <figure>
+            <img src="/static/blog/ai-for-astrophotography/generative-ai-veil-nebula-result.png" width="1024" height="559" loading="lazy" alt="Generative AI result showing red and cyan Veil Nebula filaments against a dense star field" />
+            <figcaption>The generated result is visually dramatic, but a generative model can create details that cannot be traced back to the captured telescope data.</figcaption>
+          </figure>
+        </div>
+
+        <h2>AI That Preserves Your Data</h2>
+        <p>Not all AI works this way.</p>
+        <p>Modern non-generative AI can analyze your images and improve them without inventing new astronomical information. Instead of creating pixels from scratch, these tools identify patterns in the captured data to reduce noise, sharpen detail, separate the sky from the background, or remove unwanted artifacts while respecting the original signal.</p>
+        <p>Think of it as an experienced image processing assistant rather than a digital painter. The goal is to help the real data shine through, not replace it.</p>
+        <p>This distinction matters because astrophotography has always been about extracting faint signals hidden in noise. AI can make that process faster and more effective without changing what your telescope actually captured.</p>
+        <figure class="portrait">
+          <img src="/static/blog/ai-for-astrophotography/deepsky-non-generative-ai-result.png" width="620" height="1024" loading="lazy" alt="Veil Nebula processed with DeepSky non-generative AI, preserving the captured orange and cyan signal" />
+          <figcaption>A DeepSky result produced by processing the uploaded image's measured signal instead of asking a generative model to reimagine the target.</figcaption>
+        </figure>
+
+        <h2>The Future Is Responsible AI</h2>
+        <p>Artificial intelligence is not inherently good or bad for astrophotography. Like any processing technique, its value depends on how it is used.</p>
+        <p>If the goal is creating fantasy space art, generative AI opens exciting creative possibilities. There is nothing wrong with that as long as the result is presented honestly.</p>
+        <p>If the goal is producing an authentic astrophotograph, non-generative AI offers a different path. It can automate tedious processing steps, improve image quality, and preserve scientific integrity by working with the data you captured instead of replacing it.</p>
+        <p>That balance is likely to define the future of astrophotography. AI should help us reveal the universe, not rewrite it.</p>
+
+        <aside class="cta">
+          <p>If you're looking for AI tools designed to enhance your astrophotography while respecting the integrity of your original data, give DeepSky a try. You can explore its AI-powered processing features for free and see what your own data is truly capable of revealing.</p>
+          <a class="button" href="/process">Process Your Astrophotography Image</a>
+        </aside>
+        <a class="back" href="/blog">← Back to the DeepSky blog</a>
+      </div>
+    </article>
+  </main>
+  <footer>
+    <p><a href="/blog">Astrophotography Blog</a> &nbsp;|&nbsp; <a href="/docs">Processing Docs</a> &nbsp;|&nbsp; <a href="/process">Process an image</a></p>
     <p>DeepSky Built By <a href="https://www.linkedin.com/in/diego-perry-94ab41420/?skipRedirect=true" target="_blank" rel="noreferrer">Diego Perry</a></p>
   </footer>
 </body>
@@ -4079,6 +4344,11 @@ def blog_page() -> str:
     return _blog_html()
 
 
+@app.get("/blog/ai-for-astrophotography", response_class=HTMLResponse)
+def blog_article_page() -> str:
+    return _blog_article_html()
+
+
 @app.get("/docs", response_class=HTMLResponse)
 def docs_page() -> str:
     return _docs_html()
@@ -4101,7 +4371,7 @@ def robots_txt() -> PlainTextResponse:
 
 @app.get("/sitemap.xml", response_class=PlainTextResponse)
 def sitemap_xml() -> PlainTextResponse:
-    urls = ("", "/blog", "/docs", "/process")
+    urls = ("", "/blog", "/blog/ai-for-astrophotography", "/docs", "/process")
     entries = "".join(
         f"<url><loc>{PUBLIC_SITE_URL}{path or '/'}</loc></url>" for path in urls
     )

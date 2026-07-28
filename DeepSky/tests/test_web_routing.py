@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import inspect
+import json
+import re
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
@@ -28,6 +30,7 @@ from app.settings import default_settings
 from app.web_app import (
     app,
     _configure_web_pipeline_settings,
+    blog_article_page,
     blog_page,
     docs_page,
     index,
@@ -69,8 +72,30 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('"@type": "Blog"', blog)
         self.assertIn("The #1 Blog For Smart Telescope Users.", blog)
         self.assertIn("you're in the right place.", blog)
-        self.assertIn("Articles coming soon", blog)
-        self.assertNotIn("<article", blog)
+        self.assertIn('href="/blog/ai-for-astrophotography"', blog)
+        self.assertIn("AI for Astrophotography: Helpful Assistant or Data Fabricator?", blog)
+
+    def test_ai_astrophotography_article_has_complete_seo_and_images(self) -> None:
+        article = blog_article_page()
+
+        self.assertIn("<h1>AI for Astrophotography: Helpful Assistant or Data Fabricator?</h1>", article)
+        self.assertIn('rel="canonical" href="https://app.deepskyprocessor.com/blog/ai-for-astrophotography"', article)
+        self.assertIn('"@type": "BlogPosting"', article)
+        self.assertIn('"@type": "BreadcrumbList"', article)
+        self.assertIn('property="og:image"', article)
+        self.assertIn('property="article:published_time" content="2026-07-27"', article)
+        self.assertIn('href="/process"', article)
+        for image_name in (
+            "gemini-fits-processing-prompt.png",
+            "generative-ai-veil-nebula-result.png",
+            "deepsky-non-generative-ai-result.png",
+            "deepsky-ai-processed-veil-nebula.png",
+        ):
+            self.assertIn(f"/static/blog/ai-for-astrophotography/{image_name}", article)
+        self.assertNotIn('alt=""', article)
+        json_ld_blocks = re.findall(r'<script type="application/ld\+json">\s*(.*?)\s*</script>', article, re.S)
+        self.assertEqual(len(json_ld_blocks), 2)
+        self.assertEqual([json.loads(block)["@type"] for block in json_ld_blocks], ["BlogPosting", "BreadcrumbList"])
 
     def test_robots_and_sitemap_make_public_pages_discoverable(self) -> None:
         robots = robots_txt().body.decode("utf-8")
@@ -80,9 +105,10 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn("Disallow: /api/", robots)
         self.assertIn("https://app.deepskyprocessor.com/sitemap.xml", robots)
         self.assertEqual(sitemap_response.media_type, "application/xml")
-        for path in ("/", "/blog", "/docs", "/process"):
+        for path in ("/", "/blog", "/blog/ai-for-astrophotography", "/docs", "/process"):
             self.assertIn(f"<loc>https://app.deepskyprocessor.com{path}</loc>", sitemap)
         self.assertIn("/blog", {route.path for route in app.routes})
+        self.assertIn("/blog/ai-for-astrophotography", {route.path for route in app.routes})
         self.assertIn("/robots.txt", {route.path for route in app.routes})
         self.assertIn("/sitemap.xml", {route.path for route in app.routes})
 
