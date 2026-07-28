@@ -29,7 +29,9 @@ from app.siril_cli import create_background_extraction_script, create_stacked_rg
 from app.settings import default_settings
 from app.web_app import (
     app,
+    WebJob,
     _configure_web_pipeline_settings,
+    _job_response,
     blog_article_page,
     blog_page,
     docs_page,
@@ -58,6 +60,25 @@ from app.web_legacy_150_goal_look import (
 
 
 class WebPipelineRoutingTests(unittest.TestCase):
+    def test_finished_job_displays_native_png_instead_of_downsampled_preview(self) -> None:
+        job = WebJob(
+            id="native-preview",
+            user_id="user-1",
+            status="finished",
+            result={
+                "before_preview": Path("before_preview.png"),
+                "after_preview": Path("after_preview.png"),
+                "png": Path("final.png"),
+                "final": Path("final.tif"),
+            },
+        )
+
+        payload = _job_response(job)
+
+        self.assertEqual(payload["after_preview"], "/api/jobs/native-preview/file/png?inline=1")
+        self.assertEqual(payload["png"], "/api/jobs/native-preview/file/png")
+        self.assertNotIn("after_preview?inline=1", payload["after_preview"])
+
     def test_public_pages_expose_blog_and_search_metadata(self) -> None:
         home = index()
         docs = docs_page()

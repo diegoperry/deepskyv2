@@ -4027,7 +4027,7 @@ def _job_response(job: WebJob) -> dict[str, Any]:
         payload.update(
             {
                 "before_preview": f"/api/jobs/{job.id}/file/before_preview?inline=1",
-                "after_preview": f"/api/jobs/{job.id}/file/after_preview?inline=1",
+                "after_preview": f"/api/jobs/{job.id}/file/png?inline=1",
             }
         )
         payload.update(
