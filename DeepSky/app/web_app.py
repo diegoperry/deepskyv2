@@ -1154,7 +1154,7 @@ def _blog_html() -> str:
     <p class="lead">If you are interested in smart telescopes and modern astrophotography processing, you're in the right place.</p>
     <section class="post-list" aria-label="Latest articles">
       <article class="post-card">
-        <a href="/blog/ai-for-astrophotography" aria-label="Read AI for Astrophotography: Helpful Assistant or Data Fabricator?"><img src="/static/blog/ai-for-astrophotography/ai-astrophotography-cover.png" width="1983" height="793" alt="DeepSky automated astrophotography processing logo over a galaxy, nebula, stars, and telescope" /></a>
+        <a href="/blog/ai-for-astrophotography" aria-label="Read AI for Astrophotography: Helpful Assistant or Data Fabricator?"><img src="/static/blog/ai-for-astrophotography/ai-astrophotography-cover-v2.png" width="1983" height="793" alt="DeepSky automated astrophotography processing logo over a galaxy, nebula, stars, and telescope" /></a>
         <div class="post-copy">
           <p class="post-meta"><time datetime="2026-07-27">July 27, 2026</time> · 5 min read</p>
           <h2><a href="/blog/ai-for-astrophotography">AI for Astrophotography: Helpful Assistant or Data Fabricator?</a></h2>
@@ -1187,14 +1187,14 @@ def _blog_article_html() -> str:
   <meta property="og:title" content="AI for Astrophotography: Helpful Assistant or Data Fabricator?" />
   <meta property="og:description" content="Generative AI can invent astronomical detail. Data-preserving AI can help reveal the signal your telescope actually captured." />
   <meta property="og:url" content="https://app.deepskyprocessor.com/blog/ai-for-astrophotography" />
-  <meta property="og:image" content="https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/ai-astrophotography-cover.png" />
+  <meta property="og:image" content="https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/ai-astrophotography-cover-v2.png" />
   <meta property="og:image:alt" content="DeepSky automated astrophotography processing logo over a galaxy, nebula, stars, and telescope" />
   <meta property="article:published_time" content="2026-07-27" />
   <meta property="article:author" content="Diego Perry" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="AI for Astrophotography: Helpful Assistant or Data Fabricator?" />
   <meta name="twitter:description" content="The difference between AI that reveals captured signal and AI that invents astronomical detail." />
-  <meta name="twitter:image" content="https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/ai-astrophotography-cover.png" />
+  <meta name="twitter:image" content="https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/ai-astrophotography-cover-v2.png" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -1202,7 +1202,7 @@ def _blog_article_html() -> str:
     "headline": "AI for Astrophotography: Helpful Assistant or Data Fabricator?",
     "description": "The difference between generative and non-generative AI for astrophotography, and how responsible AI can improve images without inventing astronomical data.",
     "image": [
-      "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/ai-astrophotography-cover.png",
+      "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/ai-astrophotography-cover-v2.png",
       "https://app.deepskyprocessor.com/static/blog/ai-for-astrophotography/generative-ai-veil-nebula-result.png"
     ],
     "datePublished": "2026-07-27",
@@ -1361,7 +1361,7 @@ def _blog_article_html() -> str:
         <div class="byline">By Diego Perry · <time datetime="2026-07-27">July 27, 2026</time> · 5 min read</div>
       </header>
       <figure class="hero-figure">
-        <img src="/static/blog/ai-for-astrophotography/ai-astrophotography-cover.png" width="1983" height="793" fetchpriority="high" alt="DeepSky automated astrophotography processing logo over a galaxy, nebula, stars, and telescope" />
+        <img src="/static/blog/ai-for-astrophotography/ai-astrophotography-cover-v2.png" width="1983" height="793" fetchpriority="high" alt="DeepSky automated astrophotography processing logo over a galaxy, nebula, stars, and telescope" />
         <figcaption>DeepSky uses automated, data-preserving tools to help astrophotographers process the signal captured by their telescopes.</figcaption>
       </figure>
       <div class="prose">
