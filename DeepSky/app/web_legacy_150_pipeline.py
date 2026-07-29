@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import json
 from datetime import datetime
@@ -10,6 +11,11 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from .astrosharp import (
+    blend_astrosharp_structure,
+    discover_astrosharp_runtime,
+    run_astrosharp_model,
+)
 from .cli_tools import find_executable, run_deepsnr, run_starnet
 from .web_legacy_150_goal_look import (
     apply_broadband_look,
@@ -2198,6 +2204,55 @@ def _run_dedicated_narrowband_pipeline(
 
     display_stage = apply_pixinsight_narrowband_finish(deconvolved, write_log)
     save_tiff(stretched, display_stage, write_log)
+    astrosharp_enabled = os.environ.get(
+        "DEEPSKY_ASTROSHARP_ENABLED", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if astrosharp_enabled:
+        astrosharp_runtime = discover_astrosharp_runtime()
+        if astrosharp_runtime is None:
+            write_log(
+                "AstroSharp experimental stage requested but its external R runtime, "
+                "PSF models, or headless runner is unavailable; continuing unchanged."
+            )
+        else:
+            astrosharp_raw = job_folder / "astrosharp_raw.tif"
+            try:
+                astrosharp_psf = float(
+                    os.environ.get("DEEPSKY_ASTROSHARP_PSF", "4.0")
+                )
+                astrosharp_model_strength = float(
+                    os.environ.get("DEEPSKY_ASTROSHARP_MODEL_STRENGTH", "0.50")
+                )
+                astrosharp_mix = float(
+                    os.environ.get("DEEPSKY_ASTROSHARP_MIX", "0.58")
+                )
+                astrosharp_chunk = int(
+                    os.environ.get("DEEPSKY_ASTROSHARP_CHUNK_SIZE", "256")
+                )
+                run_astrosharp_model(
+                    stretched,
+                    astrosharp_raw,
+                    astrosharp_runtime,
+                    write_log,
+                    psf=astrosharp_psf,
+                    strength=astrosharp_model_strength,
+                    chunk_size=astrosharp_chunk,
+                )
+                display_stage = blend_astrosharp_structure(
+                    display_stage,
+                    load_image(astrosharp_raw, write_log),
+                    write_log,
+                    maximum_mix=astrosharp_mix,
+                )
+                save_tiff(stretched, display_stage, write_log)
+                _log_existing_image(
+                    astrosharp_raw, write_log, "AstroSharp experimental raw donor"
+                )
+            except Exception as exc:
+                write_log(
+                    "AstroSharp experimental stage failed; retaining the normal "
+                    f"narrowband display stage. Error: {exc}"
+                )
     save_tiff(calibrated, display_stage, write_log)
     _log_existing_image(stretched, write_log, "narrowband linked HOO display stage")
 
