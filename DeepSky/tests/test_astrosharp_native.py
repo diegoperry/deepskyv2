@@ -88,7 +88,7 @@ def test_native_dualpsf_blend_records_accepted_output(tmp_path: Path) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert result.shape == image.shape
-    assert manifest["accepted_delta_mean"] > 0.0
+    assert manifest["accepted_delta_mean"] > manifest["dso_delta_mean"] * 0.45
     assert manifest["accepted_output_sha256"]
     assert manifest["maximum_mix"] == 0.90
     assert inference.manifest == manifest

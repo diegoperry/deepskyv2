@@ -328,9 +328,15 @@ def blend_astrosharp_dual_structure(
     star_image: np.ndarray,
     log: LogCallback | None = None,
     *,
-    maximum_mix: float = 0.72,
+    maximum_mix: float = 1.0,
 ) -> np.ndarray:
-    """Blend genuine DualPSF donors through continuous DeepSky masks."""
+    """Compose the official DualPSF donors without discarding quiet-frame output.
+
+    AstroSharp applies its DSO model across the entire image and continuously
+    switches to its separate stellar model around detected stars. Earlier
+    DeepSky builds added a nebula-signal gate and delta limiter here, which
+    rejected most of the neural-network result and made activation invisible.
+    """
     base_array = np.asarray(base_image)
     base = _to_float01(base_array)
     dso = _to_float01(dso_image)
@@ -343,80 +349,29 @@ def blend_astrosharp_dual_structure(
     ):
         raise ValueError("Both AstroSharp donors must match the RGB base.")
     base = base[..., :3]
-    height, width = base.shape[:2]
-    support = _edge_support((height, width))
-    safe = support > 0.97
     base_lum = _luminance(base)
     dso_lum = _luminance(dso)
     star_lum = _luminance(stars)
 
-    detection = cv2.GaussianBlur(base_lum, (0, 0), 0.68)
-    compact = np.maximum(
-        detection - cv2.GaussianBlur(detection, (0, 0), 3.0),
-        0.0,
-    )
-    safe_compact = compact[safe] if np.any(safe) else compact.reshape(-1)
-    core = _smoothstep(
-        compact,
-        float(np.percentile(safe_compact, 96.0)),
-        float(np.percentile(safe_compact, 99.80)),
-    )
-    stellar = np.clip(
-        cv2.GaussianBlur(core.astype(np.float32), (0, 0), 1.55) * 1.45,
-        0.0,
-        1.0,
-    )
-    dual_lum = dso_lum * (1.0 - stellar) + star_lum * stellar
+    # Approximate the upstream multiscale stellar mask continuously. Compact
+    # positive structure is measured at several scales so small and moderately
+    # bloated stars select the stellar PSF without hard masks or neon cores.
+    stellar_responses = []
+    for sigma in (0.8, 1.4, 2.4, 4.0):
+        narrow = cv2.GaussianBlur(base_lum, (0, 0), sigma)
+        broad = cv2.GaussianBlur(base_lum, (0, 0), sigma * 1.9)
+        stellar_responses.append(np.maximum(narrow - broad, 0.0))
+    compact = np.maximum.reduce(stellar_responses)
+    low = float(np.percentile(compact, 97.2))
+    high = max(low + 1e-7, float(np.percentile(compact, 99.92)))
+    stellar = _smoothstep(compact, low, high)
+    stellar = cv2.GaussianBlur(stellar.astype(np.float32), (0, 0), 1.45)
+    stellar = np.clip(stellar * 1.65, 0.0, 1.0)
 
-    broad_lum = cv2.GaussianBlur(
-        base_lum,
-        (0, 0),
-        max(6.0, min(height, width) * 0.0065),
-    )
-    broad_rgb = cv2.GaussianBlur(base, (0, 0), 2.4)
-    broad_chroma = np.max(broad_rgb, axis=2) - np.min(broad_rgb, axis=2)
-    safe_lum = broad_lum[safe] if np.any(safe) else broad_lum.reshape(-1)
-    safe_chroma = (
-        broad_chroma[safe]
-        if np.any(safe)
-        else broad_chroma.reshape(-1)
-    )
-    signal = np.maximum(
-        _smoothstep(
-            broad_lum,
-            float(np.percentile(safe_lum, 46.0)),
-            float(np.percentile(safe_lum, 98.5)),
-        ),
-        _smoothstep(
-            broad_chroma,
-            float(np.percentile(safe_chroma, 57.0)),
-            float(np.percentile(safe_chroma, 98.5)),
-        )
-        * 0.88,
-    )
-    signal = np.clip(
-        cv2.GaussianBlur(signal.astype(np.float32), (0, 0), 1.6)
-        * support,
-        0.0,
-        1.0,
-    )
-    maximum_mix = float(np.clip(maximum_mix, 0.0, 0.90))
-    # DSO structure receives the full measured contribution. Stellar pixels use
-    # AstroSharp's separate star PSF at a lower gain because StarNet follows.
-    gate = np.clip(
-        np.power(signal, 0.52)
-        * support
-        * maximum_mix
-        * (1.0 - stellar * 0.70),
-        0.0,
-        maximum_mix,
-    )
-    star_gate = np.clip(stellar * support * maximum_mix * 0.22, 0.0, 0.22)
-    raw_delta = dual_lum - base_lum
-    delta_limit = 0.032 + base_lum * 0.13
-    bounded_delta = np.clip(raw_delta, -delta_limit, delta_limit)
+    dual_lum = dso_lum * (1.0 - stellar) + star_lum * stellar
+    maximum_mix = float(np.clip(maximum_mix, 0.0, 1.0))
     result_lum = np.clip(
-        base_lum + bounded_delta * (gate + star_gate),
+        base_lum + (dual_lum - base_lum) * maximum_mix,
         0.0,
         1.0,
     )
@@ -427,12 +382,12 @@ def blend_astrosharp_dual_structure(
     )
     if log:
         log(
-            "AstroSharp DualPSF accepted into the image: "
+            "AstroSharp DualPSF accepted as the full-frame structure stage: "
             f"dso_delta_mean={float(np.mean(np.abs(dso_lum - base_lum))):.6f}, "
             f"star_delta_mean={float(np.mean(np.abs(star_lum - base_lum))):.6f}, "
             f"accepted_delta_mean={float(np.mean(np.abs(result_lum - base_lum))):.6f}, "
-            f"signal_gate_mean={float(np.mean(gate)):.5f}, "
-            f"stellar_gate_mean={float(np.mean(star_gate)):.5f}."
+            f"stellar_mask_mean={float(np.mean(stellar)):.5f}, "
+            f"maximum_mix={maximum_mix:.2f}."
         )
     if np.issubdtype(base_array.dtype, np.integer):
         maximum = float(np.iinfo(base_array.dtype).max)

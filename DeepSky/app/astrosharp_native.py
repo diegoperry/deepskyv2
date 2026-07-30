@@ -264,7 +264,7 @@ def apply_astrosharp_native_dual(
     *,
     psf: AstroSharpPsfEstimate | None = None,
     aggressiveness: float = 1.0,
-    maximum_mix: float = 0.72,
+    maximum_mix: float = 1.0,
     chunk_size: int = 325,
     manifest_path: Path | None = None,
 ) -> tuple[np.ndarray, AstroSharpNativeResult]:

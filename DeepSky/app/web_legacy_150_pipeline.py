@@ -2209,7 +2209,7 @@ def _run_dedicated_narrowband_pipeline(
         pre_astrosharp = display_stage.copy()
         try:
             astrosharp_mix = float(
-                os.environ.get("DEEPSKY_ASTROSHARP_MIX", "0.90")
+                os.environ.get("DEEPSKY_ASTROSHARP_MIX", "1.0")
             )
             astrosharp_chunk = int(
                 os.environ.get("DEEPSKY_ASTROSHARP_CHUNK_SIZE", "325")

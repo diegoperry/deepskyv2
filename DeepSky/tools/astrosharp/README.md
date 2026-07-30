@@ -21,7 +21,7 @@ with continuous stellar, nebula-signal, background, and edge-protection masks.
 Controls:
 
 - `DEEPSKY_ASTROSHARP_ENABLED=0` explicitly uses the legacy Richardson-Lucy fallback.
-- `DEEPSKY_ASTROSHARP_MIX` sets the maximum protected contribution (default `0.90`).
+- `DEEPSKY_ASTROSHARP_MIX` sets the full-frame donor contribution (default `1.0`).
 - `DEEPSKY_ASTROSHARP_CHUNK_SIZE` sets native inference tiling (default `325`).
 
 ## Verifiable activation
