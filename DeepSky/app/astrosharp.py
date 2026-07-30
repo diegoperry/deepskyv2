@@ -175,7 +175,7 @@ def blend_astrosharp_structure(
     astrosharp_image: np.ndarray,
     log: LogCallback | None = None,
     *,
-    maximum_mix: float = 0.58,
+    maximum_mix: float = 0.76,
 ) -> np.ndarray:
     """Use AstroSharp as a bounded luminance donor inside measured nebula signal.
 
@@ -248,9 +248,9 @@ def blend_astrosharp_structure(
         1.0,
     )
 
-    maximum_mix = float(np.clip(maximum_mix, 0.0, 0.80))
+    maximum_mix = float(np.clip(maximum_mix, 0.0, 0.85))
     gate = np.clip(
-        (signal**0.82)
+        (signal**0.58)
         * np.square(1.0 - star_protect)
         * support
         * maximum_mix,
@@ -258,7 +258,7 @@ def blend_astrosharp_structure(
         maximum_mix,
     )
     raw_delta = donor_lum - base_lum
-    delta_limit = 0.018 + base_lum * 0.075
+    delta_limit = 0.026 + base_lum * 0.105
     bounded_delta = np.clip(raw_delta, -delta_limit, delta_limit)
     result_lum = np.clip(base_lum + bounded_delta * gate, 0.0, 1.0)
     result = np.clip(

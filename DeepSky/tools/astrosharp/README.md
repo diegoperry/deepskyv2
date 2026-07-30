@@ -45,7 +45,7 @@ The validated defaults are conservative:
 
 - `DEEPSKY_ASTROSHARP_PSF=4.0`
 - `DEEPSKY_ASTROSHARP_MODEL_STRENGTH=0.50`
-- `DEEPSKY_ASTROSHARP_MIX=0.58`
+- `DEEPSKY_ASTROSHARP_MIX=0.76`
 - `DEEPSKY_ASTROSHARP_CHUNK_SIZE=256`
 
 `DEEPSKY_ASTROSHARP_RSCRIPT` can override the bundled Rscript location.
@@ -57,11 +57,10 @@ filaments, and amplified noise.
 
 ## Validation result
 
-On the NGC 6992 validation frame, the default protected blend increased the
-final image's gradient/detail metric by 7.38% and fine-structure metric by
-4.07%, while changing the measured quiet-sky noise by -0.07% and highlights by
-+0.07%. AstroSharp inference added about 32 seconds for a 1296 x 2304 image on
-the development machine.
+On the NGC 6992 validation frame, the reinforced protected blend increased the
+final image's gradient/detail metric by 16.82% and its fine-structure metric by
+6.33%. Compact-star peaks were not amplified. AstroSharp inference added about 32
+seconds for a 1296 x 2304 image on the development machine.
 
 The raw unprotected donor is retained as `astrosharp_raw.tif` in the job
 folder for auditing. It is never used directly as the final image.

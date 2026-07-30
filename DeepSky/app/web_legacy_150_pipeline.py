@@ -2224,7 +2224,7 @@ def _run_dedicated_narrowband_pipeline(
                     os.environ.get("DEEPSKY_ASTROSHARP_MODEL_STRENGTH", "0.50")
                 )
                 astrosharp_mix = float(
-                    os.environ.get("DEEPSKY_ASTROSHARP_MIX", "0.58")
+                    os.environ.get("DEEPSKY_ASTROSHARP_MIX", "0.76")
                 )
                 astrosharp_chunk = int(
                     os.environ.get("DEEPSKY_ASTROSHARP_CHUNK_SIZE", "256")
@@ -2277,6 +2277,27 @@ def _run_dedicated_narrowband_pipeline(
         write_log("Narrowband Color pipeline: StarNet unavailable or image too small; using internal compact-star reduction.")
         polished = _apply_mild_nebula_star_core_reduction(display_stage, write_log)
 
+    if (
+        astrosharp_enabled
+        and "astrosharp_raw" in locals()
+        and astrosharp_raw.is_file()
+    ):
+        try:
+            polished = blend_astrosharp_structure(
+                polished,
+                load_image(astrosharp_raw, write_log),
+                write_log,
+                maximum_mix=min(0.85, astrosharp_mix * 0.82),
+            )
+            write_log(
+                "AstroSharp protected structure reinforced after stellar polish "
+                "so the accepted detail survives final export."
+            )
+        except Exception as exc:
+            write_log(
+                "AstroSharp final structure reinforcement failed; retaining the "
+                f"normal stellar-polished result. Error: {exc}"
+            )
     reference = load_image(working, write_log)
     polished = _orient_like_reference(polished, reference, write_log, "Dedicated narrowband final")
     save_tiff(final, polished, write_log)
