@@ -135,8 +135,8 @@ def apply_option04_very_heavy_finish(
 
     result_lum = _luminance(result)
     rolloff = np.square(np.clip(1.0 - result_lum / 0.11, 0.0, 1.0))
-    target_lum = result_lum + 0.012 * rolloff
-    neutral = np.asarray([0.96, 1.00, 1.05], dtype=np.float32)
+    target_lum = result_lum + 0.0065 * rolloff
+    neutral = np.asarray([1.08, 0.92, 1.00], dtype=np.float32)
     neutral /= float(_luminance(neutral.reshape(1, 1, 3))[0, 0])
     neutral_rgb = target_lum[..., None] * neutral.reshape(1, 1, 3)
     lift_mix = np.clip(sky * 0.72, 0.0, 0.72)[..., None]
@@ -169,12 +169,35 @@ def apply_option04_very_heavy_finish(
         1.0,
     )
 
+    # Give compact stars a clean photographic profile after the heavy reduction.
+    # Smooth only the transition zone and colored fringe; retain the measured
+    # central color so naturally blue and orange stars do not become white dots.
+    profile_rgb = cv2.GaussianBlur(result, (0, 0), 0.62)
+    profile_lum = _luminance(profile_rgb)
+    current_lum = _luminance(result)
+    profile_mix = np.clip(halo * 0.30, 0.0, 0.30)
+    clean_lum = current_lum * (1.0 - profile_mix) + profile_lum * profile_mix
+    profiled = np.clip(
+        result * (clean_lum / np.maximum(current_lum, 1e-6))[..., None],
+        0.0,
+        1.0,
+    )
+    profiled_lum = _luminance(profiled)
+    chroma = profiled - profiled_lum[..., None]
+    smooth_chroma = cv2.GaussianBlur(chroma.astype(np.float32), (0, 0), 1.05)
+    fringe = np.clip(halo * np.square(1.0 - core), 0.0, 1.0)
+    fringe_mix = np.clip(fringe * 0.82, 0.0, 0.82)
+    clean_chroma = (
+        chroma * (1.0 - fringe_mix[..., None])
+        + smooth_chroma * fringe_mix[..., None]
+    )
+    result = np.clip(profiled_lum[..., None] + clean_chroma, 0.0, 1.0)
     if log:
         output_lum = _luminance(result)
         before_peak = float(np.percentile(before_lum[safe], 99.95)) if np.any(safe) else float(np.max(before_lum))
         after_peak = float(np.percentile(output_lum[safe], 99.95)) if np.any(safe) else float(np.max(output_lum))
         log(
-            "Narrowband Color: option 04 very-heavy star reduction and soft-sky finish applied "
+            "Narrowband Color: option 04 warm-charcoal sky and clean compact-star finish applied "
             f"(shrink_mean={float(np.mean(shrink)):.5f}, "
             f"sky_soft_mix_mean={float(np.mean(soft_mix)):.5f}, "
             f"clarity_gate_mean={float(np.mean(clarity_gate)):.5f}, "
