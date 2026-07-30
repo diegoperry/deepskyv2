@@ -100,6 +100,33 @@ def apply_option04_very_heavy_finish(
         1.0,
     )
 
+    # The morphological pass above shrinks bright cores, but a dense field can
+    # still read as a white pointillist background because thousands of modest
+    # stars never reach ``compact_high``. Remove a measured fraction of that
+    # wider stellar population directly from luminance. StarNet remains a
+    # detector only: the starless RGB canvas is never copied into the result.
+    population_gate = _smoothstep(residual, residual_low * 0.20, residual_high * 0.42) * (1.0 - bright_core * 0.965)
+    population_gate = np.clip(
+        cv2.GaussianBlur(population_gate.astype(np.float32), (0, 0), 0.58)
+        * edge_support,
+        0.0,
+        1.0,
+    )
+    population_lum = _luminance(result)
+    measured_reduction = np.minimum(
+        residual * population_gate * 1.12,
+        population_lum * population_gate * 0.90,
+    )
+    population_reduced_lum = np.maximum(
+        population_lum - measured_reduction,
+        cv2.GaussianBlur(population_lum, (0, 0), 2.2) * 0.42,
+    )
+    result = np.clip(
+        result
+        * (population_reduced_lum / np.maximum(population_lum, 1e-6))[..., None],
+        0.0,
+        1.0,
+    )
     broad_starless = cv2.GaussianBlur(starless, (0, 0), 7.0)
     broad_lum = _luminance(broad_starless)
     broad_chroma = np.max(broad_starless, axis=2) - np.min(broad_starless, axis=2)
@@ -133,13 +160,56 @@ def apply_option04_very_heavy_finish(
     soft_mix = np.clip(sky * 0.62, 0.0, 0.72)[..., None]
     result = result * (1.0 - soft_mix) + smooth_sky * soft_mix
 
+    # Remove faint neutral pinpoints left behind by stellar reduction. A small
+    # grayscale opening supplies the local sky level; the continuous mask
+    # excludes extended nebula signal and protected bright stars.
+    dot_lum = _luminance(result)
+    opened_sky_lum = cv2.morphologyEx(
+        dot_lum,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    )
+    dot_response = np.maximum(dot_lum - opened_sky_lum, 0.0)
+    dot_samples = dot_response[sky > 0.55]
+    dot_low = float(np.percentile(dot_samples, 48.0)) if dot_samples.size else 0.0
+    dot_high = float(np.percentile(dot_samples, 99.5)) if dot_samples.size else max(dot_low + 1e-6, 0.01)
+    neutral_dot = _smoothstep(dot_response, dot_low, max(dot_low + 1e-6, dot_high))
+    result_chroma = np.max(result, axis=2) - np.min(result, axis=2)
+    gray_confirmation = 1.0 - _smoothstep(result_chroma, 0.018, 0.072)
+    dot_candidate = neutral_dot * gray_confirmation * sky * (1.0 - bright_halo)
+    dot_seed = (
+        (dot_candidate > 0.015)
+        & (gray_confirmation > 0.15)
+        & (sky > 0.25)
+        & (bright_halo < 0.10)
+    ).astype(np.float32)
+    dot_footprint = cv2.dilate(
+        dot_seed,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+    )
+    dot_footprint = cv2.GaussianBlur(dot_footprint.astype(np.float32), (0, 0), 0.82)
+    dot_mask = np.clip(
+        np.maximum.reduce(
+            [population_gate * sky, dot_candidate * 1.65, dot_footprint * 0.995]
+        )
+        * (1.0 - bright_halo * 0.995)
+        * (1.0 - bright_core * 0.995),
+        0.0,
+        0.999,
+    )
+    cleaned_dot_lum = dot_lum * (1.0 - dot_mask) + np.minimum(dot_lum, opened_sky_lum) * dot_mask
+    result = np.clip(
+        result * (cleaned_dot_lum / np.maximum(dot_lum, 1e-6))[..., None],
+        0.0,
+        1.0,
+    )
     result_lum = _luminance(result)
-    rolloff = np.square(np.clip(1.0 - result_lum / 0.11, 0.0, 1.0))
-    target_lum = result_lum + 0.0065 * rolloff
-    neutral = np.asarray([1.08, 0.92, 1.00], dtype=np.float32)
+    # Anchor quiet sky to a dark warm-charcoal floor.
+    target_lum = result_lum * 0.65 + 0.0060
+    neutral = np.asarray([1.10, 0.91, 1.00], dtype=np.float32)
     neutral /= float(_luminance(neutral.reshape(1, 1, 3))[0, 0])
     neutral_rgb = target_lum[..., None] * neutral.reshape(1, 1, 3)
-    lift_mix = np.clip(sky * 0.72, 0.0, 0.72)[..., None]
+    lift_mix = np.clip(sky * 0.78, 0.0, 0.78)[..., None]
     result = np.clip(
         result * (1.0 - lift_mix) + neutral_rgb * lift_mix,
         0.0,
@@ -192,6 +262,43 @@ def apply_option04_very_heavy_finish(
         + smooth_chroma * fringe_mix[..., None]
     )
     result = np.clip(profiled_lum[..., None] + clean_chroma, 0.0, 1.0)
+
+    # Run the neutral-dot removal after every stellar profiling operation. This
+    # is intentionally a terminal sky cleanup: compact stellar local maxima and
+    # their halos are replaced by surrounding measured sky luminance, while
+    # only the brightest stars and extended signal remain untouched.
+    terminal_lum = _luminance(result)
+    terminal_open = cv2.morphologyEx(
+        terminal_lum,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+    )
+    terminal_response = np.maximum(terminal_lum - terminal_open, 0.0)
+    terminal_chroma = np.max(result, axis=2) - np.min(result, axis=2)
+    terminal_seed = (
+        (terminal_response > 0.0012)
+        & (sky > 0.20)
+        & (bright_halo < 0.12)
+        & (bright_core < 0.10)
+    ).astype(np.float32)
+    terminal_mask = cv2.dilate(
+        terminal_seed,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+    )
+    terminal_mask = np.clip(
+        cv2.GaussianBlur(terminal_mask.astype(np.float32), (0, 0), 0.78)
+        * sky
+        * (1.0 - bright_halo)
+        * (1.0 - bright_core),
+        0.0,
+        0.999,
+    )
+    terminal_clean_lum = terminal_lum * (1.0 - terminal_mask) + np.minimum(terminal_lum, terminal_open) * terminal_mask
+    result = np.clip(
+        result * (terminal_clean_lum / np.maximum(terminal_lum, 1e-6))[..., None],
+        0.0,
+        1.0,
+    )
     if log:
         output_lum = _luminance(result)
         before_peak = float(np.percentile(before_lum[safe], 99.95)) if np.any(safe) else float(np.max(before_lum))

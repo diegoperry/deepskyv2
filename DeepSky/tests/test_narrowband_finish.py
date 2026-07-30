@@ -84,12 +84,13 @@ def test_starnet_guided_polish_never_imports_starless_blobs() -> None:
     starless[..., 0] = np.clip(starless[..., 0] + fake_blob * 0.55, 0.0, 1.0)
     starless[..., 2] = np.clip(starless[..., 2] - fake_blob * 0.30, 0.0, 1.0)
 
+    baseline = apply_starnet_guided_narrowband_polish(finished, finished.astype(np.float32) / 65535.0)
     polished = apply_starnet_guided_narrowband_polish(finished, starless)
     polished = polished.astype(np.float32) / 65535.0
-    source = finished.astype(np.float32) / 65535.0
+    baseline = baseline.astype(np.float32) / 65535.0
 
     blob_region = fake_blob > 0.60
-    difference = np.abs(polished - source)
+    difference = np.abs(polished - baseline)
     assert float(np.percentile(difference[blob_region], 99.0)) < 0.025
-    assert float(np.max(np.abs(polished[64, 54] - source[64, 54]))) < 0.01
+    assert float(np.max(np.abs(polished[64, 54] - baseline[64, 54]))) < 0.01
     assert polished[64, 54, 0] > polished[64, 54, 2]

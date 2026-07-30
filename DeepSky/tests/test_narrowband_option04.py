@@ -45,7 +45,7 @@ def test_option04_reduces_compact_stars_and_preserves_star_color_order() -> None
     assert output[63, 202, 2] > output[63, 202, 0]
 
 
-def test_option04_softens_and_lifts_only_quiet_background() -> None:
+def test_option04_softens_and_darkens_only_quiet_background() -> None:
     source, starless, warm_gas = _synthetic_option04_scene()
     output = apply_option04_very_heavy_finish(
         source,
@@ -59,7 +59,8 @@ def test_option04_softens_and_lifts_only_quiet_background() -> None:
     output_sky = np.mean(output[sky], axis=1)
 
     assert float(np.std(output_sky)) < float(np.std(source_sky)) * 0.82
-    assert float(np.median(output_sky)) > float(np.median(source_sky)) + 0.003
+    assert float(np.median(output_sky)) < float(np.median(source_sky)) * 0.94
+    assert float(np.median(output_sky)) > 0.012
     warm_region = warm_gas > 0.72
     assert float(np.mean(output[warm_region, 0])) > float(np.mean(output[warm_region, 2])) * 1.8
     assert float(np.mean(output[warm_region])) > float(np.mean(source[warm_region])) * 0.88
