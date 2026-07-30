@@ -89,3 +89,11 @@ powershell -ExecutionPolicy Bypass -File .\build_windows.ps1
 ## Production Deployment
 
 See `DEPLOYMENT.md` for the Windows VPS + Cloudflare Tunnel deployment path.
+
+## AstroSharp DualPSF
+
+The dedicated narrowband pipeline uses the official AstroSharp DualPSF neural-network weights as its primary structure stage. DeepSky measures compact-star FWHM on each processed frame, converts it to AstroSharp's PSF control, selects separate quarter-step DSO and stellar models, and runs both models natively with NumPy. This replaces the previous Richardson-Lucy plus optional external-R experiment; it does not stack both sharpening methods.
+
+AstroSharp is enabled by default for narrowband processing. Set `DEEPSKY_ASTROSHARP_ENABLED=0` to use the legacy Richardson-Lucy fallback. `DEEPSKY_ASTROSHARP_MIX` controls the protected model blend (default `0.90`), and `DEEPSKY_ASTROSHARP_CHUNK_SIZE` controls inference tiling (default `325`). Each successful job writes `astrosharp_manifest.json`, `astrosharp_dso_donor.tif`, and `astrosharp_star_donor.tif`; the manifest records model/input/output hashes, selected PSFs, measured FWHM, model deltas, accepted output delta, and `actually_executed: true`.
+
+Upstream implementation and license: [Deep Sky Detail AstroSharp DualPSF](https://github.com/deepskydetail/AstroSharp/tree/DualPSF).

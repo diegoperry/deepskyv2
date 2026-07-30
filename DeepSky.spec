@@ -11,7 +11,12 @@ a = Analysis(
     [str(SOURCE)],
     pathex=[str(ROOT / "DeepSky")],
     binaries=[],
-    datas=[],
+    datas=[
+        (
+            str(ROOT / 'DeepSky' / 'app' / 'models' / 'astrosharp_dualpsf_weights.npz'),
+            'app/models',
+        ),
+    ],
     hiddenimports=[
         "astropy.io.fits",
         "tifffile",

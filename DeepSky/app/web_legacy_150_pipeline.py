@@ -11,11 +11,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from .astrosharp import (
-    blend_astrosharp_structure,
-    discover_astrosharp_runtime,
-    run_astrosharp_model,
-)
+from .astrosharp_native import apply_astrosharp_native_dual
 from .cli_tools import find_executable, run_deepsnr, run_starnet
 from .web_legacy_150_goal_look import (
     apply_broadband_look,
@@ -2171,7 +2167,7 @@ def _run_dedicated_narrowband_pipeline(
     """Run the narrowband workflow as a complete pipeline, not a late color pass."""
     write_log(
         "Narrowband Color pipeline: dedicated linear route selected "
-        "(background model -> linear DeepSNR -> masked deconvolution -> linked HOO finish "
+        "(background model -> linear DeepSNR -> measured AstroSharp DualPSF structure -> linked HOO finish "
         "-> StarNet-guided stellar protection and reduction -> final polish)."
     )
     prepared = _prepare_early_nebula_deepsnr_source(
@@ -2193,66 +2189,89 @@ def _run_dedicated_narrowband_pipeline(
     else:
         shutil.copy2(linear_denoised, denoised)
 
-    # Stay linear through denoise and masked deconvolution. Color separation and
-    # the linked display stretch happen only after structural preparation.
-    linear_deconvolved = job_folder / "narrowband_linear_deconvolved.tif"
-    deconvolved = apply_masked_richardson_lucy_nebula(
-        load_image(linear_master, write_log), write_log, iterations=6,
-    )
-    save_tiff(linear_deconvolved, deconvolved, write_log)
-    _log_existing_image(linear_deconvolved, write_log, "narrowband linear deconvolved")
-
-    display_stage = apply_pixinsight_narrowband_finish(deconvolved, write_log)
-    save_tiff(stretched, display_stage, write_log)
+    # AstroSharp is designed for calibrated, stretched data and should replace,
+    # rather than stack on top of, another deconvolution pass. The bundled
+    # native DualPSF engine is on by default for this dedicated narrowband route.
     astrosharp_enabled = os.environ.get(
-        "DEEPSKY_ASTROSHARP_ENABLED", ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
+        "DEEPSKY_ASTROSHARP_ENABLED", "1"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    linear_source = load_image(linear_master, write_log)
     if astrosharp_enabled:
-        astrosharp_runtime = discover_astrosharp_runtime()
-        if astrosharp_runtime is None:
-            write_log(
-                "AstroSharp experimental stage requested but its external R runtime, "
-                "PSF models, or headless runner is unavailable; continuing unchanged."
+        write_log(
+            "Narrowband structure stage: native AstroSharp DualPSF replaces "
+            "masked Richardson-Lucy deconvolution."
+        )
+        display_stage = apply_pixinsight_narrowband_finish(
+            linear_source,
+            write_log,
+            detail_strength=0.0,
+        )
+        pre_astrosharp = display_stage.copy()
+        try:
+            astrosharp_mix = float(
+                os.environ.get("DEEPSKY_ASTROSHARP_MIX", "0.90")
             )
-        else:
-            astrosharp_raw = job_folder / "astrosharp_raw.tif"
-            try:
-                astrosharp_psf = float(
-                    os.environ.get("DEEPSKY_ASTROSHARP_PSF", "4.0")
+            astrosharp_chunk = int(
+                os.environ.get("DEEPSKY_ASTROSHARP_CHUNK_SIZE", "325")
+            )
+            display_stage, astrosharp_result = apply_astrosharp_native_dual(
+                display_stage,
+                write_log,
+                aggressiveness=1.0,
+                maximum_mix=astrosharp_mix,
+                chunk_size=astrosharp_chunk,
+                manifest_path=job_folder / "astrosharp_manifest.json",
+            )
+            accepted_delta = float(
+                astrosharp_result.manifest["accepted_delta_mean"]
+            )
+            if accepted_delta <= 1e-6:
+                raise RuntimeError(
+                    "AstroSharp completed but its accepted pipeline delta was zero."
                 )
-                astrosharp_model_strength = float(
-                    os.environ.get("DEEPSKY_ASTROSHARP_MODEL_STRENGTH", "0.50")
-                )
-                astrosharp_mix = float(
-                    os.environ.get("DEEPSKY_ASTROSHARP_MIX", "0.76")
-                )
-                astrosharp_chunk = int(
-                    os.environ.get("DEEPSKY_ASTROSHARP_CHUNK_SIZE", "256")
-                )
-                run_astrosharp_model(
-                    stretched,
-                    astrosharp_raw,
-                    astrosharp_runtime,
-                    write_log,
-                    psf=astrosharp_psf,
-                    strength=astrosharp_model_strength,
-                    chunk_size=astrosharp_chunk,
-                )
-                display_stage = blend_astrosharp_structure(
-                    display_stage,
-                    load_image(astrosharp_raw, write_log),
-                    write_log,
-                    maximum_mix=astrosharp_mix,
-                )
-                save_tiff(stretched, display_stage, write_log)
-                _log_existing_image(
-                    astrosharp_raw, write_log, "AstroSharp experimental raw donor"
-                )
-            except Exception as exc:
-                write_log(
-                    "AstroSharp experimental stage failed; retaining the normal "
-                    f"narrowband display stage. Error: {exc}"
-                )
+            save_tiff(
+                job_folder / "astrosharp_dso_donor.tif",
+                astrosharp_result.dso_donor,
+                write_log,
+            )
+            save_tiff(
+                job_folder / "astrosharp_star_donor.tif",
+                astrosharp_result.star_donor,
+                write_log,
+            )
+            write_log(
+                "ASTROSHARP_PIPELINE_VERIFIED "
+                f"accepted_delta_mean={accepted_delta:.7f} "
+                f"manifest={job_folder / 'astrosharp_manifest.json'}"
+            )
+        except Exception as exc:
+            display_stage = pre_astrosharp
+            write_log(
+                "Native AstroSharp DualPSF failed; using the unsharpened linked "
+                f"narrowband display stage. Error: {exc}"
+            )
+    else:
+        write_log(
+            "AstroSharp explicitly disabled; using the legacy masked "
+            "Richardson-Lucy structure stage."
+        )
+        linear_deconvolved = job_folder / "narrowband_linear_deconvolved.tif"
+        deconvolved = apply_masked_richardson_lucy_nebula(
+            linear_source,
+            write_log,
+            iterations=6,
+        )
+        save_tiff(linear_deconvolved, deconvolved, write_log)
+        _log_existing_image(
+            linear_deconvolved,
+            write_log,
+            "narrowband linear deconvolved",
+        )
+        display_stage = apply_pixinsight_narrowband_finish(
+            deconvolved,
+            write_log,
+        )
+    save_tiff(stretched, display_stage, write_log)
     save_tiff(calibrated, display_stage, write_log)
     _log_existing_image(stretched, write_log, "narrowband linked HOO display stage")
 
@@ -2277,27 +2296,6 @@ def _run_dedicated_narrowband_pipeline(
         write_log("Narrowband Color pipeline: StarNet unavailable or image too small; using internal compact-star reduction.")
         polished = _apply_mild_nebula_star_core_reduction(display_stage, write_log)
 
-    if (
-        astrosharp_enabled
-        and "astrosharp_raw" in locals()
-        and astrosharp_raw.is_file()
-    ):
-        try:
-            polished = blend_astrosharp_structure(
-                polished,
-                load_image(astrosharp_raw, write_log),
-                write_log,
-                maximum_mix=min(0.85, astrosharp_mix * 0.82),
-            )
-            write_log(
-                "AstroSharp protected structure reinforced after stellar polish "
-                "so the accepted detail survives final export."
-            )
-        except Exception as exc:
-            write_log(
-                "AstroSharp final structure reinforcement failed; retaining the "
-                f"normal stellar-polished result. Error: {exc}"
-            )
     reference = load_image(working, write_log)
     polished = _orient_like_reference(polished, reference, write_log, "Dedicated narrowband final")
     save_tiff(final, polished, write_log)

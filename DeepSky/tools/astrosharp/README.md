@@ -1,66 +1,52 @@
-# Experimental AstroSharp integration
+# AstroSharp DualPSF integration
 
-DeepSky can optionally use AstroSharp as a structure donor in the dedicated
-narrowband pipeline. It runs after the linked HOO display finish and before
-StarNet/star recomposition. The normal DeepSky luminance and color remain the
-base image; only bounded luminance detail is accepted through continuous
-nebula, star, background, and edge-protection masks.
+DeepSky uses the official AstroSharp DualPSF neural-network weights as the
+primary structure stage in its dedicated narrowband pipeline. The integration
+is enabled by default, runs after linked stretching/color preparation with
+DeepSky's own multiscale sharpening disabled, and replaces masked
+Richardson-Lucy deconvolution instead of stacking two sharpeners.
 
-The feature is disabled by default and fails open. If AstroSharp is missing or
-inference fails, DeepSky continues with its normal narrowband result.
+## Production runtime
 
-## External runtime
+Production inference is native NumPy and does not require R, Electron, or a
+separately installed AstroSharp application. The bundled model archive contains
+all official quarter-step PSF models from 1.0 through 8.0. It is included in
+the Windows application build by `DeepSky.spec`.
 
-AstroSharp's Electron/R application and PSF model files are not copied into
-this repository. Stage the upstream `DualPSF` application files separately:
+For each frame, DeepSky measures compact-star FWHM and applies AstroSharp's
+published FWHM / 2.35 rule. It selects separate DSO and stellar PSF models,
+runs both at the upstream default aggressiveness of 1.0, then combines them
+with continuous stellar, nebula-signal, background, and edge-protection masks.
 
-<https://github.com/deepskydetail/AstroSharp/tree/DualPSF>
+Controls:
 
-The configured directory must contain:
+- `DEEPSKY_ASTROSHARP_ENABLED=0` explicitly uses the legacy Richardson-Lucy fallback.
+- `DEEPSKY_ASTROSHARP_MIX` sets the maximum protected contribution (default `0.90`).
+- `DEEPSKY_ASTROSHARP_CHUNK_SIZE` sets native inference tiling (default `325`).
 
-- `GetMatrixFun9x9.R`
-- `PSF/81_1_FWHM_4.RDS`
-- `R-Portable-Win/bin/x64/Rscript.exe`
+## Verifiable activation
 
-Set these environment variables before starting DeepSky:
+Every successful run logs `ASTROSHARP_NATIVE_START`,
+`ASTROSHARP_NATIVE_COMPLETE`, and `ASTROSHARP_PIPELINE_VERIFIED`. The job folder
+also contains:
 
-```powershell
-[Environment]::SetEnvironmentVariable(
-    'DEEPSKY_ASTROSHARP_APP_DIR',
-    'C:\path\to\AstroSharp\resources\app',
-    'Machine'
-)
-[Environment]::SetEnvironmentVariable(
-    'DEEPSKY_ASTROSHARP_ENABLED',
-    '1',
-    'Machine'
-)
-```
+- `astrosharp_manifest.json`
+- `astrosharp_dso_donor.tif`
+- `astrosharp_star_donor.tif`
 
-Restart the DeepSky process after changing machine environment variables.
+The manifest records the model-bundle hash, input hash, separate donor hashes,
+accepted-output hash, measured FWHM, selected DSO/star PSFs, inference deltas,
+accepted pipeline delta, elapsed time, and `actually_executed: true`.
 
-## Experimental controls
+## Official-R validation oracle
 
-The validated defaults are conservative:
+`headless_astrosharp_dual.R` remains as a development-only oracle. It runs both
+upstream R models so native inference can be compared against the official
+implementation. On the NGC 6992 validation crop, native-versus-R RGB
+correlation was greater than 0.999998 for both donors, with mean absolute RGB
+error below 0.000058.
 
-- `DEEPSKY_ASTROSHARP_PSF=4.0`
-- `DEEPSKY_ASTROSHARP_MODEL_STRENGTH=0.50`
-- `DEEPSKY_ASTROSHARP_MIX=0.76`
-- `DEEPSKY_ASTROSHARP_CHUNK_SIZE=256`
+Upstream: <https://github.com/deepskydetail/AstroSharp/tree/DualPSF>
 
-`DEEPSKY_ASTROSHARP_RSCRIPT` can override the bundled Rscript location.
-
-The PSF value is the measured stellar FWHM divided by 2.35, following
-AstroSharp's instructions. Do not raise the model strength or final mix
-globally without testing multiple representative images for ringing, brittle
-filaments, and amplified noise.
-
-## Validation result
-
-On the NGC 6992 validation frame, the reinforced protected blend increased the
-final image's gradient/detail metric by 16.82% and its fine-structure metric by
-6.33%. Compact-star peaks were not amplified. AstroSharp inference added about 32
-seconds for a 1296 x 2304 image on the development machine.
-
-The raw unprotected donor is retained as `astrosharp_raw.tif` in the job
-folder for auditing. It is never used directly as the final image.
+AstroSharp is MIT-licensed. Model attribution is recorded next to the bundled
+weights in `app/models/ASTROSHARP_MODEL_ATTRIBUTION.md`.

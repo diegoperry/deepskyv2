@@ -72,6 +72,8 @@ def _chroma_denoise(rgb: np.ndarray, signal: np.ndarray, star_protect: np.ndarra
 def apply_pixinsight_narrowband_finish(
     linear_image: np.ndarray,
     log: LogCallback | None = None,
+    *,
+    detail_strength: float = 1.0,
 ) -> np.ndarray:
     """Finish a stacked RGB/duoband master with a conservative PixInsight-style flow.
 
@@ -80,6 +82,7 @@ def apply_pixinsight_narrowband_finish(
     neutralizes low-SNR chroma, protects stars, and applies local contrast only
     where extended signal is present.
     """
+    detail_strength = float(np.clip(detail_strength, 0.0, 1.0))
     source = _to_float01(linear_image)
     if source.ndim != 3 or source.shape[-1] < 3:
         return np.asarray(linear_image)
@@ -201,7 +204,14 @@ def apply_pixinsight_narrowband_finish(
     fine = result_lum - cv2.GaussianBlur(result_lum, (0, 0), 1.4)
     medium = cv2.GaussianBlur(result_lum, (0, 0), 3.0) - cv2.GaussianBlur(result_lum, (0, 0), 11.0)
     detail_gate = signal * (1.0 - star_protect) * support
-    enhanced_lum = np.clip(result_lum + (fine * 0.12 + medium * 0.20) * detail_gate, 0.0, 1.0)
+    enhanced_lum = np.clip(
+        result_lum
+        + (fine * 0.12 + medium * 0.20)
+        * detail_gate
+        * detail_strength,
+        0.0,
+        1.0,
+    )
     result = np.clip(result * (enhanced_lum / np.maximum(result_lum, 1e-6))[..., None], 0.0, 1.0)
 
     # Soft highlight compression prevents white clipping while retaining star
@@ -216,7 +226,8 @@ def apply_pixinsight_narrowband_finish(
             "Narrowband Color: PixInsight-style linked stretch, chroma-only denoise, "
             "continuous measured HOO separation, protected multiscale contrast, and star preservation applied "
             f"(black={black:.6f}, sky={sky_median:.6f}, highlight={highlight:.6f}, "
-            f"signal_mean={float(np.mean(signal)):.5f}, color_gate_mean={float(np.mean(color_gate)):.5f})."
+            f"signal_mean={float(np.mean(signal)):.5f}, color_gate_mean={float(np.mean(color_gate)):.5f}, "
+            f"detail_strength={detail_strength:.2f})."
         )
     return np.clip(np.rint(result * 65535.0), 0, 65535).astype(np.uint16)
 
