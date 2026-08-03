@@ -54,6 +54,11 @@ CHUNK_UPLOAD_BYTES = 8 * 1024 * 1024
 FREE_IMAGE_CREDITS = 5
 PAID_PLAN_LABEL = "$15/month"
 PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
+CREDIT_PACKS = {
+    "5": {"credits": 5, "price": "$5", "env": "STRIPE_CREDITS_5_PRICE_ID"},
+    "10": {"credits": 10, "price": "$9", "env": "STRIPE_CREDITS_10_PRICE_ID"},
+    "20": {"credits": 20, "price": "$15", "env": "STRIPE_CREDITS_20_PRICE_ID"},
+}
 EXPORT_LOGO_PATH = APP_ROOT / "app" / "static" / "branding" / "deepsky-export-logo.png"
 PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "https://app.deepskyprocessor.com").rstrip("/")
 
@@ -421,6 +426,11 @@ def _stripe_price_id() -> str:
     return os.getenv("STRIPE_PRICE_ID", "").strip()
 
 
+def _credit_pack_price_id(pack_key: str) -> str:
+    pack = CREDIT_PACKS.get(pack_key)
+    return os.getenv(str(pack["env"]), "").strip() if pack else ""
+
+
 def _billing_configured() -> bool:
     return bool(_supabase_url() and _supabase_service_role_key() and _stripe_secret_key() and _stripe_price_id())
 
@@ -587,7 +597,7 @@ def _consume_credit_or_require_subscription(user: AuthUser) -> tuple[dict[str, A
     if remaining <= 0:
         raise HTTPException(
             status_code=402,
-            detail="Free image credits used. Upgrade to the $15/month plan for unlimited processing.",
+            detail="No image credits remaining. Buy a credit pack or upgrade to the $15/month unlimited plan.",
         )
     consumed = _supabase_rest_request(
         "rpc/consume_free_credit",
@@ -597,7 +607,7 @@ def _consume_credit_or_require_subscription(user: AuthUser) -> tuple[dict[str, A
     if consumed is not True:
         raise HTTPException(
             status_code=402,
-            detail="Free image credits used. Upgrade to the $15/month plan for unlimited processing.",
+            detail="No image credits remaining. Buy a credit pack or upgrade to the $15/month unlimited plan.",
         )
     return _get_profile(user.id) or profile, True
 
@@ -1886,6 +1896,21 @@ def _html() -> str:
       color: #cfe0ff;
       padding: 8px 12px;
     }
+    .credit-pack-actions {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 18px 0;
+    }
+    .credit-pack-button {
+      min-height: 84px;
+      display: grid;
+      place-content: center;
+      gap: 5px;
+      text-align: center;
+    }
+    .credit-pack-button strong { color: #f7fbff; font-size: 18px; }
+    .credit-pack-button span { color: #9bb1d0; font-size: 13px; }
     .auth-panel {
       width: min(520px, 100%);
       margin: 54px auto 72px;
@@ -2444,6 +2469,7 @@ def _html() -> str:
       .previews { grid-template-columns: 1fr; }
       .preview { min-height: 280px; }
       .export-grid { grid-template-columns: 1fr; }
+      .credit-pack-actions { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -2452,6 +2478,7 @@ def _html() -> str:
     <div id="accountBar" class="account-bar" hidden>
       <span id="accountEmail"></span>
       <span id="billingStatus" class="billing-status"></span>
+      <button id="buyCredits" class="link-button" type="button" hidden>Buy credits</button>
       <button id="upgradePlan" class="link-button" type="button" hidden>Upgrade $15/mo</button>
       <button id="signOut" class="link-button" type="button">Sign out</button>
     </div>
@@ -2651,6 +2678,21 @@ def _html() -> str:
         </div>
       </div>
     </div>
+    <div id="creditPackModal" class="export-modal" hidden>
+      <div class="export-card">
+        <h2>Buy image credits</h2>
+        <p>One-time payment. Credits do not expire and no subscription is created.</p>
+        <div class="credit-pack-actions">
+          <button class="link-button credit-pack-button" type="button" data-credit-pack="5"><strong>5 images</strong><span>$5 one time</span></button>
+          <button class="link-button credit-pack-button" type="button" data-credit-pack="10"><strong>10 images</strong><span>$9 one time</span></button>
+          <button class="link-button credit-pack-button" type="button" data-credit-pack="20"><strong>20 images</strong><span>$15 one time</span></button>
+        </div>
+        <div id="creditPackError" class="export-error"></div>
+        <div class="export-actions">
+          <button id="cancelCreditPack" class="link-button" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
     <footer class="footer">
       <p><a href="/docs">Processing docs and troubleshooting guide</a> &nbsp;|&nbsp; <a href="/blog">Astrophotography blog</a></p>
       <p><a href="https://www.facebook.com/deepskyprocessor/" target="_blank" rel="noreferrer">Don't like your image output? Message us a picture of your processed image and the file, we will fix any issues.</a></p>
@@ -2712,7 +2754,11 @@ def _html() -> str:
     const accountBar = document.getElementById("accountBar");
     const accountEmail = document.getElementById("accountEmail");
     const billingStatus = document.getElementById("billingStatus");
+    const buyCredits = document.getElementById("buyCredits");
     const upgradePlan = document.getElementById("upgradePlan");
+    const creditPackModal = document.getElementById("creditPackModal");
+    const creditPackError = document.getElementById("creditPackError");
+    const cancelCreditPack = document.getElementById("cancelCreditPack");
     const signOut = document.getElementById("signOut");
     const authPanel = document.getElementById("authPanel");
     const authIntroTitle = authPanel.querySelector("h2");
@@ -2919,6 +2965,7 @@ def _html() -> str:
         void loadBillingStatus();
       } else {
         billingStatus.textContent = "";
+        buyCredits.hidden = true;
         upgradePlan.hidden = true;
       }
       if (!user) {
@@ -3033,19 +3080,22 @@ def _html() -> str:
           throw new Error(data.detail || data.error || "Billing status unavailable.");
         }
         if (data.is_paid) {
-          billingStatus.textContent = "Paid plan active";
+          billingStatus.textContent = "Unlimited plan active";
+          buyCredits.hidden = true;
           upgradePlan.textContent = "Manage plan";
           upgradePlan.dataset.billingAction = "portal";
           upgradePlan.hidden = false;
         } else {
-          const credits = Number(data.free_credits_remaining || 0);
-          billingStatus.textContent = `${credits} free image${credits === 1 ? "" : "s"} left`;
+          const credits = Number(data.image_credits_remaining ?? data.free_credits_remaining ?? 0);
+          billingStatus.textContent = `${credits} image credit${credits === 1 ? "" : "s"} left`;
+          buyCredits.hidden = false;
           upgradePlan.textContent = "Upgrade $15/mo";
           upgradePlan.dataset.billingAction = "checkout";
           upgradePlan.hidden = false;
         }
       } catch (error) {
         billingStatus.textContent = error.message || "Billing status unavailable.";
+        buyCredits.hidden = true;
         upgradePlan.hidden = true;
       } finally {
         billingStatusPromise = null;
@@ -3687,6 +3737,34 @@ def _html() -> str:
       }
     });
 
+
+    buyCredits.addEventListener("click", () => {
+      creditPackError.textContent = "";
+      creditPackModal.hidden = false;
+    });
+
+    cancelCreditPack.addEventListener("click", () => {
+      creditPackModal.hidden = true;
+    });
+
+    creditPackModal.addEventListener("click", async (event) => {
+      if (event.target === creditPackModal) {
+        creditPackModal.hidden = true;
+        return;
+      }
+      const button = event.target.closest("button[data-credit-pack]");
+      if (!button) return;
+      try {
+        creditPackError.textContent = "Opening secure checkout...";
+        creditPackModal.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+        const response = await postJsonAuthed("/api/billing/credits/checkout", { pack: button.dataset.creditPack });
+        window.location.href = response.url;
+      } catch (error) {
+        creditPackError.textContent = error.message || String(error);
+        creditPackModal.querySelectorAll("button").forEach((item) => { item.disabled = false; });
+      }
+    });
+
     downloads.addEventListener("click", async (event) => {
       const pccButton = event.target.closest("button[data-pcc-action]");
       if (pccButton) {
@@ -3940,6 +4018,7 @@ def _html() -> str:
         authClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
         const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         const queryParams = new URLSearchParams(window.location.search);
+        const returnedFromBilling = queryParams.get("billing") === "success";
         const isRecoveryUrl = hashParams.get("type") === "recovery" || queryParams.get("type") === "recovery";
         const isEmailConfirmationUrl =
           ["signup", "email_change", "magiclink"].includes(hashParams.get("type")) ||
@@ -3994,6 +4073,10 @@ def _html() -> str:
           }, 800);
         } else {
           setSignedIn(data.session);
+        }
+        if (returnedFromBilling && data.session) {
+          window.setTimeout(() => { void loadBillingStatus(); }, 2000);
+          window.setTimeout(() => { void loadBillingStatus(); cleanAuthUrl(); }, 5000);
         }
       } catch (error) {
         setAuthMessage(error.message || String(error));
@@ -4407,6 +4490,7 @@ def billing_status(user: AuthUser = Depends(require_user)) -> Any:
             "is_paid": is_paid,
             "subscription_status": profile.get("subscription_status") or "free",
             "free_credits_remaining": int(profile.get("free_credits_remaining") or 0),
+            "image_credits_remaining": int(profile.get("free_credits_remaining") or 0),
         }
     except Exception as exc:
         if isinstance(exc, HTTPException):
@@ -4444,6 +4528,59 @@ def create_billing_checkout(user: AuthUser = Depends(require_user)) -> dict[str,
     return {"url": session.url}
 
 
+@app.post("/api/billing/credits/checkout")
+def create_credit_checkout(payload: dict[str, Any], user: AuthUser = Depends(require_user)) -> dict[str, str]:
+    pack_key = str(payload.get("pack") or "")
+    pack = CREDIT_PACKS.get(pack_key)
+    price_id = _credit_pack_price_id(pack_key)
+    if not pack:
+        raise HTTPException(status_code=400, detail="Choose a valid image credit pack.")
+    if not price_id:
+        raise HTTPException(status_code=503, detail="This image credit pack is not configured yet.")
+
+    profile = _billing_profile_for(user)
+    stripe = _stripe_module()
+    customer_id = profile.get("stripe_customer_id")
+    if not customer_id:
+        customer = stripe.Customer.create(email=user.email, metadata={"user_id": user.id})
+        customer_id = customer.id
+        _update_profile(user.id, {"stripe_customer_id": customer_id, "email": user.email})
+
+    session = stripe.checkout.Session.create(
+        mode="payment",
+        customer=customer_id,
+        client_reference_id=user.id,
+        line_items=[{"price": price_id, "quantity": 1}],
+        success_url=os.getenv("STRIPE_SUCCESS_URL", "https://app.deepskyprocessor.com/process?billing=success"),
+        cancel_url=os.getenv("STRIPE_CANCEL_URL", "https://app.deepskyprocessor.com/process?billing=cancel"),
+        metadata={"user_id": user.id, "purchase_type": "image_credits", "pack": pack_key},
+    )
+    return {"url": session.url}
+
+
+def _apply_credit_purchase(session: Any) -> bool:
+    session_data = _stripe_object_to_dict(session)
+    metadata = _stripe_object_to_dict(session_data.get("metadata") or {})
+    if metadata.get("purchase_type") != "image_credits" or session_data.get("payment_status") != "paid":
+        return False
+    pack_key = str(metadata.get("pack") or "")
+    pack = CREDIT_PACKS.get(pack_key)
+    user_id = session_data.get("client_reference_id") or metadata.get("user_id")
+    session_id = session_data.get("id")
+    if not pack or not user_id or not session_id:
+        logger.warning("Ignoring incomplete Stripe credit purchase session_id=%s", session_id)
+        return False
+    granted = _supabase_rest_request(
+        "rpc/grant_image_credit_purchase",
+        method="POST",
+        payload={
+            "target_user_id": user_id,
+            "checkout_session_id": session_id,
+            "credits_to_add": int(pack["credits"]),
+        },
+    )
+    return granted is True
+
 @app.post("/api/billing/portal")
 def create_billing_portal(user: AuthUser = Depends(require_user)) -> dict[str, str]:
     profile = _billing_profile_for(user)
@@ -4474,9 +4611,12 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
 
     event_type = event["type"]
     event_object = event["data"]["object"]
-    if event_type == "checkout.session.completed":
+    if event_type in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
         session_data = _stripe_object_to_dict(event_object)
         session_metadata = _stripe_object_to_dict(session_data.get("metadata") or {})
+        if session_metadata.get("purchase_type") == "image_credits":
+            _apply_credit_purchase(event_object)
+            return {"received": True}
         user_id = session_data.get("client_reference_id") or session_metadata.get("user_id")
         customer_id = session_data.get("customer")
         subscription_id = session_data.get("subscription")

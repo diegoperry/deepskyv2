@@ -9,8 +9,11 @@ from fastapi import HTTPException
 from app.web_app import (
     AuthUser,
     _apply_subscription_update,
+    _apply_credit_purchase,
     _consume_credit_or_require_subscription,
+    create_credit_checkout,
     _is_paid_profile,
+    _html,
     _reconcile_stripe_subscription,
 )
 
@@ -33,6 +36,16 @@ class BillingEntitlementTests(unittest.TestCase):
     def setUp(self) -> None:
         self.user = AuthUser(id="user_test", email="test@example.com")
 
+    def test_credit_pack_prices_are_visible_in_processing_ui(self) -> None:
+        html = _html()
+        for marker in (
+            'id="buyCredits"',
+            'data-credit-pack="5"',
+            'data-credit-pack="10"',
+            'data-credit-pack="20"',
+            '/api/billing/credits/checkout',
+        ):
+            self.assertIn(marker, html)
     def test_only_active_or_trialing_with_future_period_is_paid(self) -> None:
         future = "2999-01-01T00:00:00Z"
         past = "2000-01-01T00:00:00Z"
@@ -121,6 +134,42 @@ class BillingEntitlementTests(unittest.TestCase):
             "rpc/consume_free_credit", method="POST", payload={"target_user_id": self.user.id}
         )
 
+    @patch("app.web_app._credit_pack_price_id", return_value="price_pack_10")
+    @patch("app.web_app._stripe_module")
+    @patch("app.web_app._billing_profile_for", return_value={"stripe_customer_id": "cus_test"})
+    def test_credit_checkout_is_one_time_and_uses_selected_price(self, _profile, stripe_module, _price) -> None:
+        stripe_module.return_value.checkout.Session.create.return_value.url = "https://checkout.test/session"
+        result = create_credit_checkout({"pack": "10"}, self.user)
+        self.assertEqual(result["url"], "https://checkout.test/session")
+        kwargs = stripe_module.return_value.checkout.Session.create.call_args.kwargs
+        self.assertEqual(kwargs["mode"], "payment")
+        self.assertEqual(kwargs["line_items"], [{"price": "price_pack_10", "quantity": 1}])
+        self.assertEqual(kwargs["metadata"]["pack"], "10")
+    @patch("app.web_app._supabase_rest_request", return_value=True)
+    def test_paid_credit_checkout_grants_fixed_pack_atomically(self, rest_request) -> None:
+        applied = _apply_credit_purchase({
+            "id": "cs_test",
+            "payment_status": "paid",
+            "client_reference_id": self.user.id,
+            "metadata": {"purchase_type": "image_credits", "pack": "10"},
+        })
+        self.assertTrue(applied)
+        rest_request.assert_called_once_with(
+            "rpc/grant_image_credit_purchase",
+            method="POST",
+            payload={"target_user_id": self.user.id, "checkout_session_id": "cs_test", "credits_to_add": 10},
+        )
+
+    @patch("app.web_app._supabase_rest_request")
+    def test_unpaid_credit_checkout_does_not_grant_credits(self, rest_request) -> None:
+        applied = _apply_credit_purchase({
+            "id": "cs_unpaid",
+            "payment_status": "unpaid",
+            "client_reference_id": self.user.id,
+            "metadata": {"purchase_type": "image_credits", "pack": "20"},
+        })
+        self.assertFalse(applied)
+        rest_request.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
