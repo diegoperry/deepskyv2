@@ -52,7 +52,7 @@ MAX_UPLOAD_BYTES = 300 * 1024 * 1024
 MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
 CHUNK_UPLOAD_BYTES = 8 * 1024 * 1024
 FREE_IMAGE_CREDITS = 5
-PAID_PLAN_LABEL = "$15/month"
+PAID_PLAN_LABEL = "$20/month"
 PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 CREDIT_PACKS = {
     "5": {"credits": 5, "price": "$5", "env": "STRIPE_CREDITS_5_PRICE_ID"},
@@ -426,6 +426,13 @@ def _stripe_price_id() -> str:
     return os.getenv("STRIPE_PRICE_ID", "").strip()
 
 
+def _stripe_checkout_price_id() -> str:
+    return os.getenv("STRIPE_CHECKOUT_PRICE_ID", "").strip() or _stripe_price_id()
+
+
+def _accepted_subscription_price_ids() -> set[str]:
+    return {price_id for price_id in (_stripe_price_id(), _stripe_checkout_price_id()) if price_id}
+
 def _credit_pack_price_id(pack_key: str) -> str:
     pack = CREDIT_PACKS.get(pack_key)
     return os.getenv(str(pack["env"]), "").strip() if pack else ""
@@ -597,7 +604,7 @@ def _consume_credit_or_require_subscription(user: AuthUser) -> tuple[dict[str, A
     if remaining <= 0:
         raise HTTPException(
             status_code=402,
-            detail="No image credits remaining. Buy a credit pack or upgrade to the $15/month unlimited plan.",
+            detail="No image credits remaining. Buy a credit pack or upgrade to the $20/month unlimited plan.",
         )
     consumed = _supabase_rest_request(
         "rpc/consume_free_credit",
@@ -607,7 +614,7 @@ def _consume_credit_or_require_subscription(user: AuthUser) -> tuple[dict[str, A
     if consumed is not True:
         raise HTTPException(
             status_code=402,
-            detail="No image credits remaining. Buy a credit pack or upgrade to the $15/month unlimited plan.",
+            detail="No image credits remaining. Buy a credit pack or upgrade to the $20/month unlimited plan.",
         )
     return _get_profile(user.id) or profile, True
 
@@ -2479,7 +2486,7 @@ def _html() -> str:
       <span id="accountEmail"></span>
       <span id="billingStatus" class="billing-status"></span>
       <button id="buyCredits" class="link-button" type="button" hidden>Buy credits</button>
-      <button id="upgradePlan" class="link-button" type="button" hidden>Upgrade $15/mo</button>
+      <button id="upgradePlan" class="link-button" type="button" hidden>Upgrade $20/mo</button>
       <button id="signOut" class="link-button" type="button">Sign out</button>
     </div>
     <section id="authPanel" class="auth-panel" hidden>
@@ -3089,7 +3096,7 @@ def _html() -> str:
           const credits = Number(data.image_credits_remaining ?? data.free_credits_remaining ?? 0);
           billingStatus.textContent = `${credits} image credit${credits === 1 ? "" : "s"} left`;
           buyCredits.hidden = false;
-          upgradePlan.textContent = "Upgrade $15/mo";
+          upgradePlan.textContent = "Upgrade $20/mo";
           upgradePlan.dataset.billingAction = "checkout";
           upgradePlan.hidden = false;
         }
@@ -4191,13 +4198,13 @@ def _apply_subscription_update(subscription: Any, *, status_override: str | None
 
 
 def _subscription_matches_price(subscription: Any) -> bool:
-    expected_price_id = _stripe_price_id()
-    if not expected_price_id:
+    accepted_price_ids = _accepted_subscription_price_ids()
+    if not accepted_price_ids:
         return True
     items = _object_get(_object_get(subscription, "items") or {}, "data") or []
     for item in items:
         price = _object_get(item, "price") or {}
-        if _object_get(price, "id") == expected_price_id:
+        if _object_get(price, "id") in accepted_price_ids:
             return True
     return False
 
@@ -4518,7 +4525,7 @@ def create_billing_checkout(user: AuthUser = Depends(require_user)) -> dict[str,
         mode="subscription",
         customer=customer_id,
         client_reference_id=user.id,
-        line_items=[{"price": _stripe_price_id(), "quantity": 1}],
+        line_items=[{"price": _stripe_checkout_price_id(), "quantity": 1}],
         allow_promotion_codes=True,
         success_url=os.getenv("STRIPE_SUCCESS_URL", "https://app.deepskyprocessor.com/process?billing=success"),
         cancel_url=os.getenv("STRIPE_CANCEL_URL", "https://app.deepskyprocessor.com/process?billing=cancel"),

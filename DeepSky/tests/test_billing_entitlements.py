@@ -15,6 +15,7 @@ from app.web_app import (
     _is_paid_profile,
     _html,
     _reconcile_stripe_subscription,
+    _subscription_matches_price,
 )
 
 
@@ -56,6 +57,12 @@ class BillingEntitlementTests(unittest.TestCase):
         self.assertFalse(_is_paid_profile({"subscription_status": "active", "current_period_end": past}))
         self.assertFalse(_is_paid_profile({"subscription_status": "active", "current_period_end": None}))
 
+    @patch("app.web_app._stripe_checkout_price_id", return_value="price_new_20")
+    @patch("app.web_app._stripe_price_id", return_value=PRICE_ID)
+    def test_legacy_and_new_subscription_prices_are_both_accepted(self, _legacy, _new) -> None:
+        self.assertTrue(_subscription_matches_price(_subscription(price_id=PRICE_ID)))
+        self.assertTrue(_subscription_matches_price(_subscription(price_id="price_new_20")))
+        self.assertFalse(_subscription_matches_price(_subscription(price_id="price_other")))
     @patch("app.web_app._stripe_price_id", return_value=PRICE_ID)
     @patch("app.web_app._update_profile")
     def test_wrong_price_webhook_revokes_paid_status(self, update_profile, _price_id) -> None:

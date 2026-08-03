@@ -47,13 +47,14 @@ Unsigned users can view the process page, but previews, processing jobs, job sta
 
 Run `deploy/supabase/billing.sql` in the Supabase SQL editor to create the billing profile, five-credit default, purchase ledger, and atomic credit functions.
 
-Stripe billing uses one $15/month unlimited subscription Price plus three one-time image-credit Prices. Set these server-side environment variables before starting the FastAPI server:
+Stripe billing uses one $20/month unlimited subscription Price plus three one-time image-credit Prices. Set these server-side environment variables before starting the FastAPI server:
 
 ```powershell
 $env:SUPABASE_SERVICE_ROLE_KEY="your-supabase-service-role-key"
 $env:STRIPE_SECRET_KEY="sk_live_or_test_..."
 $env:STRIPE_WEBHOOK_SECRET="whsec_..."
-$env:STRIPE_PRICE_ID="price_subscription_..."
+$env:STRIPE_PRICE_ID="price_legacy_15_subscription_..."
+$env:STRIPE_CHECKOUT_PRICE_ID="price_new_20_subscription_..."
 $env:STRIPE_CREDITS_5_PRICE_ID="price_5_images_..."
 $env:STRIPE_CREDITS_10_PRICE_ID="price_10_images_..."
 $env:STRIPE_CREDITS_20_PRICE_ID="price_20_images_..."
