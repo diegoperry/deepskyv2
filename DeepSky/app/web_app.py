@@ -57,7 +57,7 @@ PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 CREDIT_PACKS = {
     "5": {"credits": 5, "price": "$5", "env": "STRIPE_CREDITS_5_PRICE_ID"},
     "10": {"credits": 10, "price": "$9", "env": "STRIPE_CREDITS_10_PRICE_ID"},
-    "20": {"credits": 20, "price": "$15", "env": "STRIPE_CREDITS_20_PRICE_ID"},
+    "20": {"credits": 20, "price": "$16", "env": "STRIPE_CREDITS_20_PRICE_ID"},
 }
 EXPORT_LOGO_PATH = APP_ROOT / "app" / "static" / "branding" / "deepsky-export-logo.png"
 PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "https://app.deepskyprocessor.com").rstrip("/")
@@ -2685,7 +2685,7 @@ def _html() -> str:
         <div class="credit-pack-actions">
           <button class="link-button credit-pack-button" type="button" data-credit-pack="5"><strong>5 images</strong><span>$5 one time</span></button>
           <button class="link-button credit-pack-button" type="button" data-credit-pack="10"><strong>10 images</strong><span>$9 one time</span></button>
-          <button class="link-button credit-pack-button" type="button" data-credit-pack="20"><strong>20 images</strong><span>$15 one time</span></button>
+          <button class="link-button credit-pack-button" type="button" data-credit-pack="20"><strong>20 images</strong><span>$16 one time</span></button>
         </div>
         <div id="creditPackError" class="export-error"></div>
         <div class="export-actions">
