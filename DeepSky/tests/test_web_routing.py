@@ -461,6 +461,20 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertEqual(settings.nebula_color_separation, "Strong")
         self.assertTrue(settings.narrowband_color_enabled)
 
+    def test_starless_web_setting_is_preserved_for_all_object_types(self) -> None:
+        for object_type in ("Nebula", "Galaxy", "Star Cluster"):
+            settings = _configure_web_pipeline_settings(
+                default_settings(),
+                object_type=object_type,
+                input_mode="Auto",
+                pre_stretched=False,
+                stretch_level="Standard",
+                siril_deconvolution=False,
+                star_setting="Starless",
+                pcc_failure_policy="continue",
+            )
+            self.assertEqual(settings.star_handling_mode, "Starless")
+
     def test_non_nebula_settings_do_not_inherit_nebula_override(self) -> None:
         settings = _configure_web_pipeline_settings(
             default_settings(),
@@ -590,6 +604,8 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn("apply_pixinsight_narrowband_finish(", dedicated)
         self.assertIn("run_starnet(", dedicated)
         self.assertIn("apply_starnet_guided_narrowband_polish(", dedicated)
+        self.assertIn("starless_only_requested", dedicated)
+        self.assertIn("complete StarNet starless output", dedicated)
         self.assertIn("_apply_mild_nebula_star_core_reduction(", dedicated)
 
     def test_stacked_rgb_narrowband_script_uses_siril_split_pixelmath_and_rgbcomp(self) -> None:
@@ -609,6 +625,9 @@ class WebPipelineRoutingTests(unittest.TestCase):
 
     def test_process_page_exposes_narrowband_color_checkbox(self) -> None:
         html = process_page()
+        self.assertIn('id="starlessButton"', html)
+        self.assertIn('data.append("star_setting", starSetting)', html)
+        self.assertIn('? "Starless"', html)
         self.assertIn('id="narrowbandColor"', html)
         self.assertIn('id="narrowbandColor" name="narrowband_color" type="checkbox" checked', html)
         self.assertIn("Enabled by default. Uncheck for natural color.", html)

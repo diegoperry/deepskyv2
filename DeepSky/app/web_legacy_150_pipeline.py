@@ -2163,6 +2163,7 @@ def _run_dedicated_narrowband_pipeline(
     job_folder: Path,
     settings: AppSettings,
     write_log: LogCallback,
+    starless_only_requested: bool = False,
 ) -> dict[str, Path]:
     """Run the narrowband workflow as a complete pipeline, not a late color pass."""
     write_log(
@@ -2279,19 +2280,31 @@ def _run_dedicated_narrowband_pipeline(
     # starless pixels never enter the final canvas, avoiding blobs and hollow halos.
     polished = display_stage
     starnet_exe = find_executable(Path(settings.starnet_folder))
+    if starless_only_requested and not starnet_exe:
+        raise FileNotFoundError("Starless was requested, but the StarNet executable was not found.")
+    if starless_only_requested and min(display_stage.shape[:2]) < 512:
+        raise ValueError("Starless requires an image at least 512 pixels on its shortest side.")
     if starnet_exe and min(display_stage.shape[:2]) >= 512:
         write_log("Narrowband Color pipeline: running StarNet for stellar protection and compact-star reduction.")
         write_log(f"StarNet executable: {starnet_exe}")
         try:
             run_starnet(stretched, starless, starnet_exe, write_log)
         except Exception as exc:
+            if starless_only_requested:
+                raise RuntimeError(
+                    f"Starless failed because StarNet could not complete: {exc}"
+                ) from exc
             write_log(f"Narrowband Color StarNet protection failed; using internal compact-star reduction. Error: {exc}")
             polished = _apply_mild_nebula_star_core_reduction(display_stage, write_log)
         else:
             _log_existing_image(starless, write_log, "narrowband StarNet protection canvas")
-            polished = apply_starnet_guided_narrowband_polish(
-                display_stage, load_image(starless, write_log), write_log,
-            )
+            if starless_only_requested:
+                write_log("Starless enabled; using the complete StarNet starless output with no stellar recombination.")
+                polished = load_image(starless, write_log)
+            else:
+                polished = apply_starnet_guided_narrowband_polish(
+                    display_stage, load_image(starless, write_log), write_log,
+                )
     else:
         write_log("Narrowband Color pipeline: StarNet unavailable or image too small; using internal compact-star reduction.")
         polished = _apply_mild_nebula_star_core_reduction(display_stage, write_log)
@@ -2408,7 +2421,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         star_handling_mode = "slight"
     else:
         star_handling_mode = "standard"
-    if object_type == "star_cluster" and star_handling_mode != "standard":
+    if object_type == "star_cluster" and star_handling_mode == "slight":
         write_log("Star Cluster mode preserves the star field; forcing star settings to standard.")
         star_handling_mode = "standard"
     starless_test_requested = star_handling_mode in {"slight", "starless"}
@@ -2465,6 +2478,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
             job_folder=job_folder,
             settings=settings,
             write_log=write_log,
+            starless_only_requested=starless_only_requested,
         )
     gradient_galaxy_siril = False
     gradient_galaxy_spread = 0.0

@@ -2021,6 +2021,12 @@ def _html() -> str:
       background: rgba(246, 196, 83, .14);
       color: #ffe3a0;
     }
+    .starless-button[aria-pressed="true"] {
+      border-color: rgba(110, 161, 255, .9);
+      background: rgba(47, 111, 229, .22);
+      color: #e4eeff;
+      box-shadow: 0 0 0 3px rgba(47, 111, 229, .12);
+    }
     .select {
       display: grid;
       gap: 7px;
@@ -2557,6 +2563,7 @@ def _html() -> str:
             <option value="Aggressive">Aggressive</option>
           </select>
         </label>
+        <button id="starlessButton" class="mode starless-button" type="button" aria-pressed="false" title="Remove the complete detected star layer with StarNet and do not recombine stars.">Starless</button>
         <button id="run" class="cta" disabled>Run Full Pipeline</button>
       </div>
       <div class="pipeline-labels" id="nebulaPipelineLabels">
@@ -2716,6 +2723,7 @@ def _html() -> str:
     const objectType = document.getElementById("objectType");
     const inputMode = document.getElementById("inputMode");
     const stretchLevel = document.getElementById("stretchLevel");
+    const starlessButton = document.getElementById("starlessButton");
     const nebulaPipelineLabels = document.getElementById("nebulaPipelineLabels");
     const narrowbandColorOption = document.getElementById("narrowbandColorOption");
     const narrowbandColor = document.getElementById("narrowbandColor");
@@ -2821,7 +2829,7 @@ def _html() -> str:
     function currentFileKey() {
       if (!selectedFile) return "";
       const cropKey = cropSelection ? `${cropSelection.x.toFixed(4)},${cropSelection.y.toFixed(4)},${cropSelection.width.toFixed(4)},${cropSelection.height.toFixed(4)}` : "full";
-      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}:${narrowbandColor.checked ? "narrowband" : "natural"}:${cropKey}`;
+      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}:${narrowbandColor.checked ? "narrowband" : "natural"}:${starlessButton.getAttribute("aria-pressed") === "true" ? "starless" : "stars"}:${cropKey}`;
     }
 
     function currentModeNeedsPcc() {
@@ -3614,6 +3622,16 @@ def _html() -> str:
       }
     });
     objectType.addEventListener("change", syncObjectControls);
+    starlessButton.addEventListener("click", () => {
+      const enabled = starlessButton.getAttribute("aria-pressed") !== "true";
+      starlessButton.setAttribute("aria-pressed", enabled ? "true" : "false");
+      starlessButton.classList.toggle("active", enabled);
+      starlessButton.textContent = enabled ? "Starless · On" : "Starless";
+      warningEl.style.display = "block";
+      warningEl.textContent = enabled
+        ? "Starless is enabled. DeepSky will remove the complete detected star layer with StarNet and will not recombine stars."
+        : "Starless is off. The normal stellar finish will be used.";
+    });
     sirilDeconvolution.addEventListener("change", updatePccWarningState);
     pccCancel.addEventListener("click", () => {
       pccWarningCanceledKey = currentFileKey();
@@ -3969,8 +3987,9 @@ def _html() -> str:
         "siril_deconvolution",
         selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
       );
-      const starSetting =
-        selectedObjectType === "Galaxy" ? "Slight Star Reduction" : "Standard";
+      const starSetting = starlessButton.getAttribute("aria-pressed") === "true"
+        ? "Starless"
+        : selectedObjectType === "Galaxy" ? "Slight Star Reduction" : "Standard";
       data.append("star_setting", starSetting);
       data.append("starless_test", "false");
       data.append("pre_stretched", inputMode.value === "Pre-stretched" ? "true" : "false");
@@ -4302,7 +4321,9 @@ def _configure_web_pipeline_settings(
     else:
         settings.pcc_failure_policy = pcc_failure_policy
         settings.star_handling_mode = (
-            "Standard"
+            "Starless"
+            if selected_object == "Star Cluster" and star_setting == "Starless"
+            else "Standard"
             if selected_object == "Star Cluster"
             else star_setting if star_setting in {"Standard", "Slight Star Reduction", "Starless"} else "Slight Star Reduction"
         )
@@ -4894,6 +4915,10 @@ async def create_job(
         if selected_object_type == "Galaxy":
             jobs[job_id].warnings.append(
                 "Slight Star Reduction is enabled for this run. DeepSky will reduce the star layer while preserving the target."
+            )
+        if star_setting == "Starless":
+            jobs[job_id].warnings.append(
+                "Starless is enabled. DeepSky will run StarNet and will not recombine the detected star layer."
             )
         if selected_object_type == "Nebula":
             jobs[job_id].warnings.append(
