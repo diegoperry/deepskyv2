@@ -61,6 +61,8 @@ class DataScoreTests(unittest.TestCase):
         self.assertIn('id="dataScoreValue"', html)
         self.assertIn("renderDataScore(preview.data_score)", html)
         self.assertIn("Capture Data Score", html)
+        self.assertIn("dataScoreFactors.replaceChildren()", html)
+        self.assertNotIn("escapeHtml(factor)", html)
 
 
 if __name__ == "__main__":

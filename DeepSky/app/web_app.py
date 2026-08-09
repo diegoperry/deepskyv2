@@ -2786,7 +2786,12 @@ def _html() -> str:
       dataScoreFill.style.width = `${score}%`;
       dataScoreSummary.textContent = result.summary || "Capture quality measured.";
       dataScoreRecommendation.textContent = result.recommendation || "";
-      dataScoreFactors.innerHTML = (result.factors || []).map((factor) => `<li>${escapeHtml(factor)}</li>`).join("");
+      dataScoreFactors.replaceChildren();
+      (result.factors || []).forEach((factor) => {
+        const item = document.createElement("li");
+        item.textContent = String(factor);
+        dataScoreFactors.appendChild(item);
+      });
       dataScorePanel.hidden = false;
     }
 
