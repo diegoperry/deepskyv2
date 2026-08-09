@@ -4865,7 +4865,7 @@ async def create_job(
                 )
         elif selected_object_type == "Galaxy" and selected_narrowband_color:
             jobs[job_id].warnings.append(
-                "Galaxy Narrowband Color is enabled. DeepSky will calibrate and denoise first, run protected deconvolution, finish only the starless galaxy signal, then restore the original stars."
+                "Galaxy Narrowband Color is enabled. DeepSky will calibrate and denoise first, optionally apply deconvolution when selected and supported by the data, finish only the starless galaxy signal, then restore the original stars."
             )
     executor.submit(
         _run_job,

@@ -49,6 +49,7 @@ from app.web_legacy_150_pipeline import (
     PipelineMode as WebLegacyPipelineMode,
     _orient_like_reference as orient_web_pipeline_like_reference,
     _prepare_narrowband_starnet_input,
+    _needs_low_signal_galaxy_safety as _needs_web_low_signal_galaxy_safety,
     _run_dedicated_narrowband_pipeline,
     _should_run_early_nebula_deepsnr,
     run_pipeline as expected_web_legacy_150_pipeline,
@@ -78,6 +79,29 @@ class WebPipelineRoutingTests(unittest.TestCase):
             self.assertEqual(_needs_low_signal_galaxy_safety(long, compact, "galaxy"), (False, 1800.0))
             self.assertEqual(_needs_low_signal_galaxy_safety(short, strong, "galaxy"), (False, None))
             self.assertEqual(_needs_low_signal_galaxy_safety(short, compact, "nebula"), (False, None))
+
+    def test_production_web_galaxy_route_protects_only_short_weak_stacks(self) -> None:
+        compact = SimpleNamespace(metrics={"raw_p999": 0.0217, "bright_fraction": 0.00012})
+        strong = SimpleNamespace(metrics={"raw_p999": 0.0800, "bright_fraction": 0.00200})
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            short = root / "short.fit"
+            long = root / "long.fit"
+            for path, count in ((short, 20), (long, 180)):
+                hdu = fits.PrimaryHDU(np.zeros((3, 8, 8), dtype=np.uint16))
+                hdu.header["EXPTIME"] = 10.0
+                hdu.header["STACKCNT"] = count
+                hdu.writeto(path)
+
+            self.assertEqual(_needs_web_low_signal_galaxy_safety(short, compact, "galaxy"), (True, 200.0))
+            self.assertEqual(_needs_web_low_signal_galaxy_safety(long, compact, "galaxy"), (False, 1800.0))
+            self.assertEqual(_needs_web_low_signal_galaxy_safety(short, strong, "galaxy"), (False, None))
+
+        route = inspect.getsource(run_web_legacy_150_pipeline)
+        self.assertNotIn("protected Siril deconvolution forced on", route)
+        self.assertIn("galaxy_narrowband_requested and not low_signal_galaxy_safety", route)
+        self.assertIn("final.exists() and not low_signal_galaxy_safety", route)
+
     def test_finished_job_displays_native_png_instead_of_downsampled_preview(self) -> None:
         job = WebJob(
             id="native-preview",

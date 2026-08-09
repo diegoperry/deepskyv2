@@ -10,6 +10,7 @@ from typing import Callable
 
 import cv2
 import numpy as np
+from astropy.io import fits
 
 from .astrosharp_native import apply_astrosharp_native_dual
 from .cli_tools import find_executable, run_deepsnr, run_starnet
@@ -1503,6 +1504,26 @@ def _is_compact_siril_galaxy(analysis: object | None) -> bool:
     return raw_p999 < 0.025 and bright_fraction < 0.00025
 
 
+def _needs_low_signal_galaxy_safety(
+    source: Path,
+    analysis: object | None,
+    object_type: str,
+) -> tuple[bool, float | None]:
+    """Protect only objectively short, compact galaxy stacks."""
+    if object_type != "galaxy" or not _is_compact_siril_galaxy(analysis):
+        return False, None
+    total_seconds: float | None = None
+    if source.suffix.lower() in {".fit", ".fits", ".fts"}:
+        try:
+            header = fits.getheader(source)
+            exposure = float(header.get("EXPTIME", 0.0) or 0.0)
+            stack_count = float(header.get("STACKCNT", 0.0) or 0.0)
+            if exposure > 0.0 and stack_count > 0.0:
+                total_seconds = exposure * stack_count
+        except (OSError, TypeError, ValueError):
+            total_seconds = None
+    return bool(total_seconds is not None and total_seconds <= 600.0), total_seconds
+
 def _needs_gentle_nebula_star_reduction(analysis: object | None, image: np.ndarray) -> bool:
     metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
     raw_p999 = float(metrics.get("raw_p999", 0.0))
@@ -2465,14 +2486,28 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     use_natural_nebula_pipeline = mode == PipelineMode.FULL and object_type == "nebula"
     narrowband_color_requested = bool(getattr(settings, "narrowband_color_enabled", False)) and object_type == "nebula"
     galaxy_narrowband_requested = bool(getattr(settings, "narrowband_color_enabled", False)) and object_type == "galaxy"
-    if galaxy_narrowband_requested:
-        settings.siril_deconvolution_enabled = True
-        siril_deconvolution_requested = True
-        write_log("Galaxy Narrowband Color: protected Siril deconvolution forced on for this route.")
+    low_signal_galaxy_safety, galaxy_integration_seconds = _needs_low_signal_galaxy_safety(
+        original,
+        analysis,
+        object_type,
+    )
+    if low_signal_galaxy_safety and siril_deconvolution_requested:
+        siril_deconvolution_requested = False
+        settings.siril_deconvolution_enabled = False
         write_log(
-            "Galaxy Narrowband Color pipeline selected: Siril calibration -> mandatory protected "
+            "Low-signal galaxy safety: skipped deconvolution for a compact short-integration stack "
+            f"({galaxy_integration_seconds:.0f}s total) to prevent nucleus ringing and false contours."
+        )
+    if galaxy_narrowband_requested:
+        write_log(
+            "Galaxy Narrowband Color pipeline selected: Siril calibration -> optional protected "
             "deconvolution -> DeepSNR -> StarNet separation -> signal-aware starless color -> star recomposition."
         )
+        if low_signal_galaxy_safety:
+            write_log(
+                "Low-signal galaxy safety: using conservative broadband color and nucleus handling; "
+                "automatic Narrowband Color will not invent unsupported structure."
+            )
     if object_type == "nebula":
         write_log("Nebula audit: using one calibrated nebula pipeline; no object-specific color branches.")
         if weak_snr_nebula_raw:
@@ -2545,7 +2580,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         mode == PipelineMode.SIRIL
         or (mode == PipelineMode.FULL and use_prestretched)
         or gradient_galaxy_siril
-        or (mode == PipelineMode.FULL and galaxy_narrowband_requested)
+        or (mode == PipelineMode.FULL and galaxy_narrowband_requested and not low_signal_galaxy_safety)
         or (mode == PipelineMode.FULL and siril_deconvolution_requested)
         or bool(nebula_auto_pcc_command)
         or bool(galaxy_auto_pcc_command)
@@ -3006,7 +3041,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless, write_log, "starless.tif")
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
-        if galaxy_narrowband_requested:
+        if galaxy_narrowband_requested and not low_signal_galaxy_safety:
             write_log(
                 "Galaxy Narrowband Color: grading the StarNet starless galaxy before untouched star recomposition."
             )
@@ -3207,7 +3242,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     elif starless_test_requested and skip_siril_galaxy_star_reduction:
         write_log("Star reduction skipped for compact Siril deconvolution galaxy finish to preserve detail.")
 
-    if galaxy_narrowband_requested and final.exists():
+    if galaxy_narrowband_requested and final.exists() and not low_signal_galaxy_safety:
         write_log("Correcting galaxy nucleus after StarNet recomposition and restoring deconvolution detail.")
         core_finished = finish_recomposed_galaxy_core(
             load_image(final, write_log),
