@@ -36,11 +36,13 @@ jobs:
             try {
               $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/process" -UseBasicParsing -TimeoutSec 20
               Write-Host "DeepSky localhost status: $($response.StatusCode)"
-              $hasNarrowbandCheckbox = $response.Content.Contains('id="narrowbandColor" name="narrowband_color" type="checkbox"')
+              $hasAutomaticNarrowband = $response.Content.Contains('data.append("narrowband_color", selectedObjectType === "Nebula" || selectedObjectType === "Galaxy" ? "true" : "false");')
+              $hasNarrowbandCheckbox = $response.Content.Contains('id="narrowbandColor"')
               $hasRemovedPixelButton = $response.Content.Contains('data-restore-kind="pixel"')
+              Write-Host "Automatic Narrowband Color present: $hasAutomaticNarrowband"
               Write-Host "Narrowband checkbox present: $hasNarrowbandCheckbox"
               Write-Host "Legacy Pixel Restoration button present: $hasRemovedPixelButton"
-              return $response.StatusCode -eq 200 -and $hasNarrowbandCheckbox -and -not $hasRemovedPixelButton
+              return $response.StatusCode -eq 200 -and $hasAutomaticNarrowband -and -not $hasNarrowbandCheckbox -and -not $hasRemovedPixelButton
             } catch {
               Write-Host "DeepSky health check failed: $($_.Exception.Message)"
               return $false
