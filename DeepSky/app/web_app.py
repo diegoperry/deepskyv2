@@ -2114,57 +2114,7 @@ def _html() -> str:
       font-size: 13px;
       line-height: 1.45;
     }
-    .narrowband-check {
-      position: relative;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-height: 56px;
-      border: 1px solid #355b91;
-      border-radius: 11px;
-      background: #0b1628;
-      padding: 12px 14px;
-      cursor: pointer;
-      user-select: none;
-    }
-    .narrowband-check input {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      opacity: 0;
-    }
-    .narrowband-checkmark {
-      width: 24px;
-      height: 24px;
-      flex: 0 0 24px;
-      display: grid;
-      place-items: center;
-      border: 2px solid #6f93c7;
-      border-radius: 6px;
-      background: #07111f;
-      color: white;
-      font-size: 17px;
-      font-weight: 900;
-      line-height: 1;
-    }
-    .narrowband-check input:checked + .narrowband-checkmark {
-      border-color: #70a7ff;
-      background: #286bd8;
-      box-shadow: 0 0 0 3px rgba(69, 132, 236, .22);
-    }
-    .narrowband-check input:checked + .narrowband-checkmark::after { content: "✓"; }
-    .narrowband-check input:focus-visible + .narrowband-checkmark {
-      outline: 3px solid rgba(112, 167, 255, .42);
-      outline-offset: 2px;
-    }
-    .narrowband-check-copy { display: flex; flex-direction: column; gap: 3px; }
-    .narrowband-check-copy strong { color: #f7fbff; font-size: 14px; }
-    .narrowband-check-copy small {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 600;
-      line-height: 1.35;
-    }    .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
+    .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
     .warning {
       display: none;
       width: min(720px, 100%);
@@ -2573,22 +2523,10 @@ def _html() -> str:
       </div>
       <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
         <h3>Galaxy deconvolution</h3>
-        <p>Included automatically with Galaxy Narrowband Color to recover arm and dust-lane structure while protecting stars, sky, and bright nuclei.</p>
+        <p>Optionally recover arm and dust-lane structure while protecting stars, sky, and bright nuclei. Narrowband Color remains automatic whether this is enabled or disabled.</p>
         <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
           <input id="sirilDeconvolution" type="checkbox" checked />
           Use deconvolution
-        </label>
-      </div>
-      <div class="detail-option" id="narrowbandColorOption">
-        <h3>Narrowband Color</h3>
-        <p>Apply signal-aware galaxy or nebula color while protecting neutral background, structural luminance, white galaxy cores, and original star colors.</p>
-        <label class="narrowband-check" title="Apply Narrowband Color to this nebula or galaxy run.">
-          <input id="narrowbandColor" name="narrowband_color" type="checkbox" checked />
-          <span class="narrowband-checkmark" aria-hidden="true"></span>
-          <span class="narrowband-check-copy">
-            <strong>Apply Narrowband Color</strong>
-            <small>Enabled by default. Uncheck for natural color.</small>
-          </span>
         </label>
       </div>
       <div id="warning" class="warning"></div>
@@ -2726,8 +2664,6 @@ def _html() -> str:
     const stretchLevel = document.getElementById("stretchLevel");
     const starlessButton = document.getElementById("starlessButton");
     const nebulaPipelineLabels = document.getElementById("nebulaPipelineLabels");
-    const narrowbandColorOption = document.getElementById("narrowbandColorOption");
-    const narrowbandColor = document.getElementById("narrowbandColor");
     const galaxyDeconvolutionOption = document.getElementById("galaxyDeconvolutionOption");
     const sirilDeconvolution = document.getElementById("sirilDeconvolution");
     const statusEl = document.getElementById("status");
@@ -2820,8 +2756,6 @@ def _html() -> str:
       const isNebula = objectType.value === "Nebula";
       const isGalaxy = objectType.value === "Galaxy";
       if (nebulaPipelineLabels) nebulaPipelineLabels.hidden = !isNebula;
-      if (narrowbandColorOption) narrowbandColorOption.hidden = !(isNebula || isGalaxy);
-      if (narrowbandColor) narrowbandColor.checked = isNebula || isGalaxy;
       if (galaxyDeconvolutionOption) galaxyDeconvolutionOption.hidden = !isGalaxy;
       if (!isGalaxy && sirilDeconvolution) sirilDeconvolution.checked = false;
       updatePccWarningState();
@@ -2830,7 +2764,7 @@ def _html() -> str:
     function currentFileKey() {
       if (!selectedFile) return "";
       const cropKey = cropSelection ? `${cropSelection.x.toFixed(4)},${cropSelection.y.toFixed(4)},${cropSelection.width.toFixed(4)},${cropSelection.height.toFixed(4)}` : "full";
-      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}:${narrowbandColor.checked ? "narrowband" : "natural"}:${starlessButton.getAttribute("aria-pressed") === "true" ? "starless" : "stars"}:${cropKey}`;
+      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}:narrowband:${starlessButton.getAttribute("aria-pressed") === "true" ? "starless" : "stars"}:${cropKey}`;
     }
 
     function currentModeNeedsPcc() {
@@ -3980,12 +3914,7 @@ def _html() -> str:
       data.append("input_mode", inputMode.value);
       data.append("stretch_level", stretchLevel.value);
       data.append("nebula_color_separation", selectedObjectType === "Nebula" ? "Strong" : "Balanced");
-      data.append(
-        "narrowband_color",
-        (selectedObjectType === "Nebula" || selectedObjectType === "Galaxy") && narrowbandColor.checked
-          ? "true"
-          : "false"
-      );
+      data.append("narrowband_color", selectedObjectType === "Nebula" || selectedObjectType === "Galaxy" ? "true" : "false");
       data.append(
         "siril_deconvolution",
         selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
@@ -4305,10 +4234,10 @@ def _configure_web_pipeline_settings(
     settings.prestretched_input = mode == "Pre-stretched"
     settings.object_type = selected_object
     settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
-    settings.siril_deconvolution_enabled = selected_object == "Galaxy" and (bool(siril_deconvolution) or bool(narrowband_color))
-    settings.color_calibration_mode = "Basic" if selected_object == "Nebula" or settings.siril_deconvolution_enabled or (selected_object == "Galaxy" and narrowband_color) else "Off"
+    settings.siril_deconvolution_enabled = selected_object == "Galaxy" and bool(siril_deconvolution)
+    settings.color_calibration_mode = "Basic" if selected_object in {"Nebula", "Galaxy"} else "Off"
     settings.nebula_color_separation = "Strong" if selected_object == "Nebula" else "Balanced"
-    settings.narrowband_color_enabled = selected_object in {"Nebula", "Galaxy"} and bool(narrowband_color)
+    settings.narrowband_color_enabled = selected_object in {"Nebula", "Galaxy"}
 
     # Nebula processing is deliberately one route: measured RGB, the protected
     # auto stretch, one DeepSNR pass, one StarNet pass, and one recomposition.

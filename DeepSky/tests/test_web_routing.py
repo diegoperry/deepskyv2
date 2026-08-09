@@ -554,7 +554,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         finished_color = finished[64, 72] / np.max(finished[64, 72])
         self.assertLess(float(np.max(np.abs(finished_color - source_color))), 0.015)
 
-    def test_narrowband_color_defaults_on_for_nebula_and_galaxy_and_can_be_disabled(self) -> None:
+    def test_narrowband_color_is_always_on_for_nebula_and_galaxy(self) -> None:
         nebula = _configure_web_pipeline_settings(
             default_settings(),
             object_type="Nebula",
@@ -589,8 +589,8 @@ class WebPipelineRoutingTests(unittest.TestCase):
 
         self.assertTrue(nebula.narrowband_color_enabled)
         self.assertTrue(galaxy.narrowband_color_enabled)
-        self.assertTrue(galaxy.siril_deconvolution_enabled)
-        self.assertFalse(natural_nebula.narrowband_color_enabled)
+        self.assertFalse(galaxy.siril_deconvolution_enabled)
+        self.assertTrue(natural_nebula.narrowband_color_enabled)
         self.assertFalse(default_settings().narrowband_color_enabled)
 
     def test_narrowband_checkbox_selects_a_dedicated_end_to_end_pipeline(self) -> None:
@@ -624,28 +624,18 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('$deepsky_nb_ha$ * 0.18 + $deepsky_nb_oiii$ * 0.82', commands)
         self.assertIn("rgbcomp deepsky_nb_ha deepsky_nb_hoo_green deepsky_nb_oiii", commands)
 
-    def test_process_page_exposes_narrowband_color_checkbox(self) -> None:
+    def test_process_page_applies_narrowband_color_automatically(self) -> None:
         html = process_page()
         self.assertIn('id="starlessButton"', html)
         self.assertIn('data.append("star_setting", starSetting)', html)
-        self.assertIn('? "Starless"', html)
-        self.assertIn('id="narrowbandColor"', html)
-        self.assertIn('id="narrowbandColor" name="narrowband_color" type="checkbox" checked', html)
-        self.assertIn("Enabled by default. Uncheck for natural color.", html)
-        self.assertIn("galaxy or nebula color", html)
-        self.assertIn('name="narrowband_color"', html)
-        self.assertIn('class="narrowband-checkmark"', html)
-        self.assertIn('input:checked + .narrowband-checkmark::after', html)
-        self.assertIn('data.append(\n        "narrowband_color"', html)
-
+        self.assertNotIn('id="narrowbandColor"', html)
+        self.assertNotIn('id="narrowbandColorOption"', html)
+        self.assertNotIn('name="narrowband_color" type="checkbox"', html)
         self.assertIn(
-            '(selectedObjectType === "Nebula" || selectedObjectType === "Galaxy") && narrowbandColor.checked',
+            'data.append("narrowband_color", selectedObjectType === "Nebula" || selectedObjectType === "Galaxy" ? "true" : "false");',
             html,
         )
-        self.assertLess(
-            html.index('id="galaxyDeconvolutionOption"'),
-            html.index('id="narrowbandColorOption"'),
-        )
+        self.assertIn('id="galaxyDeconvolutionOption"', html)
     def test_process_page_exposes_preprocessing_crop_editor(self) -> None:
         html = process_page()
         self.assertIn('id="cropButton"', html)
