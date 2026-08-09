@@ -101,6 +101,8 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertNotIn("protected Siril deconvolution forced on", route)
         self.assertIn("galaxy_narrowband_requested and not low_signal_galaxy_safety", route)
         self.assertIn("final.exists() and not low_signal_galaxy_safety", route)
+        self.assertIn("or low_signal_galaxy_safety", route)
+        self.assertIn("skipping catalog PCC/Siril calibration", route)
         worker = inspect.getsource(_run_job)
         self.assertIn('settings.siril_deconvolution_enabled = object_type == "Galaxy" and bool(siril_deconvolution)', worker)
         self.assertIn("Narrowband Color cannot enable it", worker)

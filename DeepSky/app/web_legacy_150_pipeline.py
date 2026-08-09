@@ -2546,7 +2546,15 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
 
     nebula_auto_pcc_command = None
     galaxy_auto_pcc_command = None
-    skip_catalog_pcc = getattr(settings, "pcc_failure_policy", "continue") == "continue_without_pcc"
+    skip_catalog_pcc = (
+        getattr(settings, "pcc_failure_policy", "continue") == "continue_without_pcc"
+        or low_signal_galaxy_safety
+    )
+    if low_signal_galaxy_safety and settings.color_calibration_mode != "Off":
+        write_log(
+            "Low-signal galaxy safety: skipping catalog PCC/Siril calibration; "
+            "using the protected broadband route to avoid false nucleus structure."
+        )
     if mode == PipelineMode.FULL and object_type == "nebula" and settings.color_calibration_mode != "Off" and not skip_catalog_pcc:
         nebula_auto_pcc_command = build_siril_pcc_command(
             catalog_calibration_input,
