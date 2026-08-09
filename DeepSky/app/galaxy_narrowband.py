@@ -24,6 +24,8 @@ def apply_galaxy_narrowband_finish(
     starless_image: np.ndarray,
     color_reference: np.ndarray,
     log: LogCallback | None = None,
+    *,
+    detail_reference: np.ndarray | None = None,
 ) -> np.ndarray:
     """Finish a deconvolved starless galaxy without false-color painting."""
     base = _float01(starless_image)
@@ -43,21 +45,64 @@ def apply_galaxy_narrowband_finish(
     signal = cv2.GaussianBlur((signal ** 0.72).astype(np.float32), (0, 0), 5.0)
 
     core_start = float(np.percentile(lum[signal > 0.08], 86.0)) if np.any(signal > 0.08) else 0.65
-    core = np.clip((lum - core_start) / max(1.0 - core_start, 0.08), 0.0, 1.0)
-    core = cv2.GaussianBlur(core.astype(np.float32), (0, 0), 2.2)
-    rolled = lum - 0.30 * signal * core * lum * lum
+    core_excess = np.maximum(lum - core_start, 0.0)
+    rolled = lum - signal * 0.22 * core_excess * core_excess / (core_excess + 0.10)
     fine = lum - cv2.GaussianBlur(lum, (0, 0), 1.15)
     medium = cv2.GaussianBlur(lum, (0, 0), 1.4) - cv2.GaussianBlur(lum, (0, 0), 5.2)
-    structure = np.clip(fine * 0.34 + medium * 0.72, -0.018, 0.030)
-    out_lum = np.clip(rolled + structure * signal * (1.0 - core * 0.78), 0.0, 1.0)
+    structure = np.clip(fine * 0.46 + medium * 0.92, -0.020, 0.036)
+    out_lum = np.clip(rolled + structure * signal, 0.0, 1.0)
 
+    decon_detail_used = False
+    if detail_reference is not None:
+        detail_rgb = _float01(detail_reference)
+        if detail_rgb.shape == base.shape:
+            detail_lum = _luminance(detail_rgb).astype(np.float32)
+            scale = max(float(np.percentile(detail_lum, 99.85)), 1e-4)
+            detail_lum = np.arcsinh(np.clip(detail_lum / scale, 0.0, 6.0) * 2.2) / np.arcsinh(2.2)
+            detail_lum = np.clip(detail_lum, 0.0, 1.0)
+            decon_fine = detail_lum - cv2.GaussianBlur(detail_lum, (0, 0), 1.0)
+            decon_medium = cv2.GaussianBlur(detail_lum, (0, 0), 1.3) - cv2.GaussianBlur(
+                detail_lum, (0, 0), 4.5
+            )
+            source_fine = lum - cv2.GaussianBlur(lum, (0, 0), 1.0)
+            recovered = np.clip(
+                decon_fine * 0.38 + decon_medium * 0.60 - source_fine * 0.08,
+                -0.014,
+                0.034,
+            )
+            stellar_peak = np.clip(
+                decon_fine / max(float(np.percentile(decon_fine, 99.65)), 1e-5) - 1.0,
+                0.0,
+                1.0,
+            )
+            stellar_peak = cv2.GaussianBlur(
+                cv2.dilate(stellar_peak.astype(np.float32), np.ones((3, 3), np.uint8)),
+                (0, 0),
+                1.0,
+            )
+            bright_protect = np.clip((lum - 0.86) / 0.12, 0.0, 1.0)
+            out_lum = np.clip(
+                out_lum + recovered * signal * (1.0 - bright_protect * 0.75) * (1.0 - stellar_peak * 0.92),
+                0.0,
+                1.0,
+            )
+            decon_detail_used = True
+
+    base_chroma = base - raw_lum[..., None]
+    base_chroma -= _luminance(base_chroma)[..., None]
     ref_chroma = reference - ref_lum[..., None]
     ref_chroma -= _luminance(ref_chroma)[..., None]
     measured = np.max(np.abs(ref_chroma), axis=2)
     confidence = np.clip(measured / max(float(np.percentile(measured, 98.8)), 0.006), 0.0, 1.0)
     confidence = cv2.GaussianBlur(confidence.astype(np.float32), (0, 0), 1.2)
-    chroma_gain = 0.18 + signal * (1.12 + 0.48 * confidence)
-    chroma = ref_chroma * chroma_gain[..., None]
+    chroma_gain = 0.06 + signal * (0.66 + 0.18 * confidence)
+    chroma = base_chroma * chroma_gain[..., None] + ref_chroma * (signal * 0.08)[..., None]
+    nucleus = cv2.GaussianBlur(
+        np.clip((out_lum - core_start) / max(0.72 - core_start, 0.12), 0.0, 1.0).astype(np.float32),
+        (0, 0),
+        1.3,
+    )
+    chroma *= (1.0 - nucleus * 0.58)[..., None]
     chroma_limit = np.minimum(0.105, 0.010 + measured * 1.72)
     chroma = np.clip(chroma, -chroma_limit[..., None], chroma_limit[..., None])
     chroma -= _luminance(chroma)[..., None]
@@ -71,7 +116,8 @@ def apply_galaxy_narrowband_finish(
             "Applied highlight-safe measured-color galaxy finish to deconvolved StarNet layer: "
             f"signal_mean={float(np.mean(signal)):.5f}, sky_shift={sky_shift:.5f}, core_start={core_start:.5f}, "
             f"luminance_p999={float(np.percentile(out_lum, 99.9)):.5f}; "
-            "background neutralized and stars excluded from grading."
+            f"post-denoise_decon_detail={str(decon_detail_used).lower()}; "
+            "native starless texture retained, background neutralized, stars excluded from grading."
         )
     return np.clip(output * 65535.0 + 0.5, 0, 65535).astype(np.uint16)
 

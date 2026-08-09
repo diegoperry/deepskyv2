@@ -1964,8 +1964,8 @@ def _run_siril_calibration(
             apply_scnr=settings.siril_apply_scnr,
             color_saturation=settings.siril_color_saturation,
             enable_deconvolution=True,
-            deconvolution_iterations=14,
-            deconvolution_alpha=1800,
+            deconvolution_iterations=18,
+            deconvolution_alpha=2200,
         )
         write_log(f"Siril deconvolution layer script: {deconvolution_script}")
         try:
@@ -3010,6 +3010,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
                 load_image(starless, write_log),
                 load_image(current, write_log),
                 write_log,
+                detail_reference=(
+                    load_image(job_folder / "siril_deconvolved.fit", write_log)
+                    if (job_folder / "siril_deconvolved.fit").exists()
+                    else None
+                ),
             )
             save_tiff(starless, galaxy_narrowband, write_log)
             _log_existing_image(starless, write_log, "galaxy narrowband starless.tif")
