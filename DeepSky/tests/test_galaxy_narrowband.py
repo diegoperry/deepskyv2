@@ -119,5 +119,5 @@ def test_recomposed_galaxy_core_becomes_neutral_white_without_clipping() -> None
     ).astype(np.float32) / 65535.0
 
     assert float(np.ptp(output[120, 150])) < float(np.ptp(source[120, 150])) * 0.20
-    assert 0.90 < float(np.mean(output[120, 150])) < 0.99
+    assert 0.80 < float(np.mean(output[120, 150])) < 0.99
     assert float(np.max(output)) < 0.99

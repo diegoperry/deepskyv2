@@ -181,8 +181,10 @@ def finish_recomposed_galaxy_core(
     smooth = cv2.GaussianBlur(lum, (0, 0), 3.0)
     selected = smooth[galaxy > 0.18]
     core_start = float(np.percentile(selected, 87.0)) if selected.size else 0.72
-    core = np.clip((smooth - core_start) / max(0.86 - core_start, 0.10), 0.0, 1.0)
+    core_high = float(np.percentile(selected, 99.7)) if selected.size else 0.92
+    core = np.clip((smooth - core_start) / max(core_high - core_start, 0.04), 0.0, 1.0)
     core = cv2.GaussianBlur((core * galaxy).astype(np.float32), (0, 0), 2.0)
+    core /= max(float(np.max(core)), 1e-5)
 
     shoulder = 0.76
     excess = np.maximum(lum - shoulder, 0.0)
@@ -212,6 +214,9 @@ def finish_recomposed_galaxy_core(
             out_lum = np.clip(out_lum + detail * galaxy * (1.0 - core * 0.45), 0.0, 1.0)
             detail_used = True
 
+    white_nucleus = core**2.40
+    out_lum += white_nucleus * np.maximum(0.90 - out_lum, 0.0) * 0.72
+
     chroma = rgb - lum[..., None]
     chroma -= _luminance(chroma)[..., None]
     chroma *= ((1.0 + galaxy * 0.48) * (1.0 - core * 0.92))[..., None]
@@ -229,6 +234,7 @@ def finish_recomposed_galaxy_core(
     chroma += out_lum[..., None] * (
         inner_disk[..., None] * pink * 1.18 + outer_disk[..., None] * blue * 0.66
     )
+    chroma *= (1.0 - white_nucleus)[..., None]
     extent = np.max(np.abs(chroma), axis=2)
     headroom = np.minimum(out_lum, 1.0 - out_lum)
     chroma *= np.minimum(1.0, headroom / np.maximum(extent, 1e-6))[..., None]
@@ -236,7 +242,8 @@ def finish_recomposed_galaxy_core(
     if log:
         log(
             "Finished recomposed galaxy nucleus: neutral-white highlight shoulder, "
-            f"core_start={core_start:.5f}, core_max={float(np.max(core)):.5f}, "
+            f"core_start={core_start:.5f}, core_high={core_high:.5f}, "
+            f"core_max={float(np.max(core)):.5f}, "
             f"post_recomposition_decon_detail={str(detail_used).lower()}."
         )
     return np.clip(output * 65535.0 + 0.5, 0, 65535).astype(np.uint16)
