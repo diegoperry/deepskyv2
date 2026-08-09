@@ -2525,7 +2525,7 @@ def _html() -> str:
         <h3>Galaxy deconvolution</h3>
         <p>Optionally recover arm and dust-lane structure while protecting stars, sky, and bright nuclei. Narrowband Color remains automatic whether this is enabled or disabled.</p>
         <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
-          <input id="sirilDeconvolution" type="checkbox" checked />
+          <input id="sirilDeconvolution" type="checkbox" />
           Use deconvolution
         </label>
       </div>
@@ -4333,6 +4333,13 @@ def _run_job(
             pcc_failure_policy=pcc_failure_policy,
             narrowband_color=narrowband_color,
         )
+        # Final execution-boundary invariant: only the submitted Galaxy checkbox
+        # may enable deconvolution. Narrowband Color and saved settings cannot.
+        settings.siril_deconvolution_enabled = object_type == "Galaxy" and bool(siril_deconvolution)
+        write_log(
+            "Galaxy deconvolution effective state: "
+            + ("ON (user checkbox selected)." if settings.siril_deconvolution_enabled else "OFF (user checkbox off; Narrowband Color cannot enable it).")
+        )
         write_log(f"Selected object type: {settings.object_type}")
         write_log(f"Selected input mode: {settings.input_processing_mode}")
         write_log(f"Selected stretch level: {settings.stretch_level}")
@@ -4845,7 +4852,11 @@ async def create_job(
             )
         if selected_siril_deconvolution:
             jobs[job_id].warnings.append(
-                "Experimental Siril deconvolution is enabled for this run. Compare against unchecked results."
+                "Galaxy Deconvolution is ON for this run because the checkbox was selected."
+            )
+        elif selected_object_type == "Galaxy":
+            jobs[job_id].warnings.append(
+                "Galaxy Deconvolution is OFF for this run. Narrowband Color cannot enable it."
             )
         if selected_object_type == "Galaxy":
             jobs[job_id].warnings.append(

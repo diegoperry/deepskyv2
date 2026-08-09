@@ -101,6 +101,9 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertNotIn("protected Siril deconvolution forced on", route)
         self.assertIn("galaxy_narrowband_requested and not low_signal_galaxy_safety", route)
         self.assertIn("final.exists() and not low_signal_galaxy_safety", route)
+        worker = inspect.getsource(_run_job)
+        self.assertIn('settings.siril_deconvolution_enabled = object_type == "Galaxy" and bool(siril_deconvolution)', worker)
+        self.assertIn("Narrowband Color cannot enable it", worker)
 
     def test_finished_job_displays_native_png_instead_of_downsampled_preview(self) -> None:
         job = WebJob(
@@ -678,6 +681,8 @@ class WebPipelineRoutingTests(unittest.TestCase):
             html,
         )
         self.assertIn('id="galaxyDeconvolutionOption"', html)
+        self.assertIn('id="sirilDeconvolution" type="checkbox"', html)
+        self.assertNotIn('id="sirilDeconvolution" type="checkbox" checked', html)
     def test_process_page_exposes_preprocessing_crop_editor(self) -> None:
         html = process_page()
         self.assertIn('id="cropButton"', html)
