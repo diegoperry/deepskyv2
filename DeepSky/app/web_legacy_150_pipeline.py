@@ -49,6 +49,7 @@ from .image_io import (
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
+from .galaxy_narrowband import apply_galaxy_narrowband_finish
 from .narrowband_finish import (
     apply_pixinsight_narrowband_finish,
     apply_starnet_guided_narrowband_polish,
@@ -2459,6 +2460,12 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     reflection_style_nebula_hint = False
     use_natural_nebula_pipeline = mode == PipelineMode.FULL and object_type == "nebula"
     narrowband_color_requested = bool(getattr(settings, "narrowband_color_enabled", False)) and object_type == "nebula"
+    galaxy_narrowband_requested = bool(getattr(settings, "narrowband_color_enabled", False)) and object_type == "galaxy"
+    if galaxy_narrowband_requested:
+        write_log(
+            "Galaxy Narrowband Color pipeline selected: Siril calibration -> optional protected "
+            "deconvolution -> DeepSNR -> StarNet separation -> signal-aware starless color -> star recomposition."
+        )
     if object_type == "nebula":
         write_log("Nebula audit: using one calibrated nebula pipeline; no object-specific color branches.")
         if weak_snr_nebula_raw:
@@ -2531,6 +2538,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         mode == PipelineMode.SIRIL
         or (mode == PipelineMode.FULL and use_prestretched)
         or gradient_galaxy_siril
+        or (mode == PipelineMode.FULL and galaxy_narrowband_requested)
         or (mode == PipelineMode.FULL and siril_deconvolution_requested)
         or bool(nebula_auto_pcc_command)
         or bool(galaxy_auto_pcc_command)
@@ -2565,6 +2573,8 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         )
 
     if should_use_siril_calibration:
+        if galaxy_narrowband_requested and not siril_deconvolution_requested:
+            write_log("Galaxy Narrowband Color requested; routing galaxy run through Siril calibration path.")
         if siril_deconvolution_requested and not gradient_galaxy_siril and not use_prestretched and mode == PipelineMode.FULL:
             write_log("Siril deconvolution requested; routing galaxy run through Siril calibration path.")
         original_color_mode = settings.color_calibration_mode
@@ -2707,7 +2717,7 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         )
 
     current = early_nebula_deepsnr_path if early_nebula_deepsnr_used else calibrated
-    preserve_siril_galaxy_finish = gradient_galaxy_siril
+    preserve_siril_galaxy_finish = gradient_galaxy_siril and not galaxy_narrowband_requested
     skip_siril_galaxy_star_reduction = (
         preserve_siril_galaxy_finish
         and object_type == "galaxy"
@@ -2989,6 +2999,17 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(starless, write_log, "starless.tif")
         subtract_images(current, starless, stars)
         _log_existing_image(stars, write_log, "stars.tif")
+        if galaxy_narrowband_requested:
+            write_log(
+                "Galaxy Narrowband Color: grading the StarNet starless galaxy before untouched star recomposition."
+            )
+            galaxy_narrowband = apply_galaxy_narrowband_finish(
+                load_image(starless, write_log),
+                load_image(current, write_log),
+                write_log,
+            )
+            save_tiff(starless, galaxy_narrowband, write_log)
+            _log_existing_image(starless, write_log, "galaxy narrowband starless.tif")
         if object_type == "nebula":
             color_separation = str(getattr(settings, "nebula_color_separation", "Balanced") or "Balanced")
             nebula_color_reference = job_folder / "siril_calibrated.tif"

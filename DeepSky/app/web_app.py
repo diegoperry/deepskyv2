@@ -2573,8 +2573,8 @@ def _html() -> str:
       </div>
       <div class="detail-option" id="narrowbandColorOption">
         <h3>Narrowband Color</h3>
-        <p>Enabled by default for emission nebulae. It adds a finished orange/cyan treatment, protects the neutral background and original star colors, and applies stronger star reduction.</p>
-        <label class="narrowband-check" title="Apply Narrowband Color to this Nebula run.">
+        <p>Enabled by default for nebulae and galaxies. It adds signal-aware warm/cyan separation while protecting neutral background, structural luminance, and original star colors.</p>
+        <label class="narrowband-check" title="Apply Narrowband Color to this nebula or galaxy run.">
           <input id="narrowbandColor" name="narrowband_color" type="checkbox" checked />
           <span class="narrowband-checkmark" aria-hidden="true"></span>
           <span class="narrowband-check-copy">
@@ -2819,8 +2819,8 @@ def _html() -> str:
       const isNebula = objectType.value === "Nebula";
       const isGalaxy = objectType.value === "Galaxy";
       if (nebulaPipelineLabels) nebulaPipelineLabels.hidden = !isNebula;
-      if (narrowbandColorOption) narrowbandColorOption.hidden = !isNebula;
-      if (narrowbandColor) narrowbandColor.checked = isNebula;
+      if (narrowbandColorOption) narrowbandColorOption.hidden = !(isNebula || isGalaxy);
+      if (narrowbandColor) narrowbandColor.checked = isNebula || isGalaxy;
       if (galaxyDeconvolutionOption) galaxyDeconvolutionOption.hidden = !isGalaxy;
       if (!isGalaxy && sirilDeconvolution) sirilDeconvolution.checked = false;
       updatePccWarningState();
@@ -4303,9 +4303,9 @@ def _configure_web_pipeline_settings(
     settings.object_type = selected_object
     settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
     settings.siril_deconvolution_enabled = selected_object == "Galaxy" and bool(siril_deconvolution)
-    settings.color_calibration_mode = "Basic" if selected_object == "Nebula" or settings.siril_deconvolution_enabled else "Off"
+    settings.color_calibration_mode = "Basic" if selected_object == "Nebula" or settings.siril_deconvolution_enabled or (selected_object == "Galaxy" and narrowband_color) else "Off"
     settings.nebula_color_separation = "Strong" if selected_object == "Nebula" else "Balanced"
-    settings.narrowband_color_enabled = selected_object == "Nebula" and bool(narrowband_color)
+    settings.narrowband_color_enabled = selected_object in {"Nebula", "Galaxy"} and bool(narrowband_color)
 
     # Nebula processing is deliberately one route: measured RGB, the protected
     # auto stretch, one DeepSNR pass, one StarNet pass, and one recomposition.
@@ -4410,6 +4410,9 @@ def _run_job(
             write_log("Background Extraction: protected local cleanup")
             write_log(f"Selected color separation: {settings.nebula_color_separation}")
             write_log(f"Narrowband Color: {'enabled' if settings.narrowband_color_enabled else 'disabled'}")
+        elif settings.object_type == "Galaxy" and settings.narrowband_color_enabled:
+            write_log("Galaxy Narrowband Color: dedicated Siril/DeepSNR/StarNet signal-aware route enabled")
+            write_log(f"Galaxy deconvolution: {'enabled' if settings.siril_deconvolution_enabled else 'disabled'}")
         elif settings.siril_deconvolution_enabled:
             write_log("Galaxy color calibration: Siril (enabled with deconvolution)")
         else:
@@ -4827,7 +4830,7 @@ async def create_job(
     _cleanup_old_temp_files()
     selected_object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
     selected_nebula_color_separation = "Strong" if selected_object_type == "Nebula" else "Balanced"
-    selected_narrowband_color = selected_object_type == "Nebula" and bool(narrowband_color)
+    selected_narrowband_color = selected_object_type in {"Nebula", "Galaxy"} and bool(narrowband_color)
     selected_siril_deconvolution = selected_object_type == "Galaxy" and bool(siril_deconvolution)
     staged = _require_completed_staged_upload(upload_id, user) if upload_id else None
     filename = staged.filename if staged else Path((file.filename if file else "") or "").name
@@ -4928,6 +4931,10 @@ async def create_job(
                 jobs[job_id].warnings.append(
                     "Narrowband Color is enabled. DeepSky will use its dedicated narrowband pipeline for background, linear denoise, structure, color, and star protection."
                 )
+        elif selected_object_type == "Galaxy" and selected_narrowband_color:
+            jobs[job_id].warnings.append(
+                "Galaxy Narrowband Color is enabled. DeepSky will calibrate and denoise first, preserve optional deconvolution luminance, color only the starless galaxy signal, then restore the original stars."
+            )
     executor.submit(
         _run_job,
         job_id,

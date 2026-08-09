@@ -554,7 +554,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         finished_color = finished[64, 72] / np.max(finished[64, 72])
         self.assertLess(float(np.max(np.abs(finished_color - source_color))), 0.015)
 
-    def test_narrowband_color_defaults_on_for_nebula_only_and_can_be_disabled(self) -> None:
+    def test_narrowband_color_defaults_on_for_nebula_and_galaxy_and_can_be_disabled(self) -> None:
         nebula = _configure_web_pipeline_settings(
             default_settings(),
             object_type="Nebula",
@@ -588,7 +588,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         )
 
         self.assertTrue(nebula.narrowband_color_enabled)
-        self.assertFalse(galaxy.narrowband_color_enabled)
+        self.assertTrue(galaxy.narrowband_color_enabled)
         self.assertFalse(natural_nebula.narrowband_color_enabled)
         self.assertFalse(default_settings().narrowband_color_enabled)
 
@@ -631,7 +631,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('id="narrowbandColor"', html)
         self.assertIn('id="narrowbandColor" name="narrowband_color" type="checkbox" checked', html)
         self.assertIn("Enabled by default. Uncheck for natural color.", html)
-        self.assertIn("applies stronger star reduction", html)
+        self.assertIn("nebulae and galaxies", html)
         self.assertIn('name="narrowband_color"', html)
         self.assertIn('class="narrowband-checkmark"', html)
         self.assertIn('input:checked + .narrowband-checkmark::after', html)
