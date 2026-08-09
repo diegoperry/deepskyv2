@@ -2521,14 +2521,6 @@ def _html() -> str:
         <span><b>Background Extraction:</b> Siril</span>
         <span><b>Nebula Color:</b> Enhanced</span>
       </div>
-      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
-        <h3>Galaxy deconvolution</h3>
-        <p>Optionally recover arm and dust-lane structure while protecting stars, sky, and bright nuclei. Narrowband Color remains automatic whether this is enabled or disabled.</p>
-        <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
-          <input id="sirilDeconvolution" type="checkbox" />
-          Use deconvolution
-        </label>
-      </div>
       <div id="warning" class="warning"></div>
       <div id="progressPanel" class="progress-panel" hidden>
         <div class="progress-row" id="uploadProgressRow">
@@ -2664,8 +2656,6 @@ def _html() -> str:
     const stretchLevel = document.getElementById("stretchLevel");
     const starlessButton = document.getElementById("starlessButton");
     const nebulaPipelineLabels = document.getElementById("nebulaPipelineLabels");
-    const galaxyDeconvolutionOption = document.getElementById("galaxyDeconvolutionOption");
-    const sirilDeconvolution = document.getElementById("sirilDeconvolution");
     const statusEl = document.getElementById("status");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
@@ -2756,20 +2746,17 @@ def _html() -> str:
       const isNebula = objectType.value === "Nebula";
       const isGalaxy = objectType.value === "Galaxy";
       if (nebulaPipelineLabels) nebulaPipelineLabels.hidden = !isNebula;
-      if (galaxyDeconvolutionOption) galaxyDeconvolutionOption.hidden = !isGalaxy;
-      if (!isGalaxy && sirilDeconvolution) sirilDeconvolution.checked = false;
       updatePccWarningState();
     }
 
     function currentFileKey() {
       if (!selectedFile) return "";
       const cropKey = cropSelection ? `${cropSelection.x.toFixed(4)},${cropSelection.y.toFixed(4)},${cropSelection.width.toFixed(4)},${cropSelection.height.toFixed(4)}` : "full";
-      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:${sirilDeconvolution.checked ? "deconv" : "nodeconv"}:narrowband:${starlessButton.getAttribute("aria-pressed") === "true" ? "starless" : "stars"}:${cropKey}`;
+      return `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}:${objectType.value}:nodeconv:narrowband:${starlessButton.getAttribute("aria-pressed") === "true" ? "starless" : "stars"}:${cropKey}`;
     }
 
     function currentModeNeedsPcc() {
-      if (!selectedFile || previewPccAvailable !== false) return false;
-      return objectType.value === "Galaxy" && sirilDeconvolution.checked;
+      return false;
     }
 
     function showPccWarning({ runAfterContinue = false } = {}) {
@@ -3567,7 +3554,6 @@ def _html() -> str:
         ? "Starless is enabled. DeepSky will remove the complete detected star layer with StarNet and will not recombine stars."
         : "Starless is off. The normal stellar finish will be used.";
     });
-    sirilDeconvolution.addEventListener("change", updatePccWarningState);
     pccCancel.addEventListener("click", () => {
       pccWarningCanceledKey = currentFileKey();
       pendingRunAfterPccWarning = false;
@@ -3915,10 +3901,7 @@ def _html() -> str:
       data.append("stretch_level", stretchLevel.value);
       data.append("nebula_color_separation", selectedObjectType === "Nebula" ? "Strong" : "Balanced");
       data.append("narrowband_color", selectedObjectType === "Nebula" || selectedObjectType === "Galaxy" ? "true" : "false");
-      data.append(
-        "siril_deconvolution",
-        selectedObjectType === "Galaxy" && sirilDeconvolution.checked ? "true" : "false"
-      );
+      data.append("siril_deconvolution", "false");
       const starSetting = starlessButton.getAttribute("aria-pressed") === "true"
         ? "Starless"
         : selectedObjectType === "Galaxy" ? "Slight Star Reduction" : "Standard";
@@ -4770,7 +4753,7 @@ async def create_job(
     selected_object_type = object_type if object_type in {"Nebula", "Galaxy", "Star Cluster"} else "Nebula"
     selected_nebula_color_separation = "Strong" if selected_object_type == "Nebula" else "Balanced"
     selected_narrowband_color = selected_object_type in {"Nebula", "Galaxy"} and bool(narrowband_color)
-    selected_siril_deconvolution = selected_object_type == "Galaxy" and bool(siril_deconvolution)
+    selected_siril_deconvolution = False
     staged = _require_completed_staged_upload(upload_id, user) if upload_id else None
     filename = staged.filename if staged else Path((file.filename if file else "") or "").name
     suffix = Path(filename).suffix.lower()
@@ -4856,7 +4839,7 @@ async def create_job(
             )
         elif selected_object_type == "Galaxy":
             jobs[job_id].warnings.append(
-                "Galaxy Deconvolution is OFF for this run. Narrowband Color cannot enable it."
+                "Galaxy detail processing is automatic. Manual Deconvolution is currently disabled."
             )
         if selected_object_type == "Galaxy":
             jobs[job_id].warnings.append(

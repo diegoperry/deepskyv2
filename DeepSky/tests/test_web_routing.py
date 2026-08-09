@@ -35,6 +35,7 @@ from app.web_app import (
     _job_response,
     blog_article_page,
     blog_page,
+    create_job,
     docs_page,
     index,
     process_page,
@@ -105,6 +106,8 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn("skipping catalog PCC/Siril calibration", route)
         worker = inspect.getsource(_run_job)
         self.assertIn('settings.siril_deconvolution_enabled = object_type == "Galaxy" and bool(siril_deconvolution)', worker)
+        creator = inspect.getsource(create_job)
+        self.assertIn("selected_siril_deconvolution = False", creator)
         self.assertIn("Narrowband Color cannot enable it", worker)
 
     def test_finished_job_displays_native_png_instead_of_downsampled_preview(self) -> None:
@@ -682,9 +685,9 @@ class WebPipelineRoutingTests(unittest.TestCase):
             'data.append("narrowband_color", selectedObjectType === "Nebula" || selectedObjectType === "Galaxy" ? "true" : "false");',
             html,
         )
-        self.assertIn('id="galaxyDeconvolutionOption"', html)
-        self.assertIn('id="sirilDeconvolution" type="checkbox"', html)
-        self.assertNotIn('id="sirilDeconvolution" type="checkbox" checked', html)
+        self.assertNotIn('id="galaxyDeconvolutionOption"', html)
+        self.assertNotIn('id="sirilDeconvolution"', html)
+        self.assertIn('data.append("siril_deconvolution", "false");', html)
     def test_process_page_exposes_preprocessing_crop_editor(self) -> None:
         html = process_page()
         self.assertIn('id="cropButton"', html)
