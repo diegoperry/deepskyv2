@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 
 from .input_analysis import analyze_input_stretch
+from .data_score import evaluate_data_score
 from .image_io import SUPPORTED_INPUTS, crop_image_file, make_preview
 from .cli_tools import ToolExecutionError, find_executable, run_realesrgan
 from .pipeline import PccCalibrationFailed
@@ -61,6 +62,14 @@ CREDIT_PACKS = {
 }
 EXPORT_LOGO_PATH = APP_ROOT / "app" / "static" / "branding" / "deepsky-export-logo.png"
 PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "https://app.deepskyprocessor.com").rstrip("/")
+
+
+def _safe_data_score(path: Path) -> dict[str, Any] | None:
+    try:
+        return evaluate_data_score(path)
+    except Exception as exc:
+        logger.warning("Data score unavailable for %s: %s", path.name, exc)
+        return None
 
 
 def _load_export_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
@@ -2115,6 +2124,15 @@ def _html() -> str:
       line-height: 1.45;
     }
     .status { min-height: 24px; color: var(--muted); margin-top: 12px; }
+    .data-score { margin-top: 16px; padding: 16px; border: 1px solid #29466f; border-radius: 14px; background: #091426; }
+    .data-score-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .data-score-title { margin: 0; font-size: 15px; color: #dce9ff; }
+    .data-score-value { font-size: 28px; color: #7fb0ff; }
+    .data-score-track { height: 8px; margin: 10px 0 12px; overflow: hidden; border-radius: 999px; background: #17253b; }
+    .data-score-fill { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ef9b42, #51a4ff, #55d69e); transition: width .35s ease; }
+    .data-score p { margin: 6px 0; color: var(--muted); }
+    .data-score-recommendation { color: #dce9ff !important; }
+    .data-score-factors { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
     .warning {
       display: none;
       width: min(720px, 100%);
@@ -2535,6 +2553,16 @@ def _html() -> str:
         </div>
       </div>
       <div id="status" class="status">Choose a file to begin.</div>
+      <div id="dataScorePanel" class="data-score" hidden>
+        <div class="data-score-head">
+          <h2 class="data-score-title">Capture Data Score</h2>
+          <strong id="dataScoreValue" class="data-score-value">--%</strong>
+        </div>
+        <div class="data-score-track" aria-hidden="true"><span id="dataScoreFill" class="data-score-fill"></span></div>
+        <p id="dataScoreSummary"></p>
+        <p id="dataScoreRecommendation" class="data-score-recommendation"></p>
+        <ul id="dataScoreFactors" class="data-score-factors"></ul>
+      </div>
     </section>
     <section class="previews">
       <article class="preview">
@@ -2657,6 +2685,12 @@ def _html() -> str:
     const starlessButton = document.getElementById("starlessButton");
     const nebulaPipelineLabels = document.getElementById("nebulaPipelineLabels");
     const statusEl = document.getElementById("status");
+    const dataScorePanel = document.getElementById("dataScorePanel");
+    const dataScoreValue = document.getElementById("dataScoreValue");
+    const dataScoreFill = document.getElementById("dataScoreFill");
+    const dataScoreSummary = document.getElementById("dataScoreSummary");
+    const dataScoreRecommendation = document.getElementById("dataScoreRecommendation");
+    const dataScoreFactors = document.getElementById("dataScoreFactors");
     const warningEl = document.getElementById("warning");
     const progressPanel = document.getElementById("progressPanel");
     const uploadProgressRow = document.getElementById("uploadProgressRow");
@@ -2741,6 +2775,20 @@ def _html() -> str:
     let cropPointer = null;
     const MAX_UPLOAD_BYTES_CLIENT = 300 * 1024 * 1024;
     const CHUNKED_UPLOAD_THRESHOLD = 45 * 1024 * 1024;
+
+    function renderDataScore(result) {
+      if (!result || !Number.isFinite(Number(result.score))) {
+        dataScorePanel.hidden = true;
+        return;
+      }
+      const score = Math.max(0, Math.min(100, Number(result.score)));
+      dataScoreValue.textContent = `${Math.round(score)}%`;
+      dataScoreFill.style.width = `${score}%`;
+      dataScoreSummary.textContent = result.summary || "Capture quality measured.";
+      dataScoreRecommendation.textContent = result.recommendation || "";
+      dataScoreFactors.innerHTML = (result.factors || []).map((factor) => `<li>${escapeHtml(factor)}</li>`).join("");
+      dataScorePanel.hidden = false;
+    }
 
     function syncObjectControls() {
       const isNebula = objectType.value === "Nebula";
@@ -3418,6 +3466,7 @@ def _html() -> str:
       cropDraft = { x: 0, y: 0, width: 1, height: 1 };
       cropButton.hidden = true;
       cropButton.disabled = false;
+      dataScorePanel.hidden = true;
       updateCropSummary();
       const requestId = ++previewRequest;
       resetProgress();
@@ -3475,6 +3524,7 @@ def _html() -> str:
         }
         if (requestId !== previewRequest) return;
         previewPccAvailable = preview.pcc_available === true;
+        renderDataScore(preview.data_score);
         setProgress(uploadProgressFill, uploadProgressValue, 100);
         setProgress(previewProgressFill, previewProgressValue, 100);
         previewImageUrl = `${preview.preview_url}&t=${Date.now()}`;
@@ -4668,6 +4718,7 @@ def create_staged_preview(upload_id: str, user: AuthUser = Depends(require_user)
         "pcc_available": _pcc_metadata_available(staged.path),
         "source_width": source_width,
         "source_height": source_height,
+        "data_score": _safe_data_score(staged.path),
     }
 
 
@@ -4702,13 +4753,14 @@ async def create_preview(
     try:
         source_width, source_height = make_preview(input_path, preview_path)
         pcc_available = _pcc_metadata_available(input_path)
+        data_score = _safe_data_score(input_path)
         input_path.unlink(missing_ok=True)
     except Exception as exc:
         shutil.rmtree(preview_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"Could not create preview: {exc}") from exc
     with jobs_lock:
         previews[preview_id] = user.id
-    return {"preview_url": f"/api/previews/{preview_id}?inline=1", "pcc_available": pcc_available, "source_width": source_width, "source_height": source_height}
+    return {"preview_url": f"/api/previews/{preview_id}?inline=1", "pcc_available": pcc_available, "source_width": source_width, "source_height": source_height, "data_score": data_score}
 
 
 @app.get("/api/previews/{preview_id}")
