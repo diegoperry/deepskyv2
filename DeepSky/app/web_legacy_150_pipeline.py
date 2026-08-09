@@ -49,7 +49,11 @@ from .image_io import (
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
-from .galaxy_narrowband import apply_galaxy_narrowband_finish, crop_galaxy_mosaic_footprint
+from .galaxy_narrowband import (
+    apply_galaxy_narrowband_finish,
+    crop_galaxy_mosaic_footprint,
+    finish_recomposed_galaxy_core,
+)
 from .narrowband_finish import (
     apply_pixinsight_narrowband_finish,
     apply_starnet_guided_narrowband_polish,
@@ -3204,6 +3208,17 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         write_log("Star reduction skipped for compact Siril deconvolution galaxy finish to preserve detail.")
 
     if galaxy_narrowband_requested and final.exists():
+        write_log("Correcting galaxy nucleus after StarNet recomposition and restoring deconvolution detail.")
+        core_finished = finish_recomposed_galaxy_core(
+            load_image(final, write_log),
+            detail_reference=(
+                load_image(job_folder / "siril_deconvolved.fit", write_log)
+                if (job_folder / "siril_deconvolved.fit").exists()
+                else None
+            ),
+            log=write_log,
+        )
+        save_tiff(final, core_finished, write_log)
         write_log("Cropping galaxy stacking/mosaic edge artifacts before export.")
         edge_cropped = crop_galaxy_mosaic_footprint(
             load_image(final, write_log),

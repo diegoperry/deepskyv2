@@ -3,7 +3,11 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from app.galaxy_narrowband import apply_galaxy_narrowband_finish, crop_galaxy_mosaic_footprint
+from app.galaxy_narrowband import (
+    apply_galaxy_narrowband_finish,
+    crop_galaxy_mosaic_footprint,
+    finish_recomposed_galaxy_core,
+)
 
 
 def _luminance(rgb: np.ndarray) -> np.ndarray:
@@ -91,3 +95,29 @@ def test_mosaic_footprint_is_cropped_to_clean_rectangle() -> None:
 
     assert cropped.shape[0] < image.shape[0] or cropped.shape[1] < image.shape[1]
     assert np.all(cropped > 0)
+
+def test_recomposed_galaxy_core_becomes_neutral_white_without_clipping() -> None:
+    height, width = 240, 300
+    yy, xx = np.mgrid[:height, :width].astype(np.float32)
+    radius = np.sqrt(((xx - 150.0) / 75.0) ** 2 + ((yy - 120.0) / 30.0) ** 2)
+    disk = np.exp(-(radius**1.5) * 1.4)
+    nucleus = np.exp(-(radius**2) * 18.0)
+    luminance = 0.012 + disk * 0.55 + nucleus * 0.35
+    source = np.repeat(luminance[..., None], 3, axis=2)
+    source[..., 0] += nucleus * 0.18
+    source[..., 1] += nucleus * 0.08
+    source = np.clip(source, 0.0, 1.0)
+    donor = np.clip(
+        source + (np.sin(xx * 0.35) * np.cos(yy * 0.27) * disk * 0.025)[..., None],
+        0.0,
+        1.0,
+    )
+
+    output = finish_recomposed_galaxy_core(
+        np.round(source * 65535.0).astype(np.uint16),
+        np.round(donor * 65535.0).astype(np.uint16),
+    ).astype(np.float32) / 65535.0
+
+    assert float(np.ptp(output[120, 150])) < float(np.ptp(source[120, 150])) * 0.20
+    assert 0.90 < float(np.mean(output[120, 150])) < 0.99
+    assert float(np.max(output)) < 0.99

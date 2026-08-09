@@ -160,3 +160,83 @@ def crop_galaxy_mosaic_footprint(
     if log:
         log(f"Cropped irregular galaxy mosaic footprint: x={x0}:{x1}, y={y0}:{y1}, output={x1-x0}x{y1-y0}.")
     return np.ascontiguousarray(output[y0:y1, x0:x1])
+
+def finish_recomposed_galaxy_core(
+    image: np.ndarray,
+    detail_reference: np.ndarray | None = None,
+    log: LogCallback | None = None,
+) -> np.ndarray:
+    """Restore a neutral, highlight-safe nucleus after StarNet recomposition."""
+    rgb = _float01(image)
+    if rgb.ndim != 3 or rgb.shape[-1] < 3:
+        return np.asarray(image)
+    lum = _luminance(rgb).astype(np.float32)
+    sigma = max(9.0, min(lum.shape) / 110.0)
+    broad = cv2.GaussianBlur(lum, (0, 0), sigma)
+    sky = float(np.percentile(broad, 45.0))
+    mad = float(np.median(np.abs(broad - np.median(broad)))) * 1.4826
+    galaxy = np.clip((broad - sky - mad) / max(mad * 8.0, 0.010), 0.0, 1.0) ** 0.72
+    galaxy = cv2.GaussianBlur(galaxy.astype(np.float32), (0, 0), 4.0)
+
+    smooth = cv2.GaussianBlur(lum, (0, 0), 3.0)
+    selected = smooth[galaxy > 0.18]
+    core_start = float(np.percentile(selected, 87.0)) if selected.size else 0.72
+    core = np.clip((smooth - core_start) / max(0.86 - core_start, 0.10), 0.0, 1.0)
+    core = cv2.GaussianBlur((core * galaxy).astype(np.float32), (0, 0), 2.0)
+
+    shoulder = 0.76
+    excess = np.maximum(lum - shoulder, 0.0)
+    compressed = np.where(
+        lum > shoulder,
+        shoulder + (1.0 - shoulder) * np.tanh(excess / (1.0 - shoulder)),
+        lum,
+    )
+    out_lum = lum * (1.0 - core) + compressed * core
+    disk_lift = np.sqrt(np.clip(out_lum, 0.0, 1.0))
+    out_lum = out_lum * (1.0 - galaxy * 0.18) + disk_lift * (galaxy * 0.18)
+
+    detail_used = False
+    if detail_reference is not None:
+        donor = _float01(detail_reference)
+        if donor.shape == rgb.shape:
+            donor_lum = _luminance(donor).astype(np.float32)
+            scale = max(float(np.percentile(donor_lum, 99.85)), 1e-4)
+            donor_lum = np.arcsinh(np.clip(donor_lum / scale, 0.0, 6.0) * 2.4) / np.arcsinh(2.4)
+            detail = (
+                donor_lum - cv2.GaussianBlur(donor_lum, (0, 0), 1.0)
+            ) * 0.42 + (
+                cv2.GaussianBlur(donor_lum, (0, 0), 1.3)
+                - cv2.GaussianBlur(donor_lum, (0, 0), 5.0)
+            ) * 0.76
+            detail = np.clip(detail, -0.018, 0.040)
+            out_lum = np.clip(out_lum + detail * galaxy * (1.0 - core * 0.45), 0.0, 1.0)
+            detail_used = True
+
+    chroma = rgb - lum[..., None]
+    chroma -= _luminance(chroma)[..., None]
+    chroma *= ((1.0 + galaxy * 0.48) * (1.0 - core * 0.92))[..., None]
+    galaxy_level = np.clip(
+        (broad - sky) / max(float(np.percentile(broad, 99.8)) - sky, 1e-5),
+        0.0,
+        1.0,
+    )
+    inner_disk = galaxy * np.sqrt(galaxy_level) * (1.0 - core)
+    outer_disk = galaxy * ((1.0 - galaxy_level) ** 0.70) * (1.0 - core)
+    pink = np.array([0.115, -0.034, 0.058], dtype=np.float32)
+    blue = np.array([-0.040, -0.014, 0.120], dtype=np.float32)
+    pink -= float(_luminance(pink))
+    blue -= float(_luminance(blue))
+    chroma += out_lum[..., None] * (
+        inner_disk[..., None] * pink * 1.18 + outer_disk[..., None] * blue * 0.66
+    )
+    extent = np.max(np.abs(chroma), axis=2)
+    headroom = np.minimum(out_lum, 1.0 - out_lum)
+    chroma *= np.minimum(1.0, headroom / np.maximum(extent, 1e-6))[..., None]
+    output = np.clip(out_lum[..., None] + chroma, 0.0, 1.0)
+    if log:
+        log(
+            "Finished recomposed galaxy nucleus: neutral-white highlight shoulder, "
+            f"core_start={core_start:.5f}, core_max={float(np.max(core)):.5f}, "
+            f"post_recomposition_decon_detail={str(detail_used).lower()}."
+        )
+    return np.clip(output * 65535.0 + 0.5, 0, 65535).astype(np.uint16)
