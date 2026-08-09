@@ -2571,9 +2571,17 @@ def _html() -> str:
         <span><b>Background Extraction:</b> Siril</span>
         <span><b>Nebula Color:</b> Enhanced</span>
       </div>
+      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
+        <h3>Galaxy deconvolution</h3>
+        <p>Included automatically with Galaxy Narrowband Color to recover arm and dust-lane structure while protecting stars, sky, and bright nuclei.</p>
+        <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
+          <input id="sirilDeconvolution" type="checkbox" checked />
+          Use deconvolution
+        </label>
+      </div>
       <div class="detail-option" id="narrowbandColorOption">
         <h3>Narrowband Color</h3>
-        <p>Enabled by default for nebulae and galaxies. It adds signal-aware warm/cyan separation while protecting neutral background, structural luminance, and original star colors.</p>
+        <p>Apply signal-aware galaxy or nebula color while protecting neutral background, structural luminance, white galaxy cores, and original star colors.</p>
         <label class="narrowband-check" title="Apply Narrowband Color to this nebula or galaxy run.">
           <input id="narrowbandColor" name="narrowband_color" type="checkbox" checked />
           <span class="narrowband-checkmark" aria-hidden="true"></span>
@@ -2581,13 +2589,6 @@ def _html() -> str:
             <strong>Apply Narrowband Color</strong>
             <small>Enabled by default. Uncheck for natural color.</small>
           </span>
-        </label>
-      </div>      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
-        <h3>Galaxy deconvolution</h3>
-        <p>Included automatically with Galaxy Narrowband Color to recover arm and dust-lane structure while protecting stars, sky, and bright nuclei.</p>
-        <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
-          <input id="sirilDeconvolution" type="checkbox" checked />
-          Use deconvolution
         </label>
       </div>
       <div id="warning" class="warning"></div>
@@ -3981,7 +3982,9 @@ def _html() -> str:
       data.append("nebula_color_separation", selectedObjectType === "Nebula" ? "Strong" : "Balanced");
       data.append(
         "narrowband_color",
-        selectedObjectType === "Nebula" && narrowbandColor.checked ? "true" : "false"
+        (selectedObjectType === "Nebula" || selectedObjectType === "Galaxy") && narrowbandColor.checked
+          ? "true"
+          : "false"
       );
       data.append(
         "siril_deconvolution",

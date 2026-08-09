@@ -632,12 +632,20 @@ class WebPipelineRoutingTests(unittest.TestCase):
         self.assertIn('id="narrowbandColor"', html)
         self.assertIn('id="narrowbandColor" name="narrowband_color" type="checkbox" checked', html)
         self.assertIn("Enabled by default. Uncheck for natural color.", html)
-        self.assertIn("nebulae and galaxies", html)
+        self.assertIn("galaxy or nebula color", html)
         self.assertIn('name="narrowband_color"', html)
         self.assertIn('class="narrowband-checkmark"', html)
         self.assertIn('input:checked + .narrowband-checkmark::after', html)
         self.assertIn('data.append(\n        "narrowband_color"', html)
 
+        self.assertIn(
+            '(selectedObjectType === "Nebula" || selectedObjectType === "Galaxy") && narrowbandColor.checked',
+            html,
+        )
+        self.assertLess(
+            html.index('id="galaxyDeconvolutionOption"'),
+            html.index('id="narrowbandColorOption"'),
+        )
     def test_process_page_exposes_preprocessing_crop_editor(self) -> None:
         html = process_page()
         self.assertIn('id="cropButton"', html)
