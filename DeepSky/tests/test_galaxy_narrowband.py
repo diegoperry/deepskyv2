@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.galaxy_narrowband import apply_galaxy_narrowband_finish
+from app.galaxy_narrowband import apply_galaxy_narrowband_finish, crop_galaxy_mosaic_footprint
 
 
 def _luminance(rgb: np.ndarray) -> np.ndarray:
@@ -34,12 +34,12 @@ def _synthetic_galaxy() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     )
 
 
-def test_galaxy_narrowband_preserves_luminance_and_neutral_background() -> None:
+def test_galaxy_narrowband_rolls_highlights_and_keeps_neutral_background() -> None:
     base, reference, signal = _synthetic_galaxy()
     output = apply_galaxy_narrowband_finish(base, reference).astype(np.float32) / 65535.0
     source = base.astype(np.float32) / 65535.0
 
-    assert np.percentile(np.abs(_luminance(output) - _luminance(source)), 99.0) < 2.5e-4
+    assert float(np.max(_luminance(output))) < float(np.max(_luminance(source)))
     sky = signal < 0.002
     assert np.percentile(np.max(output[sky], axis=1) - np.min(output[sky], axis=1), 99.0) < 0.003
 
@@ -55,3 +55,16 @@ def test_galaxy_narrowband_creates_continuous_warm_cool_signal_separation() -> N
     assert float(np.mean(output[..., 0][warm] - output[..., 2][warm])) > 0.025
     assert float(np.mean(output[..., 2][cool] - output[..., 0][cool])) > 0.012
     assert np.isfinite(output).all()
+
+def test_mosaic_footprint_is_cropped_to_clean_rectangle() -> None:
+    image = np.full((120, 140, 3), 12000, dtype=np.uint16)
+    coverage = image.copy()
+    coverage[:20, :35] = 0
+    coverage[:20, 105:] = 0
+    coverage[-20:, :25] = 0
+    coverage[-20:, 115:] = 0
+
+    cropped = crop_galaxy_mosaic_footprint(image, coverage)
+
+    assert cropped.shape[0] < image.shape[0] or cropped.shape[1] < image.shape[1]
+    assert np.all(cropped > 0)

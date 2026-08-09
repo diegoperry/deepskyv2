@@ -589,6 +589,7 @@ class WebPipelineRoutingTests(unittest.TestCase):
 
         self.assertTrue(nebula.narrowband_color_enabled)
         self.assertTrue(galaxy.narrowband_color_enabled)
+        self.assertTrue(galaxy.siril_deconvolution_enabled)
         self.assertFalse(natural_nebula.narrowband_color_enabled)
         self.assertFalse(default_settings().narrowband_color_enabled)
 

@@ -49,7 +49,7 @@ from .image_io import (
     save_tiff,
 )
 from .input_analysis import analyze_input_stretch, detect_telescope_profile
-from .galaxy_narrowband import apply_galaxy_narrowband_finish
+from .galaxy_narrowband import apply_galaxy_narrowband_finish, crop_galaxy_mosaic_footprint
 from .narrowband_finish import (
     apply_pixinsight_narrowband_finish,
     apply_starnet_guided_narrowband_polish,
@@ -2462,8 +2462,11 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
     narrowband_color_requested = bool(getattr(settings, "narrowband_color_enabled", False)) and object_type == "nebula"
     galaxy_narrowband_requested = bool(getattr(settings, "narrowband_color_enabled", False)) and object_type == "galaxy"
     if galaxy_narrowband_requested:
+        settings.siril_deconvolution_enabled = True
+        siril_deconvolution_requested = True
+        write_log("Galaxy Narrowband Color: protected Siril deconvolution forced on for this route.")
         write_log(
-            "Galaxy Narrowband Color pipeline selected: Siril calibration -> optional protected "
+            "Galaxy Narrowband Color pipeline selected: Siril calibration -> mandatory protected "
             "deconvolution -> DeepSNR -> StarNet separation -> signal-aware starless color -> star recomposition."
         )
     if object_type == "nebula":
@@ -3194,6 +3197,22 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         _log_existing_image(final, write_log, "final.tif")
     elif starless_test_requested and skip_siril_galaxy_star_reduction:
         write_log("Star reduction skipped for compact Siril deconvolution galaxy finish to preserve detail.")
+
+    if galaxy_narrowband_requested and final.exists():
+        write_log("Cropping galaxy stacking/mosaic edge artifacts before export.")
+        edge_cropped = crop_galaxy_mosaic_footprint(
+            load_image(final, write_log),
+            load_image(working, write_log),
+            write_log,
+        )
+        edge_cropped = _crop_edge_artifacts(
+            edge_cropped,
+            fraction=0.018,
+            max_side_fraction=0.16,
+            max_total_fraction=0.24,
+        )
+        save_tiff(final, edge_cropped, write_log)
+        _log_existing_image(final, write_log, "edge-cropped galaxy final.tif")
 
     if object_type == "nebula" and final.exists():
         write_log("Cropping nebula stacking edges before export.")

@@ -2583,10 +2583,10 @@ def _html() -> str:
           </span>
         </label>
       </div>      <div class="detail-option" id="galaxyDeconvolutionOption" hidden>
-        <h3>Want to add more detail? Test out deconvolution</h3>
-        <p>Deconvolution can sharpen galaxy arms and dust lanes when the data is clean. On noisy or faint images it can also make the background look grainy, so compare both versions.</p>
+        <h3>Galaxy deconvolution</h3>
+        <p>Included automatically with Galaxy Narrowband Color to recover arm and dust-lane structure while protecting stars, sky, and bright nuclei.</p>
         <label class="toggle" title="Optional: applies Siril Richardson-Lucy deconvolution only for galaxy processing.">
-          <input id="sirilDeconvolution" type="checkbox" />
+          <input id="sirilDeconvolution" type="checkbox" checked />
           Use deconvolution
         </label>
       </div>
@@ -4302,7 +4302,7 @@ def _configure_web_pipeline_settings(
     settings.prestretched_input = mode == "Pre-stretched"
     settings.object_type = selected_object
     settings.stretch_level = stretch_level if stretch_level in {"Subtle", "Standard", "Aggressive"} else "Standard"
-    settings.siril_deconvolution_enabled = selected_object == "Galaxy" and bool(siril_deconvolution)
+    settings.siril_deconvolution_enabled = selected_object == "Galaxy" and (bool(siril_deconvolution) or bool(narrowband_color))
     settings.color_calibration_mode = "Basic" if selected_object == "Nebula" or settings.siril_deconvolution_enabled or (selected_object == "Galaxy" and narrowband_color) else "Off"
     settings.nebula_color_separation = "Strong" if selected_object == "Nebula" else "Balanced"
     settings.narrowband_color_enabled = selected_object in {"Nebula", "Galaxy"} and bool(narrowband_color)
@@ -4933,7 +4933,7 @@ async def create_job(
                 )
         elif selected_object_type == "Galaxy" and selected_narrowband_color:
             jobs[job_id].warnings.append(
-                "Galaxy Narrowband Color is enabled. DeepSky will calibrate and denoise first, preserve optional deconvolution luminance, color only the starless galaxy signal, then restore the original stars."
+                "Galaxy Narrowband Color is enabled. DeepSky will calibrate and denoise first, run protected deconvolution, finish only the starless galaxy signal, then restore the original stars."
             )
     executor.submit(
         _run_job,
