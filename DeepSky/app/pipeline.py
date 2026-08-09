@@ -9,6 +9,7 @@ from typing import Callable
 
 import cv2
 import numpy as np
+from astropy.io import fits
 
 from .cli_tools import find_executable, run_deepsnr, run_starnet
 from .goal_look import (
@@ -1442,6 +1443,29 @@ def _is_compact_siril_galaxy(analysis: object | None) -> bool:
     return raw_p999 < 0.025 and bright_fraction < 0.00025
 
 
+def _needs_low_signal_galaxy_safety(
+    source: Path,
+    analysis: object | None,
+    object_type: str,
+) -> tuple[bool, float | None]:
+    """Reject deconvolution only for objectively short, compact galaxy stacks."""
+    if object_type != "galaxy" or not _is_compact_siril_galaxy(analysis):
+        return False, None
+    total_seconds: float | None = None
+    if source.suffix.lower() in {".fit", ".fits", ".fts"}:
+        try:
+            header = fits.getheader(source)
+            exposure = float(header.get("EXPTIME", 0.0) or 0.0)
+            stack_count = float(header.get("STACKCNT", 0.0) or 0.0)
+            if exposure > 0.0 and stack_count > 0.0:
+                total_seconds = exposure * stack_count
+        except (OSError, TypeError, ValueError):
+            total_seconds = None
+    # A short-integration guard is deliberately narrow. High-quality galaxies,
+    # including compact targets with stronger stacks, retain full deconvolution.
+    return bool(total_seconds is not None and total_seconds <= 600.0), total_seconds
+
+
 def _needs_gentle_nebula_star_reduction(analysis: object | None, image: np.ndarray) -> bool:
     metrics = getattr(analysis, "metrics", {}) if analysis is not None else {}
     raw_p999 = float(metrics.get("raw_p999", 0.0))
@@ -2135,6 +2159,18 @@ def run_pipeline(input_path: Path, settings: AppSettings, mode: PipelineMode, lo
         if write_wcs_enriched_fits(original, wcs_enriched, write_log):
             catalog_calibration_input = wcs_enriched
     siril_deconvolution_requested = bool(getattr(settings, "siril_deconvolution_enabled", False)) and object_type == "galaxy"
+    low_signal_galaxy_safety, galaxy_integration_seconds = _needs_low_signal_galaxy_safety(
+        original,
+        analysis,
+        object_type,
+    )
+    if low_signal_galaxy_safety and siril_deconvolution_requested:
+        siril_deconvolution_requested = False
+        settings.siril_deconvolution_enabled = False
+        write_log(
+            "Low-signal galaxy safety: skipped deconvolution for a compact short-integration stack "
+            f"({galaxy_integration_seconds:.0f}s total) to prevent nucleus ringing and false contours."
+        )
     star_setting_raw = str(getattr(settings, "star_handling_mode", "") or "").strip().lower()
     if star_setting_raw in {"starless", "zero stars", "no stars"}:
         star_handling_mode = "starless"

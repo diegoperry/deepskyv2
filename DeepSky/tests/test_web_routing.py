@@ -23,6 +23,7 @@ from app.pipeline import (
     CANONICAL_NEBULA_STAGES,
     _flatten_low_contrast_nebula_gradient,
     _looks_like_low_confidence_high_pedestal_nebula,
+    _needs_low_signal_galaxy_safety,
     _orient_like_reference as orient_current_pipeline_like_reference,
 )
 from app.siril_cli import create_background_extraction_script, create_stacked_rgb_narrowband_script
@@ -60,6 +61,23 @@ from app.web_legacy_150_goal_look import (
 
 
 class WebPipelineRoutingTests(unittest.TestCase):
+    def test_low_signal_galaxy_safety_only_rejects_short_compact_stacks(self) -> None:
+        compact = SimpleNamespace(metrics={"raw_p999": 0.0217, "bright_fraction": 0.00012})
+        strong = SimpleNamespace(metrics={"raw_p999": 0.0800, "bright_fraction": 0.00200})
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            short = root / "short.fit"
+            long = root / "long.fit"
+            for path, count in ((short, 20), (long, 180)):
+                hdu = fits.PrimaryHDU(np.zeros((3, 8, 8), dtype=np.uint16))
+                hdu.header["EXPTIME"] = 10.0
+                hdu.header["STACKCNT"] = count
+                hdu.writeto(path)
+
+            self.assertEqual(_needs_low_signal_galaxy_safety(short, compact, "galaxy"), (True, 200.0))
+            self.assertEqual(_needs_low_signal_galaxy_safety(long, compact, "galaxy"), (False, 1800.0))
+            self.assertEqual(_needs_low_signal_galaxy_safety(short, strong, "galaxy"), (False, None))
+            self.assertEqual(_needs_low_signal_galaxy_safety(short, compact, "nebula"), (False, None))
     def test_finished_job_displays_native_png_instead_of_downsampled_preview(self) -> None:
         job = WebJob(
             id="native-preview",
