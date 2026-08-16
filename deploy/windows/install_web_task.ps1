@@ -1,5 +1,5 @@
 param(
-    [string]$TaskName = "DeepSkyWeb",
+    [string]$TaskName = "DeepSky Web App",
     [string]$HostName = "127.0.0.1",
     [int]$Port = 8000
 )
@@ -16,7 +16,13 @@ if (-not (Test-Path -LiteralPath $runScript)) {
 $argument = "-NoProfile -ExecutionPolicy Bypass -File `"$runScript`" -HostName $HostName -Port $Port"
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argument -WorkingDirectory $repoRoot
 $trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable `
+    -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit 0
 
 Register-ScheduledTask `
     -TaskName $TaskName `

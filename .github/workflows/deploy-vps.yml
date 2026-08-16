@@ -29,6 +29,11 @@ jobs:
           cd C:\Apps\deepskyv2\DeepSky
           C:\Python311\pkg\tools\python.exe -m pip install -r requirements.txt
 
+      - name: Install DeepSky self-healing watchdog
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Apps\deepskyv2\deploy\windows\install_watchdog.ps1 -AppTaskName "DeepSky Web App"
+
       - name: Restart DeepSky web app
         shell: powershell
         run: |
