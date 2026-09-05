@@ -55,14 +55,20 @@ function cosmicTexture(kind = "stars") {
 export function addCosmicArchitecture(scene) {
   const group = new THREE.Group();
   const starTexture = cosmicTexture("stars");
-
-  const galaxy = new THREE.Mesh(
-    new THREE.PlaneGeometry(10.5, 10.5),
-    new THREE.MeshBasicMaterial({ map: cosmicTexture("galaxy"), side: THREE.DoubleSide, transparent: true, opacity: .9, depthWrite: false, blending: THREE.AdditiveBlending })
+  starTexture.wrapS = THREE.RepeatWrapping;
+  starTexture.repeat.set(3, 2);
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(46, 48, 32),
+    new THREE.MeshBasicMaterial({ map: starTexture, side: THREE.BackSide, color: 0xdbe9ff })
   );
-  galaxy.rotation.x = Math.PI / 2;
-  galaxy.rotation.z = -.34;
-  galaxy.position.set(0, 10.5, -4.2);
+  sky.rotation.y = .7;
+  group.add(sky);
+
+  const galaxy = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: cosmicTexture("galaxy"), transparent: true, opacity: .95, depthWrite: false, blending: THREE.AdditiveBlending, rotation: -.3 })
+  );
+  galaxy.position.set(0, 10.5, -10);
+  galaxy.scale.set(17, 9, 1);
   galaxy.renderOrder = 2;
   group.add(galaxy);
 
@@ -97,7 +103,8 @@ export function addCosmicArchitecture(scene) {
   scene.add(group);
 
   return (elapsed) => {
-    galaxy.rotation.z = -.34 + Math.sin(elapsed * .08) * .025;
+    galaxy.material.rotation = -.3 + Math.sin(elapsed * .08) * .025;
+    sky.rotation.y = .7 + elapsed * .002;
     glow.intensity = 15.5 + Math.sin(elapsed * .35) * 1.5;
   };
 }

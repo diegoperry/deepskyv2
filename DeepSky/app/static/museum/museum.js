@@ -1,5 +1,5 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js";
-import { addCosmicArchitecture } from "/static/museum/cosmic.js";
+import { addCosmicArchitecture } from "/static/museum/cosmic.js?v=4";
 
 const canvas = document.querySelector("#museum-canvas");
 const intro = document.querySelector("#intro");
@@ -47,7 +47,7 @@ let scene;
 let camera;
 let interactive = false;
 let yaw = 0;
-let pitch = 0.12;
+let pitch = 0.28;
 let dragging = false;
 let moved = false;
 let pointerStart = { x: 0, y: 0 };
@@ -261,7 +261,7 @@ function setInteractive(enabled) {
   if (!enabled) {
     camera.position.set(0, 1.7, 7.6);
     yaw = 0;
-    pitch = 0.12;
+    pitch = 0.28;
   }
 }
 
