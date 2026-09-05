@@ -142,9 +142,24 @@ function buildRoom() {
   scene.add(floor);
 
 
-  const backWall = new THREE.Mesh(new THREE.BoxGeometry(18, 6.25, .4), roomMaterial);
-  backWall.position.set(0, 3.1, -10.65);
-  scene.add(backWall);
+  const backDisplayWall = new THREE.Mesh(new THREE.BoxGeometry(7.2, 6.25, .4), roomMaterial);
+  backDisplayWall.position.set(0, 3.1, -10.65);
+  scene.add(backDisplayWall);
+  for (const x of [-5.75, 5.75]) {
+    const backWindow = new THREE.Mesh(new THREE.PlaneGeometry(4.1, 5.45), glassMaterial);
+    backWindow.position.set(x, 3.15, -10.42);
+    scene.add(backWindow);
+  }
+  for (const x of [-8.3, -3.65, 3.65, 8.3]) {
+    const backMullion = new THREE.Mesh(new THREE.BoxGeometry(.2, 6.15, .2), frameMaterial);
+    backMullion.position.set(x, 3.08, -10.4);
+    scene.add(backMullion);
+  }
+  for (const y of [.42, 5.88]) {
+    const backRail = new THREE.Mesh(new THREE.BoxGeometry(16.7, .22, .22), frameMaterial);
+    backRail.position.set(0, y, -10.4);
+    scene.add(backRail);
+  }
   for (const x of [-8.35, 8.35]) {
     const glassWall = new THREE.Mesh(new THREE.PlaneGeometry(20, 5.45), glassMaterial);
     glassWall.rotation.y = Math.PI / 2;
@@ -166,6 +181,16 @@ function buildRoom() {
   glassRoof.rotation.x = Math.PI / 2;
   glassRoof.position.set(0, 6.02, -.45);
   scene.add(glassRoof);
+  for (const x of [-8.3, 8.3]) {
+    const edgeBeam = new THREE.Mesh(new THREE.BoxGeometry(.22, .22, 20.5), frameMaterial);
+    edgeBeam.position.set(x, 6.02, -.45);
+    scene.add(edgeBeam);
+  }
+  for (const z of [-10.6, 9.7]) {
+    const edgeBeam = new THREE.Mesh(new THREE.BoxGeometry(16.8, .22, .22), frameMaterial);
+    edgeBeam.position.set(0, 6.02, z);
+    scene.add(edgeBeam);
+  }
   for (const x of [-6.8, -3.4, 0, 3.4, 6.8]) {
     addLightStrip([x, .04, -10.35], [2.5, .035, .06]);
   }
