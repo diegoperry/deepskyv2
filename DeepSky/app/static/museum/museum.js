@@ -1,5 +1,5 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js";
-import { addCosmicArchitecture } from "/static/museum/cosmic.js?v=4";
+import { addCosmicArchitecture } from "/static/museum/cosmic.js?v=5";
 
 const canvas = document.querySelector("#museum-canvas");
 const intro = document.querySelector("#intro");
@@ -166,17 +166,6 @@ function buildRoom() {
   glassRoof.rotation.x = Math.PI / 2;
   glassRoof.position.set(0, 6.02, -.45);
   scene.add(glassRoof);
-  for (const x of [-8.3, -4.15, 0, 4.15, 8.3]) {
-    const roofBeam = new THREE.Mesh(new THREE.BoxGeometry(.18, .18, 20.5), frameMaterial);
-    roofBeam.position.set(x, 6.02, -.45);
-    scene.add(roofBeam);
-  }
-  for (const z of [-10.15, -6.75, -3.35, .05, 3.45, 6.85, 9.65]) {
-    const crossBeam = new THREE.Mesh(new THREE.BoxGeometry(16.7, .18, .18), frameMaterial);
-    crossBeam.position.set(0, 6.02, z);
-    scene.add(crossBeam);
-  }
-
   for (const x of [-6.8, -3.4, 0, 3.4, 6.8]) {
     addLightStrip([x, .04, -10.35], [2.5, .035, .06]);
   }

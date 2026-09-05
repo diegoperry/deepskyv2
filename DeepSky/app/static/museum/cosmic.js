@@ -54,16 +54,6 @@ function cosmicTexture(kind = "stars") {
 
 export function addCosmicArchitecture(scene) {
   const group = new THREE.Group();
-  const starTexture = cosmicTexture("stars");
-  starTexture.wrapS = THREE.RepeatWrapping;
-  starTexture.repeat.set(3, 2);
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(46, 48, 32),
-    new THREE.MeshBasicMaterial({ map: starTexture, side: THREE.BackSide, color: 0xdbe9ff })
-  );
-  sky.rotation.y = .7;
-  group.add(sky);
-
   const galaxy = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: cosmicTexture("galaxy"), transparent: true, opacity: .95, depthWrite: false, blending: THREE.AdditiveBlending, rotation: -.3 })
   );
@@ -76,23 +66,19 @@ export function addCosmicArchitecture(scene) {
   glow.position.set(0, 7.5, -4.2);
   group.add(glow);
 
-  const hazeMaterial = new THREE.SpriteMaterial({ map: starTexture, color: 0x6878e8, transparent: true, opacity: .07, depthWrite: false, blending: THREE.AdditiveBlending });
-  [[-6.7,3.7,-7.8,8,5],[6.8,3.2,-6.2,7,4.5],[-5.8,2.8,2.5,6,4],[6.2,4,1.4,6,4]].forEach(([x,y,z,width,height]) => {
-    const cloud = new THREE.Sprite(hazeMaterial.clone());
-    cloud.position.set(x, y, z);
-    cloud.scale.set(width, height, 1);
-    group.add(cloud);
-  });
-
   const positions = [];
   const colors = [];
   const cool = new THREE.Color(0x9acbff);
   const warm = new THREE.Color(0xffd2a0);
-  for (let i = 0; i < 2200; i += 1) {
-    const side = Math.floor(Math.random() * 3);
-    if (side === 0) positions.push(THREE.MathUtils.randFloatSpread(21), 8 + Math.random() * 5, -12 + Math.random() * 25);
-    if (side === 1) positions.push(-10 - Math.random() * 8, .5 + Math.random() * 11, -12 + Math.random() * 25);
-    if (side === 2) positions.push(10 + Math.random() * 8, .5 + Math.random() * 11, -12 + Math.random() * 25);
+  for (let i = 0; i < 3600; i += 1) {
+    const radius = 18 + Math.random() * 25;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(THREE.MathUtils.randFloatSpread(2));
+    positions.push(
+      radius * Math.sin(phi) * Math.cos(theta),
+      radius * Math.cos(phi) + 4,
+      radius * Math.sin(phi) * Math.sin(theta)
+    );
     const color = Math.random() < .12 ? warm : cool;
     colors.push(color.r, color.g, color.b);
   }
@@ -104,7 +90,6 @@ export function addCosmicArchitecture(scene) {
 
   return (elapsed) => {
     galaxy.material.rotation = -.3 + Math.sin(elapsed * .08) * .025;
-    sky.rotation.y = .7 + elapsed * .002;
     glow.intensity = 15.5 + Math.sin(elapsed * .35) * 1.5;
   };
 }

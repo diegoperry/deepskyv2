@@ -13,7 +13,7 @@ class MuseumPageTests(unittest.TestCase):
 
         self.assertIn("DeepSky Virtual Museum", html)
         self.assertIn('id="museum-canvas"', html)
-        self.assertIn('src="/static/museum/museum.js?v=4"', html)
+        self.assertIn('src="/static/museum/museum.js?v=5"', html)
         self.assertIn('href="/static/museum/museum.css"', html)
         self.assertIn('id="museum-info"', html)
         self.assertIn('id="mobile-controls"', html)
