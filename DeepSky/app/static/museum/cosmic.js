@@ -56,27 +56,18 @@ export function addCosmicArchitecture(scene) {
   const group = new THREE.Group();
   const starTexture = cosmicTexture("stars");
 
-  const ceiling = new THREE.Mesh(
-    new THREE.PlaneGeometry(16.1, 19.6),
-    new THREE.MeshBasicMaterial({ map: starTexture, side: THREE.DoubleSide, transparent: true, opacity: .97 })
-  );
-  ceiling.rotation.x = Math.PI / 2;
-  ceiling.position.set(0, 5.92, -.7);
-  ceiling.renderOrder = 1;
-  group.add(ceiling);
-
   const galaxy = new THREE.Mesh(
     new THREE.PlaneGeometry(10.5, 10.5),
     new THREE.MeshBasicMaterial({ map: cosmicTexture("galaxy"), side: THREE.DoubleSide, transparent: true, opacity: .9, depthWrite: false, blending: THREE.AdditiveBlending })
   );
   galaxy.rotation.x = Math.PI / 2;
   galaxy.rotation.z = -.34;
-  galaxy.position.set(0, 5.78, -4.2);
+  galaxy.position.set(0, 10.5, -4.2);
   galaxy.renderOrder = 2;
   group.add(galaxy);
 
   const glow = new THREE.PointLight(0x728dff, 17, 15, 2);
-  glow.position.set(0, 5.35, -4.2);
+  glow.position.set(0, 7.5, -4.2);
   group.add(glow);
 
   const hazeMaterial = new THREE.SpriteMaterial({ map: starTexture, color: 0x6878e8, transparent: true, opacity: .07, depthWrite: false, blending: THREE.AdditiveBlending });
@@ -91,11 +82,11 @@ export function addCosmicArchitecture(scene) {
   const colors = [];
   const cool = new THREE.Color(0x9acbff);
   const warm = new THREE.Color(0xffd2a0);
-  for (let i = 0; i < 1400; i += 1) {
+  for (let i = 0; i < 2200; i += 1) {
     const side = Math.floor(Math.random() * 3);
-    if (side === 0) positions.push(THREE.MathUtils.randFloatSpread(15.5), 5.7 + Math.random() * .12, -10 + Math.random() * 19);
-    if (side === 1) positions.push(-8.12 + Math.random() * .08, .5 + Math.random() * 5.2, -10 + Math.random() * 19);
-    if (side === 2) positions.push(8.12 - Math.random() * .08, .5 + Math.random() * 5.2, -10 + Math.random() * 19);
+    if (side === 0) positions.push(THREE.MathUtils.randFloatSpread(21), 8 + Math.random() * 5, -12 + Math.random() * 25);
+    if (side === 1) positions.push(-10 - Math.random() * 8, .5 + Math.random() * 11, -12 + Math.random() * 25);
+    if (side === 2) positions.push(10 + Math.random() * 8, .5 + Math.random() * 11, -12 + Math.random() * 25);
     const color = Math.random() < .12 ? warm : cool;
     colors.push(color.r, color.g, color.b);
   }

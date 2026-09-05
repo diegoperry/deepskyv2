@@ -131,25 +131,51 @@ function addExhibit(texture, exhibit) {
 
 function buildRoom() {
   const roomMaterial = new THREE.MeshStandardMaterial({ color: 0x090c12, roughness: .48, metalness: .48 });
+  const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x121925, roughness: .3, metalness: .82 });
+  const glassMaterial = new THREE.MeshPhysicalMaterial({
+    color: 0x6a91ba, transparent: true, opacity: .09, roughness: .08,
+    metalness: .05, transmission: .35, depthWrite: false, side: THREE.DoubleSide,
+  });
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(22, 25), new THREE.MeshPhysicalMaterial({ color: 0x080b10, roughness: .22, metalness: .72, clearcoat: .45 }));
   floor.rotation.x = -Math.PI / 2;
   floor.position.z = -.5;
   scene.add(floor);
 
-  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(22, 25), roomMaterial);
-  ceiling.rotation.x = Math.PI / 2;
-  ceiling.position.set(0, 6.25, -.5);
-  scene.add(ceiling);
 
   const backWall = new THREE.Mesh(new THREE.BoxGeometry(18, 6.25, .4), roomMaterial);
   backWall.position.set(0, 3.1, -10.65);
   scene.add(backWall);
-  const leftWall = new THREE.Mesh(new THREE.BoxGeometry(.4, 6.25, 20.5), roomMaterial);
-  leftWall.position.set(-8.45, 3.1, -.55);
-  scene.add(leftWall);
-  const rightWall = leftWall.clone();
-  rightWall.position.x = 8.45;
-  scene.add(rightWall);
+  for (const x of [-8.35, 8.35]) {
+    const glassWall = new THREE.Mesh(new THREE.PlaneGeometry(20, 5.45), glassMaterial);
+    glassWall.rotation.y = Math.PI / 2;
+    glassWall.position.set(x, 3.15, -.45);
+    scene.add(glassWall);
+    for (const z of [-10.1, -6.75, -3.4, -.05, 3.3, 6.65, 9.45]) {
+      const mullion = new THREE.Mesh(new THREE.BoxGeometry(.18, 6.15, .18), frameMaterial);
+      mullion.position.set(x, 3.08, z);
+      scene.add(mullion);
+    }
+    for (const y of [.42, 5.88]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(.25, .22, 20.4), frameMaterial);
+      rail.position.set(x, y, -.45);
+      scene.add(rail);
+    }
+  }
+
+  const glassRoof = new THREE.Mesh(new THREE.PlaneGeometry(16.55, 20.3), glassMaterial.clone());
+  glassRoof.rotation.x = Math.PI / 2;
+  glassRoof.position.set(0, 6.02, -.45);
+  scene.add(glassRoof);
+  for (const x of [-8.3, -4.15, 0, 4.15, 8.3]) {
+    const roofBeam = new THREE.Mesh(new THREE.BoxGeometry(.18, .18, 20.5), frameMaterial);
+    roofBeam.position.set(x, 6.02, -.45);
+    scene.add(roofBeam);
+  }
+  for (const z of [-10.15, -6.75, -3.35, .05, 3.45, 6.85, 9.65]) {
+    const crossBeam = new THREE.Mesh(new THREE.BoxGeometry(16.7, .18, .18), frameMaterial);
+    crossBeam.position.set(0, 6.02, z);
+    scene.add(crossBeam);
+  }
 
   for (const x of [-6.8, -3.4, 0, 3.4, 6.8]) {
     addLightStrip([x, .04, -10.35], [2.5, .035, .06]);
