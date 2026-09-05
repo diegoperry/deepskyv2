@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DeepSky Virtual Museum | Astrophotography Gallery</title>
+  <meta name="description" content="Walk through the DeepSky virtual astrophotography museum and explore galaxies and nebulae processed from real telescope data.">
+  <meta name="theme-color" content="#05070b">
+  <link rel="canonical" href="https://app.deepskyprocessor.com/museum">
+  <meta property="og:title" content="DeepSky Virtual Museum">
+  <meta property="og:description" content="A walkable 3D gallery of real astrophotography.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://app.deepskyprocessor.com/museum">
+  <meta property="og:image" content="https://app.deepskyprocessor.com/static/museum/images/andromeda-m31.png">
+  <link rel="stylesheet" href="/static/museum/museum.css">
+</head>
+<body>
+  <a class="skip-link" href="#museum-info">Skip 3D gallery</a>
+
+  <header class="museum-header">
+    <a class="brand" href="/" aria-label="DeepSky home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>DEEP<span>SKY</span></span>
+    </a>
+    <nav aria-label="Museum navigation">
+      <a href="/process">PROCESS</a>
+      <a href="/blog">LEARN</a>
+      <a href="#museum-info">EXHIBITS</a>
+    </nav>
+  </header>
+
+  <main id="museum-stage">
+    <canvas id="museum-canvas" aria-label="Interactive three-dimensional astrophotography gallery"></canvas>
+
+    <section class="intro" id="intro" aria-labelledby="museum-title">
+      <p class="eyebrow">DEEPSKY PRESENTS</p>
+      <h1 id="museum-title">VIRTUAL<br><span>MUSEUM</span></h1>
+      <p class="tagline">ASTROPHOTOGRAPHY WITHOUT BORDERS</p>
+      <button class="primary" id="enter-museum" type="button">ENTER THE GALLERY</button>
+      <p class="intro-note">Three real images. One immersive space.</p>
+    </section>
+
+    <div class="loading" id="loading" role="status" aria-live="polite">
+      <span>PREPARING THE GALLERY</span>
+      <div class="loading-track"><i id="loading-progress"></i></div>
+    </div>
+
+    <aside class="hud" id="hud" aria-label="Gallery controls">
+      <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> MOVE</span>
+      <span>DRAG TO LOOK</span>
+      <span>SELECT A FRAME TO EXPLORE</span>
+    </aside>
+
+    <div class="mobile-controls" id="mobile-controls" aria-label="Movement controls">
+      <button data-move="forward" aria-label="Move forward">▲</button>
+      <button data-move="left" aria-label="Move left">◀</button>
+      <button data-move="back" aria-label="Move backward">▼</button>
+      <button data-move="right" aria-label="Move right">▶</button>
+    </div>
+
+    <button class="exit-gallery" id="exit-gallery" type="button" aria-label="Return to museum introduction">EXIT</button>
+
+    <dialog class="exhibit-dialog" id="exhibit-dialog">
+      <button class="dialog-close" id="dialog-close" type="button" aria-label="Close exhibit">×</button>
+      <div class="dialog-image-wrap">
+        <img id="dialog-image" alt="Selected astrophotography exhibit">
+      </div>
+      <div class="dialog-copy">
+        <p class="eyebrow" id="dialog-category"></p>
+        <h2 id="dialog-title"></h2>
+        <p id="dialog-description"></p>
+        <dl>
+          <div><dt>PROCESSING</dt><dd>DeepSky</dd></div>
+          <div><dt>SOURCE</dt><dd>Real telescope data</dd></div>
+        </dl>
+        <a id="dialog-original" href="#" target="_blank" rel="noopener">VIEW FULL RESOLUTION</a>
+      </div>
+    </dialog>
+  </main>
+
+  <section class="fallback-gallery" id="museum-info" aria-labelledby="exhibit-heading">
+    <div class="section-heading">
+      <p class="eyebrow">THE COLLECTION</p>
+      <h2 id="exhibit-heading">REAL DATA.<br>DEEPER DETAIL.</h2>
+      <p>Every exhibit comes from an actual astrophotography image processed by DeepSky.</p>
+    </div>
+    <div class="exhibit-grid">
+      <article>
+        <img src="/static/museum/images/andromeda-m31.png" alt="Processed portrait of the Andromeda Galaxy with a bright core, dust lanes, and companion galaxies" loading="lazy">
+        <div><span>GALAXY · M31</span><h3>Andromeda Galaxy</h3></div>
+      </article>
+      <article>
+        <img src="/static/museum/images/m81.png" alt="Processed image of Messier 81 surrounded by a clean field of stars" loading="lazy">
+        <div><span>GALAXY · M81</span><h3>Bode's Galaxy</h3></div>
+      </article>
+      <article>
+        <img src="/static/museum/images/veil-nebula.png" alt="Processed Veil Nebula filaments glowing orange and cyan against deep space" loading="lazy">
+        <div><span>NEBULA · NGC 6992</span><h3>Veil Nebula</h3></div>
+      </article>
+    </div>
+  </section>
+
+  <noscript><p class="noscript">JavaScript is required for the walkable museum. The full collection remains available above.</p></noscript>
+
+  <script type="module" src="/static/museum/museum.js"></script>
+</body>
+</html>

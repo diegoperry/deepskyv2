@@ -1641,6 +1641,7 @@ def _landing_html() -> str:
         <a href="#how">How it works</a>
         <a href="/docs">Docs</a>
         <a href="/blog">Blog</a>
+        <a href="/museum">Museum</a>
         <a href="#faq">FAQ</a>
         <a class="button" href="/process">Process An Image</a>
       </nav>
@@ -4439,6 +4440,12 @@ def blog_article_page() -> str:
     return _blog_article_html()
 
 
+@app.get("/museum", response_class=HTMLResponse)
+def museum_page() -> HTMLResponse:
+    museum_path = APP_ROOT / "app" / "static" / "museum" / "index.html"
+    return HTMLResponse(museum_path.read_text(encoding="utf-8"))
+
+
 @app.get("/docs", response_class=HTMLResponse)
 def docs_page() -> str:
     return _docs_html()
@@ -4461,7 +4468,7 @@ def robots_txt() -> PlainTextResponse:
 
 @app.get("/sitemap.xml", response_class=PlainTextResponse)
 def sitemap_xml() -> PlainTextResponse:
-    urls = ("", "/blog", "/blog/ai-for-astrophotography", "/docs", "/process")
+    urls = ("", "/blog", "/blog/ai-for-astrophotography", "/docs", "/museum", "/process")
     entries = "".join(
         f"<url><loc>{PUBLIC_SITE_URL}{path or '/'}</loc></url>" for path in urls
     )
