@@ -1,4 +1,5 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js";
+import { addCosmicArchitecture } from "/static/museum/cosmic.js";
 
 const canvas = document.querySelector("#museum-canvas");
 const intro = document.querySelector("#intro");
@@ -52,6 +53,7 @@ let moved = false;
 let pointerStart = { x: 0, y: 0 };
 let lastPointer = { x: 0, y: 0 };
 let hoveredFrame = null;
+let updateCosmos = null;
 const keys = new Set();
 const moveButtons = new Set();
 const clickableFrames = [];
@@ -327,6 +329,7 @@ function animate() {
   camera.rotation.order = "YXZ";
   camera.rotation.y = yaw;
   camera.rotation.x = pitch;
+  if (updateCosmos) updateCosmos(clock.elapsedTime);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
@@ -350,6 +353,7 @@ function init() {
 
   buildRoom();
   addStars();
+  updateCosmos = addCosmicArchitecture(scene);
   bindControls();
   resize();
   window.addEventListener("resize", resize);

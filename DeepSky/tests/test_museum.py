@@ -26,6 +26,7 @@ class MuseumPageTests(unittest.TestCase):
     def test_museum_assets_and_discovery_links_exist(self) -> None:
         static_root = Path(__file__).parents[1] / "app" / "static" / "museum"
         self.assertTrue((static_root / "museum.js").is_file())
+        self.assertTrue((static_root / "cosmic.js").is_file())
         self.assertTrue((static_root / "museum.css").is_file())
         for image_name in ("andromeda-m31.png", "m81.png", "veil-nebula.png"):
             image = static_root / "images" / image_name
