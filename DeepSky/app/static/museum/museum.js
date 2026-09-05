@@ -47,7 +47,7 @@ let scene;
 let camera;
 let interactive = false;
 let yaw = 0;
-let pitch = -0.04;
+let pitch = 0.12;
 let dragging = false;
 let moved = false;
 let pointerStart = { x: 0, y: 0 };
@@ -235,7 +235,7 @@ function setInteractive(enabled) {
   if (!enabled) {
     camera.position.set(0, 1.7, 7.6);
     yaw = 0;
-    pitch = -0.04;
+    pitch = 0.12;
   }
 }
 

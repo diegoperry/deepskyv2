@@ -37,13 +37,13 @@ function cosmicTexture(kind = "stars") {
     haze.addColorStop(1, "rgba(0,0,0,0)");
     context.fillStyle = haze;
     context.fillRect(0, 0, size, size);
-    for (let i = 0; i < 2400; i += 1) {
+    for (let i = 0; i < 4200; i += 1) {
       const x = Math.random() * size;
       const y = Math.random() * size;
       const warm = Math.random() < .14;
       context.fillStyle = warm ? `rgba(255,210,175,${.35 + Math.random() * .6})` : `rgba(205,225,255,${.3 + Math.random() * .65})`;
       context.beginPath();
-      context.arc(x, y, Math.random() < .018 ? 2.6 : .35 + Math.random() * 1.2, 0, Math.PI * 2);
+      context.arc(x, y, Math.random() < .035 ? 3.8 : .7 + Math.random() * 1.8, 0, Math.PI * 2);
       context.fill();
     }
   }
@@ -61,7 +61,8 @@ export function addCosmicArchitecture(scene) {
     new THREE.MeshBasicMaterial({ map: starTexture, side: THREE.DoubleSide, transparent: true, opacity: .97 })
   );
   ceiling.rotation.x = Math.PI / 2;
-  ceiling.position.set(0, 6.18, -.7);
+  ceiling.position.set(0, 5.92, -.7);
+  ceiling.renderOrder = 1;
   group.add(ceiling);
 
   const galaxy = new THREE.Mesh(
@@ -70,11 +71,12 @@ export function addCosmicArchitecture(scene) {
   );
   galaxy.rotation.x = Math.PI / 2;
   galaxy.rotation.z = -.34;
-  galaxy.position.set(0, 6.08, -4.2);
+  galaxy.position.set(0, 5.78, -4.2);
+  galaxy.renderOrder = 2;
   group.add(galaxy);
 
   const glow = new THREE.PointLight(0x728dff, 17, 15, 2);
-  glow.position.set(0, 5.65, -4.2);
+  glow.position.set(0, 5.35, -4.2);
   group.add(glow);
 
   const hazeMaterial = new THREE.SpriteMaterial({ map: starTexture, color: 0x6878e8, transparent: true, opacity: .07, depthWrite: false, blending: THREE.AdditiveBlending });
@@ -91,7 +93,7 @@ export function addCosmicArchitecture(scene) {
   const warm = new THREE.Color(0xffd2a0);
   for (let i = 0; i < 1400; i += 1) {
     const side = Math.floor(Math.random() * 3);
-    if (side === 0) positions.push(THREE.MathUtils.randFloatSpread(15.5), 5.9 + Math.random() * .16, -10 + Math.random() * 19);
+    if (side === 0) positions.push(THREE.MathUtils.randFloatSpread(15.5), 5.7 + Math.random() * .12, -10 + Math.random() * 19);
     if (side === 1) positions.push(-8.12 + Math.random() * .08, .5 + Math.random() * 5.2, -10 + Math.random() * 19);
     if (side === 2) positions.push(8.12 - Math.random() * .08, .5 + Math.random() * 5.2, -10 + Math.random() * 19);
     const color = Math.random() < .12 ? warm : cool;
@@ -100,7 +102,7 @@ export function addCosmicArchitecture(scene) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  group.add(new THREE.Points(geometry, new THREE.PointsMaterial({ size: .042, vertexColors: true, transparent: true, opacity: .95, depthWrite: false })));
+  group.add(new THREE.Points(geometry, new THREE.PointsMaterial({ size: .085, vertexColors: true, transparent: true, opacity: .95, depthWrite: false })));
   scene.add(group);
 
   return (elapsed) => {
